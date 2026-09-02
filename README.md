@@ -75,6 +75,13 @@ record directly with current indices, finalized anchors and materials, prior
 contact-scope impulses, persistence, and normal warm starts. Recycling,
 pre-solve callbacks, and custom material callbacks remain CPU-written
 exceptions.
+Once an already-touching contact has a generation-current device-refreshed
+preparation record, the collision worker bypasses CPU manifold application and
+leaves the finalized manifold authoritative in the private contact-ID table.
+The CPU manifold becomes a lazy mirror. Public/debug/snapshot access, sleep
+transitions, Metal disable, and CPU solver fallback materialize required
+geometry by contact ID and generation. Fast/CCD, hit-event, recording,
+callback, first-touch, and topology-changing contacts stay on the CPU path.
 Solver submission bulk-copies only a deterministic four-byte contact-ID schedule
 per SIMD lane; it no longer walks and dereferences every contact to repack the
 records. Normal and identity remain private on-device. Mixed, recycled, callback,
@@ -98,9 +105,12 @@ On the next fresh supported collision pass, the scatter kernel matches features
 and emits point persistence plus normal warm-start impulses; contact-scope
 friction, twist, and rolling terms remain resident through preparation staging.
 Contact-slot reuse cannot consume stale state.
-The 81-contact differential now performs four store bypasses and zero CPU
-manifold synchronizations; the hit-event differential synchronizes exactly one
-exception contact.
+The 81-contact differential now performs four store bypasses, bypasses 243
+steady CPU manifold applications, and performs zero CPU manifold
+synchronizations; the hit-event differential synchronizes exactly one
+exception contact. The compact shared finalized-manifold stream and flat CPU
+collision walk still exist, so this is a residency checkpoint rather than a
+whole-world speedup.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.

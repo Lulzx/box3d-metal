@@ -76,6 +76,11 @@ enum b3ContactFlags
 	// recycling or the CPU narrow phase, then sets it only after a resident result
 	// is actually consumed. The solver uses it to build an exact GPU-prepare gate.
 	b3_simMetalManifold = 0x02000000,
+
+	// The current resident Metal manifold has not been materialized into the CPU
+	// mirror. Public/debug/snapshot access and CPU solver fallback synchronize it
+	// by contact id and generation before consuming manifold geometry.
+	b3_simMetalManifoldStale = 0x04000000,
 };
 
 // A contact edge is used to connect bodies and contacts together
@@ -166,8 +171,12 @@ typedef struct b3Contact
 	uint32_t generation;
 } b3Contact;
 
-// Refresh one public CPU manifold from the latest authoritative Metal result.
-// This is a no-op on portable builds or when the latest step used the CPU path.
+// Materialize current resident geometry without requiring post-solve impulses.
+bool b3SyncContactManifold( b3World* world, b3Contact* contact );
+
+// Refresh one public CPU manifold from the latest authoritative Metal geometry
+// and impulse results. This is a no-op on portable builds or when the latest
+// step used the CPU path.
 bool b3SyncContactImpulses( b3World* world, b3Contact* contact );
 
 typedef struct b3ContactSpec

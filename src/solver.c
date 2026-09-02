@@ -708,8 +708,8 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 		float maxVelocity;
 		float maxDeltaPosition;
 		float sleepVelocity;
-		const b3MetalFinalizeResult* metalResult = stepContext->metalFinalizeResults != NULL ?
-			stepContext->metalFinalizeResults + simIndex : NULL;
+		const b3MetalFinalizeResult* metalResult =
+			stepContext->metalFinalizeResults != NULL ? stepContext->metalFinalizeResults + simIndex : NULL;
 		if ( metalResult != NULL )
 		{
 			sim->center = b3OffsetPos( sim->center, metalResult->deltaPosition );
@@ -1281,11 +1281,11 @@ static bool b3ExecuteMetalUnconstrainedSubsteps( b3StepContext* context, int sub
 
 	b3MetalDispatchStats stats = { 0 };
 	float maxAngularSpeed = B3_MAX_ROTATION * context->inv_dt;
-	const b3MetalFinalizeResult** finalizeResults =
-		world->metalFinalizationEnabled ? &context->metalFinalizeResults : NULL;
+	const b3MetalFinalizeResult** finalizeResults = world->metalFinalizationEnabled ? &context->metalFinalizeResults : NULL;
 	bool success = b3MetalIntegrateUnconstrainedSubsteps( world->metalContext, context->states, context->sims, bodyCount,
-		subStepCount, context->h, world->gravity, context->maxLinearVelocity, maxAngularSpeed, context->inv_dt,
-		finalizeResults, world->metalFinalizationEnabled ? context : NULL, &stats );
+														  subStepCount, context->h, world->gravity, context->maxLinearVelocity,
+														  maxAngularSpeed, context->inv_dt, finalizeResults,
+														  world->metalFinalizationEnabled ? context : NULL, &stats );
 	if ( success == false )
 	{
 		world->metalUnconstrainedFallbackCount += (uint64_t)subStepCount;
@@ -1313,20 +1313,21 @@ static bool b3ExecuteMetalConstraintSubsteps( b3StepContext* context )
 	b3World* world = context->world;
 	int bodyCount = world->solverSets.data[b3_awakeSet].bodyStates.count;
 	if ( world->metalContext == NULL || bodyCount < world->metalMinimumBodyCount ||
-		( context->wideContactCount == 0 && context->contactConstraintCount == 0 &&
-		  context->overflowContactConstraintCount == 0 && context->jointConstraintCount == 0 &&
-		  context->overflowJointConstraintCount == 0 ) )
+		 ( context->wideContactCount == 0 && context->contactConstraintCount == 0 &&
+		   context->overflowContactConstraintCount == 0 && context->jointConstraintCount == 0 &&
+		   context->overflowJointConstraintCount == 0 ) )
 	{
 		return false;
 	}
 
 	b3GraphColor* overflow = context->graph->colors + B3_OVERFLOW_INDEX;
-	bool hasContacts = context->wideContactCount > 0 || context->contactConstraintCount > 0 ||
-		context->overflowContactConstraintCount > 0;
+	bool hasContacts =
+		context->wideContactCount > 0 || context->contactConstraintCount > 0 || context->overflowContactConstraintCount > 0;
 	bool hasJoints = context->jointConstraintCount > 0 || context->overflowJointConstraintCount > 0;
 	if ( overflow->convexContacts.count != 0 )
 	{
-		if ( hasContacts ) world->metalContactFallbackCount += (uint64_t)context->subStepCount;
+		if ( hasContacts )
+			world->metalContactFallbackCount += (uint64_t)context->subStepCount;
 		return false;
 	}
 	for ( int i = 0; i < overflow->jointSims.count; ++i )
@@ -1334,7 +1335,8 @@ static bool b3ExecuteMetalConstraintSubsteps( b3StepContext* context )
 		if ( b3MetalSupportsJoint( overflow->jointSims.data + i ) == false )
 		{
 			world->metalJointFallbackCount += (uint64_t)context->subStepCount;
-			if ( hasContacts ) world->metalContactFallbackCount += (uint64_t)context->subStepCount;
+			if ( hasContacts )
+				world->metalContactFallbackCount += (uint64_t)context->subStepCount;
 			return false;
 		}
 	}
@@ -1346,18 +1348,21 @@ static bool b3ExecuteMetalConstraintSubsteps( b3StepContext* context )
 			if ( b3MetalSupportsJoint( color->jointSims.data + i ) == false )
 			{
 				world->metalJointFallbackCount += (uint64_t)context->subStepCount;
-				if ( hasContacts ) world->metalContactFallbackCount += (uint64_t)context->subStepCount;
+				if ( hasContacts )
+					world->metalContactFallbackCount += (uint64_t)context->subStepCount;
 				return false;
 			}
 		}
 	}
 
 	b3MetalDispatchStats stats = { 0 };
-	if ( b3MetalSolveContactSubsteps( world->metalContext, context, ITERATIONS, RELAX_ITERATIONS,
-		B3_RESTITUTION_ITERATIONS, &stats ) == false )
+	if ( b3MetalSolveContactSubsteps( world->metalContext, context, ITERATIONS, RELAX_ITERATIONS, B3_RESTITUTION_ITERATIONS,
+									  &stats ) == false )
 	{
-		if ( hasContacts ) world->metalContactFallbackCount += (uint64_t)context->subStepCount;
-		if ( hasJoints ) world->metalJointFallbackCount += (uint64_t)context->subStepCount;
+		if ( hasContacts )
+			world->metalContactFallbackCount += (uint64_t)context->subStepCount;
+		if ( hasJoints )
+			world->metalJointFallbackCount += (uint64_t)context->subStepCount;
 		return false;
 	}
 	if ( hasContacts )
@@ -1403,7 +1408,7 @@ static void b3ExecuteMetalFinalization( b3StepContext* context, int bodyCount )
 	b3MetalDispatchStats stats = { 0 };
 	const b3MetalFinalizeResult* results = NULL;
 	if ( b3MetalFinalizeBodies( world->metalContext, context->states, context->sims, bodyCount, context->inv_dt,
-		context->metalStatesResident, &results, &stats ) == false )
+								context->metalStatesResident, &results, &stats ) == false )
 	{
 		world->metalFinalizationFallbackCount += 1;
 		return;
@@ -1416,8 +1421,49 @@ static void b3ExecuteMetalFinalization( b3StepContext* context, int bodyCount )
 #endif
 
 #if defined( BOX3D_METAL )
+static void b3RefreshStaleContactManifoldsAfterMetalFallback( b3StepContext* context )
+{
+	b3World* world = context->world;
+	if ( b3MetalSyncAllContactManifolds( world->metalContext, world ) )
+		return;
+
+	// A device/readback failure must not feed stale resident anchors into Erin's
+	// CPU preparation path. Recompute only the stale convex mirrors from the CPU
+	// oracle; contact topology is reconciled by the next collision pass.
+	b3Shape* shapes = world->shapes.data;
+	for ( int colorIndex = 0; colorIndex < B3_GRAPH_COLOR_COUNT - 1; ++colorIndex )
+	{
+		b3GraphColor* color = context->graph->colors + colorIndex;
+		for ( int i = 0; i < color->convexContacts.count; ++i )
+		{
+			int contactId = color->convexContacts.data[i];
+			b3Contact* contact = b3Array_Get( world->contacts, contactId );
+			if ( ( contact->flags & b3_simMetalManifoldStale ) == 0 )
+				continue;
+			b3Shape* shapeA = shapes + contact->shapeIdA;
+			b3Shape* shapeB = shapes + contact->shapeIdB;
+			b3Body* bodyA = b3Array_Get( world->bodies, shapeA->bodyId );
+			b3Body* bodyB = b3Array_Get( world->bodies, shapeB->bodyId );
+			b3BodySim* simA = b3GetBodySim( world, bodyA );
+			b3BodySim* simB = b3GetBodySim( world, bodyB );
+			b3UpdateContact( world, 0, contact, shapeA, simA->localCenter, simA->transform, shapeB, simB->localCenter,
+							 simB->transform, false, NULL, false, NULL, 0, NULL, false, NULL, world->taskContexts.data[0].arena );
+			contact->flags &= ~b3_simMetalManifoldStale;
+			for ( int manifoldIndex = 0; manifoldIndex < contact->manifoldCount; ++manifoldIndex )
+			{
+				b3Manifold* manifold = contact->manifolds + manifoldIndex;
+				for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
+				{
+					manifold->points[pointIndex].baseSeparation = manifold->points[pointIndex].separation;
+				}
+			}
+		}
+	}
+}
+
 static void b3PrepareConvexContactsAfterMetalFallback( b3StepContext* context )
 {
+	b3RefreshStaleContactManifoldsAfterMetalFallback( context );
 	int startIndex = 0;
 	while ( startIndex < context->wideContactCount )
 	{
@@ -1957,11 +2003,9 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		}
 		activeColorCount = c;
 		stepContext->metalResidentConvexContactCount = residentConvexContactCount;
-		stepContext->metalResidentConvexComplete =
-			convexContactCount > 0 && residentConvexContactCount == convexContactCount;
+		stepContext->metalResidentConvexComplete = convexContactCount > 0 && residentConvexContactCount == convexContactCount;
 		stepContext->metalResidentConvexHasRestitution = residentConvexHasRestitution;
-		stepContext->metalResidentConvexConstraintCount =
-			stepContext->metalResidentConvexComplete ? wideContactCount : 0;
+		stepContext->metalResidentConvexConstraintCount = stepContext->metalResidentConvexComplete ? wideContactCount : 0;
 #if defined( BOX3D_METAL )
 		world->metalLastResidentConvexContactCount = residentConvexContactCount;
 		world->metalLastResidentConvexConstraintCount = stepContext->metalResidentConvexConstraintCount;
@@ -1992,9 +2036,8 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		b3GraphColor* overflow = colors + B3_OVERFLOW_INDEX;
 		stepContext->metalPrepareConvexOnGpu = false;
 #if defined( BOX3D_METAL )
-		stepContext->metalPrepareConvexOnGpu = world->metalContext != NULL &&
-			awakeBodyCount >= world->metalMinimumBodyCount && stepContext->metalResidentConvexComplete &&
-			overflow->convexContacts.count == 0;
+		stepContext->metalPrepareConvexOnGpu = world->metalContext != NULL && awakeBodyCount >= world->metalMinimumBodyCount &&
+											   stepContext->metalResidentConvexComplete && overflow->convexContacts.count == 0;
 #endif
 		int overflowCount = overflow->contacts.count;
 		int overflowManifoldCount = 0;
@@ -2360,7 +2403,7 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		if ( stepContext->metalShapeResultCount > 0 && deferMetalShapeApply == false )
 		{
 			b3ParallelFor( world, &b3ApplyMetalShapeResultsTask, stepContext->metalShapeResultCount, 32, stepContext,
-				"metal shape finalize" );
+						   "metal shape finalize" );
 			world->metalShapeResultApplyCount += 1;
 			world->metalShapeCpuBoundsStale = false;
 		}

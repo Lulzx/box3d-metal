@@ -49,7 +49,7 @@ typedef struct b3MetalConvexManifoldResult
 	uint32_t pointCount;
 	uint32_t inputIndex;
 	float normalX, normalY, normalZ;
-	float padding2;
+	uint32_t contactGeneration;
 	float point1X, point1Y, point1Z, separation1;
 	float point2X, point2Y, point2Z, separation2;
 	uint32_t featureId1, featureId2;
@@ -163,6 +163,12 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 // Explicit diagnostic/fallback staging of the private contact-id-indexed table.
 // This submits and waits for a blit; it is not part of the steady narrow phase.
 bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalConvexManifoldResult* results, int resultCapacity );
+
+// Materialize current private manifold geometry into the CPU mirror. The
+// single-contact form is the lazy public boundary; the all-contact form is used
+// before route changes and CPU solver fallback.
+bool b3MetalSyncContactManifold( b3MetalContext* context, b3Contact* contact );
+bool b3MetalSyncAllContactManifolds( b3MetalContext* context, b3World* world );
 
 // Retain post-persistence solver metadata by contact id during the existing CPU
 // collision pass. The narrow-phase dispatch preallocates the table, so parallel

@@ -62,9 +62,32 @@ static b3Contact* b3GetContactFullId( b3World* world, b3ContactId contactId )
 	return contact;
 }
 
+bool b3SyncContactManifold( b3World* world, b3Contact* contact )
+{
+#if defined( BOX3D_METAL )
+	if ( contact == NULL )
+		return false;
+	if ( ( contact->flags & b3_simMetalManifoldStale ) == 0 )
+		return true;
+	if ( world != NULL && world->metalContext != NULL )
+	{
+		if ( b3MetalSyncContactManifold( world->metalContext, contact ) == false )
+			return false;
+		world->metalContactManifoldSyncCount += 1;
+		return true;
+	}
+#else
+	(void)world;
+	(void)contact;
+#endif
+	return false;
+}
+
 bool b3SyncContactImpulses( b3World* world, b3Contact* contact )
 {
 #if defined( BOX3D_METAL )
+	if ( b3SyncContactManifold( world, contact ) == false )
+		return false;
 	if ( world != NULL && world->metalContext != NULL && b3MetalSyncContactImpulses( world->metalContext, contact ) )
 	{
 		world->metalContactImpulseSyncCount += 1;

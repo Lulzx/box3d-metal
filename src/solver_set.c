@@ -161,6 +161,18 @@ void b3TrySleepIsland( b3World* world, int islandId )
 		return;
 	}
 
+	// Sleeping contacts leave the awake narrow-phase set, so their private table
+	// slots are not guaranteed to be refreshed or preserved by later dispatches.
+	// Materialize only the stale transition contacts before moving the island.
+	for ( int i = 0; i < island->contacts.count; ++i )
+	{
+		b3Contact* contact = b3Array_Get( world->contacts, island->contacts.data[i].contactId );
+		if ( ( contact->flags & b3_simMetalManifoldStale ) != 0 && b3SyncContactImpulses( world, contact ) == false )
+		{
+			return;
+		}
+	}
+
 	// island is sleeping
 	// - create new sleeping solver set
 	// - move island to sleeping solver set

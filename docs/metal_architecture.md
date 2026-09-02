@@ -205,6 +205,23 @@ steps add no shared stream, command buffer, or wait. Entries are authoritative
 only for contacts marked eligible in the current successful dispatch; stale
 unsupported slots are never consumed.
 
+For an already-touching, non-fast contact whose current record was refreshed by
+the device, the collision worker no longer applies the compact record to the
+CPU manifold. It updates only CPU-visible scalar material state, marks the CPU
+geometry mirror stale, and keeps the contact-ID table authoritative. First
+touches, separations, hit-event contacts, recording, callbacks, recycling, CCD,
+and topology transitions continue through Erin's CPU contact path. The current
+implementation still walks the flat awake-contact list and still emits the
+compact 160-byte shared stream; GPU exception compaction is the next boundary.
+
+Public contact/body/shape queries, force debug drawing, snapshots, sleep
+transitions, Metal disable, and CPU solver fallback materialize stale geometry
+by contact ID and contact generation. CPU solver fallback first attempts one
+bulk table blit; if that fails, it recomputes only stale convex manifolds with
+the CPU oracle before preparation. Sleeping an island aborts if its required
+mirror cannot be synchronized, and Metal disable retains the context on a
+readback failure.
+
 That authority now survives into solver setup explicitly. The scatter kernel
 feature-matches the prior generation-tagged impulse table, emits persistence and
 normal warm-start values, computes default material mixing and tangent velocity,
@@ -273,7 +290,7 @@ paths, not yet the final performance architecture.
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 | Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
-| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere geometry, COM-relative anchors, point persistence/warm-start matching, default material mixing, and tangent velocity are finalized on Metal. CPU retains manifold allocation, custom/pre-solve callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, other hull pairs, meshes, height fields, and compounds remain CPU |
+| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere geometry, COM-relative anchors, point persistence/warm-start matching, default material mixing, and tangent velocity are finalized on Metal. Stable touching contacts bypass CPU manifold application and synchronize their lazy CPU mirrors only at explicit boundaries. CPU still traverses contacts and retains manifold allocation, custom/pre-solve callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, other hull pairs, meshes, height fields, and compounds remain CPU |
 | Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts an 80-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
@@ -387,6 +404,9 @@ finalization are recorded in
 [`benchmarks/m4-pro-contact-finalization-residency-2026-09-02.md`](benchmarks/m4-pro-contact-finalization-residency-2026-09-02.md).
 Direct device refresh of stable contact-preparation records is recorded in
 [`benchmarks/m4-pro-device-contact-prepare-refresh-2026-09-02.md`](benchmarks/m4-pro-device-contact-prepare-refresh-2026-09-02.md).
+Stable collision-application bypass and lazy manifold geometry synchronization
+are recorded in
+[`benchmarks/m4-pro-resident-collision-bypass-2026-09-02.md`](benchmarks/m4-pro-resident-collision-bypass-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

@@ -49,6 +49,12 @@ typedef struct b3MetalProfile
 	/// Stable contact preparation records refreshed directly by the Metal
 	/// manifold-finalization kernel instead of rewritten by a CPU worker.
 	uint64_t contactPrepareDeviceRefreshCount;
+	/// Stable touching contacts that bypassed CPU manifold application after
+	/// their solver preparation record was refreshed on Metal.
+	uint64_t contactCollisionBypassCount;
+	/// Individual resident manifolds materialized into the CPU mirror on a
+	/// public, debug, snapshot, route-change, or solver-fallback boundary.
+	uint64_t contactManifoldSyncCount;
 	/// Resident convex steps that skipped the all-contact CPU impulse-store walk.
 	uint64_t contactImpulseStoreBypassCount;
 	/// Hit-event exception contacts synchronized during the compact store path.

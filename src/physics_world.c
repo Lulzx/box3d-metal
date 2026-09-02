@@ -623,6 +623,11 @@ void b3World_DisableMetal( b3WorldId worldId )
 	{
 		return;
 	}
+	if ( b3MetalSyncAllContactManifolds( world->metalContext, world ) == false )
+	{
+		b3Log( "Box3D Metal disable kept the context because contact-manifold readback failed\n" );
+		return;
+	}
 
 	if ( world->metalBroadPhaseEnabled )
 	{
@@ -675,6 +680,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.contactScheduleReuseCount = world->metalContactScheduleReuseCount;
 	profile.contactPersistenceMatchCount = world->metalContactPersistenceMatchCount;
 	profile.contactPrepareDeviceRefreshCount = world->metalContactPrepareDeviceRefreshCount;
+	profile.contactCollisionBypassCount = world->metalContactCollisionBypassCount;
+	profile.contactManifoldSyncCount = world->metalContactManifoldSyncCount;
 	profile.contactImpulseStoreBypassCount = world->metalContactImpulseStoreBypassCount;
 	profile.contactImpulseEventSyncCount = world->metalContactImpulseEventSyncCount;
 	profile.contactImpulseSyncCount = world->metalContactImpulseSyncCount;
@@ -873,8 +880,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 		// Contact recycling optimization. Please cite this library if you use this optimization.
 		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
 		// However, this allows larger relative motion and has fewer tuning parameters (just one).
-		if ( ( isFast == false || isMeshContact == false ) && recycleDistance > 0.0f &&
-			 ( contact->flags & b3_relativeTransformValid ) && ( contact->flags & b3_contactRecycleFlag ) )
+		if ( ( contact->flags & b3_simMetalManifoldStale ) == 0 && ( isFast == false || isMeshContact == false ) &&
+			 recycleDistance > 0.0f && ( contact->flags & b3_relativeTransformValid ) &&
+			 ( contact->flags & b3_contactRecycleFlag ) )
 		{
 			// The scalar part of b3InvMulQuat is just the quaternion dot product.
 			// cos(relative_angle/2) = scalar(conj(q1) * q2) = dot(q1, q2)
@@ -961,6 +969,28 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
 		contact->flags |= b3_relativeTransformValid;
 
+#if defined( BOX3D_METAL )
+		bool residentCollisionBypass =
+			metalResult != NULL && metalResult->eligible != 0 && metalResult->touching != 0 && metalResult->pointCount >= 1 &&
+			metalResult->pointCount <= 2 && metalResult->contactGeneration == contact->generation &&
+			( metalResult->residentFlags & 2u ) != 0 && wasTouching && contact->manifoldCount == 1 &&
+			contact->manifolds != NULL && isFast == false && ( shapeA->flags & b3_enableHitEvents ) == 0 &&
+			( shapeB->flags & b3_enableHitEvents ) == 0 && world->recording == NULL;
+		if ( residentCollisionBypass )
+		{
+			contact->friction = metalResult->friction;
+			contact->restitution = metalResult->restitution;
+			contact->rollingResistance = metalResult->rollingResistance;
+			contact->tangentVelocity =
+				(b3Vec3){ metalResult->tangentVelocityX, metalResult->tangentVelocityY, metalResult->tangentVelocityZ };
+			contact->flags &= ~b3_simEnableHitEvent;
+			contact->flags |= b3_simTouchingFlag | b3_simMetalManifold | b3_simMetalManifoldStale;
+			taskContext->metalContactCollisionBypassCount += 1;
+			taskContext->manifoldCounts[0] += 1;
+			continue;
+		}
+#endif
+
 		// This updates solid contacts. Metal convex results contain world-oriented
 		// center-of-mass-relative anchors and default material mixing; the CPU
 		// still owns custom callbacks, events, recycling, and graph/island transitions.
@@ -1028,6 +1058,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 							 precomputedConvexManifold != NULL, precomputedNormalImpulses, precomputedPersistedBits,
 							 precomputedAnchorBs, precomputedAnchorsRelativeToCenter, precomputedMaterial, taskContext->arena );
 #if defined( BOX3D_METAL )
+		contact->flags &= ~b3_simMetalManifoldStale;
 		if ( precomputedConvexManifold != NULL && ( contact->flags & b3_simEnablePreSolveEvents ) == 0 &&
 			 ( prepareRefreshedOnMetal || b3MetalStageResidentContactPrepare( world->metalContext, contact ) ) )
 		{
@@ -1175,6 +1206,7 @@ static void b3Collide( b3StepContext* context )
 		taskContext->satCallCount = 0;
 		taskContext->satCacheHitCount = 0;
 		taskContext->recycledContactCount = 0;
+		taskContext->metalContactCollisionBypassCount = 0;
 		memset( taskContext->manifoldCounts, 0, sizeof( taskContext->manifoldCounts ) );
 	}
 
@@ -1206,6 +1238,13 @@ static void b3Collide( b3StepContext* context )
 	// Task should take at least 40us on a 4GHz CPU (10K cycles)
 	int minRange = 20;
 	b3ParallelFor( world, b3CollideTask, contactCount, minRange, context, "collide" );
+
+#if defined( BOX3D_METAL )
+	for ( int i = 0; i < world->workerCount; ++i )
+	{
+		world->metalContactCollisionBypassCount += (uint64_t)world->taskContexts.data[i].metalContactCollisionBypassCount;
+	}
+#endif
 
 	b3StackFree( &world->stack, contactIndices );
 	context->awakeContactIndices = NULL;
@@ -1852,6 +1891,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
 					// avoid double draw
 					if ( b3GetBit( &world->debugContactSet, contactId ) == false )
 					{
+						b3SyncContactManifold( world, contact );
 						if ( draw->drawContactForces )
 						{
 							b3SyncContactImpulses( world, contact );

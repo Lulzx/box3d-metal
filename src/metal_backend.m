@@ -512,7 +512,7 @@ static const char* b3_metalSource =
 	"struct ShapeGeometry { float point1X,point1Y,point1Z,radius; float point2X,point2Y,point2Z; int bodyId;\n"
 	"  uint pointOffset,pointCount,planeOffset,planeCount,triangleOffset,triangleCount,type,supported;\n"
 	"  float friction,restitution,rollingResistance,rollingRadius,tangentVelocityX,tangentVelocityY,tangentVelocityZ,materialPadding; };\n"
-	"struct ConvexManifoldResult { uint eligible,touching,pointCount,inputIndex; float nx,ny,nz,padding2;\n"
+	"struct ConvexManifoldResult { uint eligible,touching,pointCount,inputIndex; float nx,ny,nz; uint contactGeneration;\n"
 	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,scanOffset,contactId;\n"
 	"  float normalImpulse1,normalImpulse2; uint persistedBits,residentFlags;\n"
 	"  float friction,restitution,rollingResistance,materialPadding,tangentVelocityX,tangentVelocityY,tangentVelocityZ,tangentVelocityPadding;\n"
@@ -1065,7 +1065,7 @@ static const char* b3_metalSource =
 	"    r.nx=n.x;r.ny=n.y;r.nz=n.z;r.p1x=a.x;r.p1y=a.y;r.p1z=a.z;r.anchorB1X=b.x;r.anchorB1Y=b.y;r.anchorB1Z=b.z;}\n"
 	"  if(r.pointCount>1u){float3 p2=rotate(q,float3(r.p2x,r.p2y,r.p2z));float3 a=p2-centerA,b=p2-d-centerB;\n"
 	"    r.p2x=a.x;r.p2y=a.y;r.p2z=a.z;r.anchorB2X=b.x;r.anchorB2Y=b.y;r.anchorB2Z=b.z;}\n"
-	"  uint contactId=inputs[i].contactId;ImpulseResult old={};uint oldValid=0u;if(r.pointCount>0u&&contactId<p.previousCount){old=previous[contactId];\n"
+	"  uint contactId=inputs[i].contactId;r.contactGeneration=inputs[i].contactGeneration;ImpulseResult old={};uint oldValid=0u;if(r.pointCount>0u&&contactId<p.previousCount){old=previous[contactId];\n"
 	"    if(old.contactId==contactId&&old.generation==p.previousGeneration&&old.contactGeneration==inputs[i].contactGeneration&&old.pointCount>0u&&old.pointCount<=2u){\n"
 	"      oldValid=1u;r.residentFlags|=1u;uint claimed=0u;for(uint pointIndex=0u;pointIndex<r.pointCount;++pointIndex){uint feature=pointIndex==0u?r.feature1:r.feature2;\n"
 	"        for(uint oldIndex=0u;oldIndex<old.pointCount;++oldIndex){uint bit=1u<<oldIndex;if((claimed&bit)==0u&&feature==old.points[oldIndex].featureId){\n"
@@ -1110,7 +1110,7 @@ static const char* b3_contactSource =
 	"  float4 biasRate; float4 massScale; float4 impulseScale; float4 restitution;\n"
 	"  ulong manifolds[4]; PointWide points[4];\n"
 	"};\n"
-	"struct ConvexManifoldResult { uint eligible,touching,pointCount,inputIndex; float nx,ny,nz,padding2;\n"
+	"struct ConvexManifoldResult { uint eligible,touching,pointCount,inputIndex; float nx,ny,nz; uint contactGeneration;\n"
 	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,scanOffset,contactId;\n"
 	"  float normalImpulse1,normalImpulse2; uint persistedBits,residentFlags;\n"
 	"  float friction,restitution,rollingResistance,materialPadding,tangentVelocityX,tangentVelocityY,tangentVelocityZ,tangentVelocityPadding;\n"
@@ -4221,19 +4221,10 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 	}
 }
 
-bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalConvexManifoldResult* results,
-	int resultCapacity )
+static bool b3MetalReadbackConvexManifoldRange( b3MetalContext* context, NSUInteger sourceOffset, NSUInteger bytes )
 {
-	if ( context == NULL || resultCapacity < 0 || resultCapacity < context->convexManifoldTableCount ||
-		( context->convexManifoldTableCount > 0 && results == NULL ) )
-	{
+	if ( context == NULL || context->convexManifoldTableBuffer == nil || bytes == 0 || sourceOffset > NSUIntegerMax - bytes )
 		return false;
-	}
-	int resultCount = context->convexManifoldTableCount;
-	if ( resultCount == 0 ) return true;
-	if ( (NSUInteger)resultCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldResult ) ) return false;
-	NSUInteger bytes = (NSUInteger)resultCount * sizeof( b3MetalConvexManifoldResult );
-
 	@autoreleasepool
 	{
 		if ( context->convexManifoldTableReadbackCapacity < bytes )
@@ -4251,15 +4242,114 @@ bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalCon
 		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
 		id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
 		if ( commandBuffer == nil || blit == nil ) return false;
-		[blit copyFromBuffer:context->convexManifoldTableBuffer sourceOffset:0
+		[blit copyFromBuffer:context->convexManifoldTableBuffer sourceOffset:sourceOffset
 			toBuffer:context->convexManifoldTableReadbackBuffer destinationOffset:0 size:bytes];
 		[blit endEncoding];
 		[commandBuffer commit];
 		[commandBuffer waitUntilCompleted];
 		if ( commandBuffer.status != MTLCommandBufferStatusCompleted ) return false;
-		memcpy( results, context->convexManifoldTableReadbackBuffer.contents, bytes );
 		return true;
 	}
+}
+
+bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalConvexManifoldResult* results,
+	int resultCapacity )
+{
+	if ( context == NULL || resultCapacity < 0 || resultCapacity < context->convexManifoldTableCount ||
+		( context->convexManifoldTableCount > 0 && results == NULL ) )
+	{
+		return false;
+	}
+	int resultCount = context->convexManifoldTableCount;
+	if ( resultCount == 0 ) return true;
+	if ( (NSUInteger)resultCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldResult ) ) return false;
+	NSUInteger bytes = (NSUInteger)resultCount * sizeof( b3MetalConvexManifoldResult );
+	if ( b3MetalReadbackConvexManifoldRange( context, 0, bytes ) == false ) return false;
+	memcpy( results, context->convexManifoldTableReadbackBuffer.contents, bytes );
+	return true;
+}
+
+static bool b3MetalApplyContactManifoldResult( b3Contact* contact, const b3MetalConvexManifoldResult* result )
+{
+	if ( contact == NULL || result == NULL || contact->contactId < 0 || contact->manifoldCount != 1 ||
+		contact->manifolds == NULL || result->eligible == 0 || result->touching == 0 || result->pointCount < 1 ||
+		result->pointCount > 2 || result->contactId != (uint32_t)contact->contactId ||
+		result->inputIndex != (uint32_t)contact->contactId || result->contactGeneration != contact->generation )
+	{
+		return false;
+	}
+
+	b3Manifold* manifold = contact->manifolds;
+	manifold->normal = (b3Vec3){ result->normalX, result->normalY, result->normalZ };
+	manifold->pointCount = (int)result->pointCount;
+	const b3Vec3 anchorAs[2] = {
+		{ result->point1X, result->point1Y, result->point1Z },
+		{ result->point2X, result->point2Y, result->point2Z },
+	};
+	const b3Vec3 anchorBs[2] = {
+		{ result->anchorB1X, result->anchorB1Y, result->anchorB1Z },
+		{ result->anchorB2X, result->anchorB2Y, result->anchorB2Z },
+	};
+	const float separations[2] = { result->separation1, result->separation2 };
+	const float normalImpulses[2] = { result->normalImpulse1, result->normalImpulse2 };
+	const uint32_t featureIds[2] = { result->featureId1, result->featureId2 };
+	for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
+	{
+		b3ManifoldPoint* point = manifold->points + pointIndex;
+		point->anchorA = anchorAs[pointIndex];
+		point->anchorB = anchorBs[pointIndex];
+		point->separation = separations[pointIndex];
+		point->baseSeparation = separations[pointIndex];
+		point->normalImpulse = normalImpulses[pointIndex];
+		point->totalNormalImpulse = 0.0f;
+		point->normalVelocity = 0.0f;
+		point->featureId = featureIds[pointIndex];
+		point->triangleIndex = B3_NULL_INDEX;
+		point->persisted = ( result->persistedBits & ( 1u << pointIndex ) ) != 0;
+	}
+	contact->friction = result->friction;
+	contact->restitution = result->restitution;
+	contact->rollingResistance = result->rollingResistance;
+	contact->tangentVelocity =
+		(b3Vec3){ result->tangentVelocityX, result->tangentVelocityY, result->tangentVelocityZ };
+	contact->flags &= ~b3_simMetalManifoldStale;
+	return true;
+}
+
+bool b3MetalSyncContactManifold( b3MetalContext* context, b3Contact* contact )
+{
+	if ( context == NULL || contact == NULL || ( contact->flags & b3_simMetalManifoldStale ) == 0 ) return false;
+	if ( contact->contactId < 0 || contact->contactId >= context->convexManifoldTableCount ) return false;
+	NSUInteger offset = (NSUInteger)contact->contactId * sizeof( b3MetalConvexManifoldResult );
+	if ( b3MetalReadbackConvexManifoldRange( context, offset, sizeof( b3MetalConvexManifoldResult ) ) == false ) return false;
+	return b3MetalApplyContactManifoldResult( contact, context->convexManifoldTableReadbackBuffer.contents );
+}
+
+bool b3MetalSyncAllContactManifolds( b3MetalContext* context, b3World* world )
+{
+	if ( world == NULL ) return false;
+	int staleCount = 0;
+	for ( int contactId = 0; contactId < world->contacts.count; ++contactId )
+	{
+		const b3Contact* contact = world->contacts.data + contactId;
+		staleCount += contact->contactId == contactId && ( contact->flags & b3_simMetalManifoldStale ) != 0;
+	}
+	if ( staleCount == 0 ) return true;
+	if ( context == NULL ) return false;
+	if ( context->convexManifoldTableCount <= 0 ||
+		(NSUInteger)context->convexManifoldTableCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldResult ) ) return false;
+	NSUInteger bytes = (NSUInteger)context->convexManifoldTableCount * sizeof( b3MetalConvexManifoldResult );
+	if ( b3MetalReadbackConvexManifoldRange( context, 0, bytes ) == false ) return false;
+	const b3MetalConvexManifoldResult* results = context->convexManifoldTableReadbackBuffer.contents;
+	for ( int contactId = 0; contactId < world->contacts.count; ++contactId )
+	{
+		b3Contact* contact = world->contacts.data + contactId;
+		if ( contact->contactId != contactId || ( contact->flags & b3_simMetalManifoldStale ) == 0 ) continue;
+		if ( contactId >= context->convexManifoldTableCount ||
+			b3MetalApplyContactManifoldResult( contact, results + contactId ) == false ) return false;
+		world->metalContactManifoldSyncCount += 1;
+	}
+	return true;
 }
 
 void b3MetalCommitPairTreeRefit( b3MetalContext* context, const b3BroadPhase* broadPhase )

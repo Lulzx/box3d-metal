@@ -108,6 +108,7 @@ typedef struct b3TaskContext
 
 	// Number of contacts recycled this step (collide pass).
 	int recycledContactCount;
+	int metalContactCollisionBypassCount;
 
 	b3DebugPoint points[B3_DEBUG_POINT_CAPACITY];
 	int pointCount;
@@ -284,6 +285,8 @@ typedef struct b3World
 	uint64_t metalContactScheduleReuseCount;
 	uint64_t metalContactPersistenceMatchCount;
 	uint64_t metalContactPrepareDeviceRefreshCount;
+	uint64_t metalContactCollisionBypassCount;
+	uint64_t metalContactManifoldSyncCount;
 	uint64_t metalContactImpulseStoreBypassCount;
 	uint64_t metalContactImpulseEventSyncCount;
 	uint64_t metalContactImpulseSyncCount;
