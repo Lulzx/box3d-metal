@@ -50,8 +50,8 @@ move events into private Metal storage. Public event queries lazily materialize
 only that 72-byte-per-body stream; unqueried steps perform no move-event
 readback. VF64 builds preserve the exact device-authored binary64 translation
 through this public boundary.
-For unconstrained worlds and stable fully resident sphere/capsule/hull-sphere
-contact worlds on that same bounded route, the complete per-body CPU finalization
+For unconstrained worlds and stable fully resident sphere/capsule/hull-sphere or
+admitted canonical box-contact worlds on that same bounded route, the complete per-body CPU finalization
 walk is omitted. Absolute transforms, centers, inverse inertia, cleared
 forces/torques, transient flags, move events, shape bounds, and tree refit remain
 authoritative in Metal storage across steps. Public transform or body-property
@@ -60,15 +60,19 @@ unsupported constraints, sleep/CCD enablement, and Metal shutdown lazily
 synchronize the CPU mirrors once. Profile counters distinguish traversal
 bypasses from those explicit synchronization boundaries.
 The shape-specialized narrow-phase route batches sphere-sphere, capsule-sphere,
-capsule-capsule, and bounded compact hull-sphere manifold geometry in one Metal
-dispatch. Supported spheres, capsules, and compact hulls live in a revisioned
+capsule-capsule, bounded compact hull-sphere, and a fail-closed canonical
+box-box subset in one Metal dispatch. The box path ports Erin's face SAT,
+incident-face walk, feature-preserving clipping, deterministic four-point
+reduction, Gauss-valid edge SAT, and edge-edge contact. It currently admits
+equal canonical `b3MakeBoxHull` pairs with exactly one static body; unequal or
+dynamic-dynamic box pairs remain CPU-owned. Supported spheres, capsules, and compact hulls live in a revisioned
 Metal geometry registry: unchanged dispatches reuse primitive endpoints, radii,
 hull points, planes, triangles, and shape descriptors, while geometry and
 topology mutation rebuild fail-closed. Identical hull streams remain
 content-deduplicated. A second body-id registry retains static and awake body
 rotations, local centers, and VF64-capable world translations for the collision
 step. Each 32-byte contact record carries eligibility, shape/contact identity,
-and contact generation. Full 160-byte outputs stay in private Metal storage; a stable scan/prefix/scatter pass
+and contact generation. Full 240-byte outputs stay in private Metal storage; a stable scan/prefix/scatter pass
 returns only active results, tagged by original contact index, in the same
 command buffer. The scatter rotates normals into world axes, produces both
 center-of-mass-relative anchors with VF64 translation subtraction, mixes default
@@ -85,7 +89,7 @@ staging exists only for validation and fallback diagnostics.
 When every colored convex contact remains authoritative after persistence and
 callback processing, a Metal preparation kernel now builds Erin's SIMD-wide
 contact constraints from that table in the solver command buffer. The CPU seeds
-a 152-byte generation-tagged contact-ID table with body indices and manifold
+a 224-byte generation-tagged contact-ID table with body indices and manifold
 identity. On later generation-stable steps, the manifold scatter refreshes that
 record directly with current indices, finalized anchors and materials, prior
 contact-scope impulses, persistence, and normal warm starts. Recycling,
@@ -103,7 +107,7 @@ per SIMD lane; it no longer walks and dereferences every contact to repack the
 records. Normal and identity remain private on-device. Mixed, recycled, callback,
 overflow, or unsupported solver worlds fail closed to CPU preparation, including
 explicit prepare-on-fallback recovery when a later constraint rejects the route.
-After the final restitution pass, Metal writes an 80-byte compact impulse record
+After the final restitution pass, Metal writes a 112-byte compact impulse record
 per active contact into a generation-tagged contact-ID table. Successful
 resident steps bypass the all-contact CPU impulse-store traversal. Hit-enabled
 contact IDs are compacted while the existing narrow-phase input is packed and
@@ -126,7 +130,7 @@ steady CPU manifold applications, and performs zero CPU manifold
 synchronizations. A deterministic scan/prefix/scatter pass emits only CPU
 exceptions: an unchanged resident step returns zero shared manifold bytes and
 runs no CPU collision workers, while the hit-event and first-touch
-differentials each return exactly one ordered 160-byte record. Contact mirrors
+differentials each return exactly one ordered 240-byte record. Contact mirrors
 use a world generation instead of per-step stable-contact flag writes. A
 revisioned contact input/order registry now retains the 32-byte records across
 unchanged pair, graph, and eligibility revisions, so stable steps neither

@@ -164,6 +164,10 @@ struct b3MetalContext
 	NSUInteger convexHullPlaneCapacity;
 	id<MTLBuffer> convexHullTriangleBuffer;
 	NSUInteger convexHullTriangleCapacity;
+	id<MTLBuffer> convexHullEdgeBuffer;
+	NSUInteger convexHullEdgeCapacity;
+	id<MTLBuffer> convexHullFaceBuffer;
+	NSUInteger convexHullFaceCapacity;
 	id<MTLBuffer> convexShapeGeometryBuffer;
 	NSUInteger convexShapeGeometryCapacity;
 	int convexShapeGeometryCount;
@@ -311,6 +315,11 @@ typedef struct b3MetalHullTriangle
 	uint32_t index1, index2, index3, face;
 } b3MetalHullTriangle;
 
+typedef struct b3MetalHullEdge
+{
+	uint32_t origin, twin, next, face;
+} b3MetalHullEdge;
+
 typedef struct b3MetalFloat4
 {
 	float x, y, z, w;
@@ -324,6 +333,7 @@ typedef struct b3MetalShapeGeometry
 	uint32_t pointOffset, pointCount;
 	uint32_t planeOffset, planeCount;
 	uint32_t triangleOffset, triangleCount;
+	uint32_t edgeOffset, edgeCount;
 	uint32_t type, supported;
 	float friction, restitution, rollingResistance, rollingRadius;
 	float tangentVelocityX, tangentVelocityY, tangentVelocityZ, materialPadding;
@@ -353,8 +363,9 @@ _Static_assert( offsetof( b3MetalConvexManifoldResult, inputIndex ) == 12, "Meta
 _Static_assert( offsetof( b3MetalConvexManifoldResult, scanOffset ) == 72, "Metal manifold scan-offset ABI changed" );
 _Static_assert( offsetof( b3MetalConvexManifoldResult, contactId ) == 76, "Metal manifold contact-id ABI changed" );
 _Static_assert( sizeof( b3MetalHullTriangle ) == 16, "Metal hull-triangle ABI changed" );
+_Static_assert( sizeof( b3MetalHullEdge ) == 16, "Metal hull-edge ABI changed" );
 _Static_assert( sizeof( b3MetalFloat4 ) == 16, "Metal float4 ABI changed" );
-_Static_assert( sizeof( b3MetalShapeGeometry ) == 96, "Metal shape-geometry record ABI changed" );
+_Static_assert( sizeof( b3MetalShapeGeometry ) == 104, "Metal shape-geometry record ABI changed" );
 _Static_assert( sizeof( b3SetItem ) == 16, "Metal pair-set item ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintPointWide ) == 192, "Metal wide contact point ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintWide ) == 1696, "Metal wide contact ABI changed" );
@@ -548,8 +559,9 @@ static const char* b3_metalSource =
 	"struct BodyTransform { float qx,qy,qz,qw,px,py,pz; uint supported; ulong pxBits,pyBits,pzBits; int index; uint flags;\n"
 	"  float localCenterX,localCenterY,localCenterZ,sleepVelocity; };\n"
 	"struct HullTriangle { uint index1,index2,index3,face; };\n"
+	"struct HullEdge { uint origin,twin,next,face; };\n"
 	"struct ShapeGeometry { float point1X,point1Y,point1Z,radius; float point2X,point2Y,point2Z; int bodyId;\n"
-	"  uint pointOffset,pointCount,planeOffset,planeCount,triangleOffset,triangleCount,type,supported;\n"
+	"  uint pointOffset,pointCount,planeOffset,planeCount,triangleOffset,triangleCount,edgeOffset,edgeCount,type,supported;\n"
 	"  float friction,restitution,rollingResistance,rollingRadius,tangentVelocityX,tangentVelocityY,tangentVelocityZ,materialPadding; };\n"
 	"struct ConvexManifoldResult { uint eligible,touching,pointCount,inputIndex; float nx,ny,nz; uint contactGeneration;\n"
 	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,scanOffset,contactId;\n"
@@ -1031,6 +1043,112 @@ static const char* b3_metalSource =
 	"  float vb=d5*d2-d1*d6;if(vb<=0.0f&&d2>=0.0f&&d6<=0.0f){float w=d2/(d2-d6);return a+w*ac;}\n"
 	"  float va=d3*d6-d5*d4;if(va<=0.0f&&(d4-d3)>=0.0f&&(d5-d6)>=0.0f){float w=(d4-d3)/((d4-d3)+(d5-d6));return b+w*(c-b);}\n"
 	"  float denom=1.0f/(va+vb+vc),v=vb*denom,w=vc*denom;return a+v*ab+w*ac;}\n"
+	"struct BoxClipVertex { float3 position; float separation; uint feature; };\n"
+	"struct BoxManifold { float3 normal; uint pointCount; BoxClipVertex points[4]; float minSeparation; uint valid; };\n"
+	"uint box_make_feature(uint owner1,uint index1,uint owner2,uint index2){return (owner1<<24u)|(index1<<16u)|(owner2<<8u)|index2;}\n"
+	"uint box_flip_feature(uint feature){uint owner1=feature>>24u,index1=(feature>>16u)&255u,owner2=(feature>>8u)&255u,index2=feature&255u;\n"
+	"  return ((1u-owner2)<<24u)|(index2<<16u)|((1u-owner1)<<8u)|index1;}\n"
+	"float3 box_arbitrary_perp(float3 v){float3 r;if(fabs(v.x)>0.5f)r=float3(0.67f*v.y-0.42f*v.z,-0.67f*v.x,0.42f*v.x);\n"
+	"  else if(fabs(v.y)>0.5f)r=float3(0.67f*v.y,-0.67f*v.x-0.42f*v.z,0.42f*v.y);\n"
+	"  else r=float3(0.67f*v.z,-0.42f*v.z,-0.67f*v.x+0.42f*v.y);return normalize(r);}\n"
+	"uint box_find_incident_face(ShapeGeometry hull,float3 refNormal,uint vertexIndex,const device float4* hullPoints,\n"
+	"                            const device float4* hullPlanes,const device HullEdge* hullEdges){\n"
+	"  uint start=uint(hullPoints[hull.pointOffset+vertexIndex].w),edgeIndex=start,minEdge=0xffffffffu;\n"
+	"  float minProjection=3.40282347e+38f;float3 origin=hullPoints[hull.pointOffset+vertexIndex].xyz;\n"
+	"  for(uint iteration=0u;iteration<8u;++iteration){HullEdge edge=hullEdges[hull.edgeOffset+edgeIndex];\n"
+	"    HullEdge twin=hullEdges[hull.edgeOffset+edge.twin];float3 axis=normalize(hullPoints[hull.pointOffset+twin.origin].xyz-origin);\n"
+	"    float projection=fabs(dot(axis,refNormal));if(projection<minProjection){minProjection=projection;minEdge=edgeIndex;}\n"
+	"    edgeIndex=twin.next;if(edgeIndex==start)break;}\n"
+	"  if(minEdge==0xffffffffu)return 0xffffffffu;HullEdge edge=hullEdges[hull.edgeOffset+minEdge];\n"
+	"  HullEdge twin=hullEdges[hull.edgeOffset+edge.twin];float d1=dot(hullPlanes[hull.planeOffset+edge.face].xyz,refNormal);\n"
+	"  float d2=dot(hullPlanes[hull.planeOffset+twin.face].xyz,refNormal);return d1<d2?edge.face:twin.face;}\n"
+	"uint box_clip_polygon(thread BoxClipVertex* out,thread const BoxClipVertex* polygon,uint count,float3 normal,float offset,\n"
+	"                      uint edgeIndex,float3 refNormal,float refOffset){\n"
+	"  BoxClipVertex vertex1=polygon[count-1u];float distance1=dot(normal,vertex1.position)-offset;uint outCount=0u;\n"
+	"  for(uint index=0u;index<count;++index){BoxClipVertex vertex2=polygon[index];float distance2=dot(normal,vertex2.position)-offset;\n"
+	"    if(distance1<=0.0f&&distance2<=0.0f){if(outCount>=8u)return 9u;out[outCount++]=vertex2;}\n"
+	"    else if(distance1<=0.0f&&distance2>0.0f){float fraction=distance1/(distance1-distance2);BoxClipVertex clipped;\n"
+	"      clipped.position=vertex1.position+fraction*(vertex2.position-vertex1.position);clipped.separation=dot(refNormal,clipped.position)-refOffset;\n"
+	"      clipped.feature=(vertex2.feature&0xffff0000u)|edgeIndex;if(outCount>=8u)return 9u;out[outCount++]=clipped;}\n"
+	"    else if(distance2<=0.0f&&distance1>0.0f){float fraction=distance1/(distance1-distance2);BoxClipVertex clipped;\n"
+	"      clipped.position=vertex1.position+fraction*(vertex2.position-vertex1.position);clipped.separation=dot(refNormal,clipped.position)-refOffset;\n"
+	"      clipped.feature=(vertex1.feature&0x0000ffffu)|(edgeIndex<<16u);if(outCount>=8u)return 9u;out[outCount++]=clipped;\n"
+	"      if(outCount>=8u)return 9u;out[outCount++]=vertex2;}vertex1=vertex2;distance1=distance2;}return outCount;}\n"
+	"void box_reduce(thread BoxManifold& manifold,thread BoxClipVertex* points,uint count,float speculativeDistance){\n"
+	"  if(count<=4u){for(uint j=0u;j<count;++j)manifold.points[j]=points[j];manifold.pointCount=count;return;}\n"
+	"  float bias=0.95f,tolSqr=speculativeDistance*speculativeDistance;float3 search=box_arbitrary_perp(manifold.normal);\n"
+	"  int best=-1;float bestScore=-3.40282347e+38f;for(uint j=0u;j<count;++j){if(points[j].separation>speculativeDistance)continue;\n"
+	"    float score=-points[j].separation+dot(search,points[j].position);if(bias*score>bestScore){best=int(j);bestScore=score;}}\n"
+	"  if(best<0)return;manifold.points[0]=points[best];points[best]=points[count-1u];count-=1u;manifold.pointCount=1u;\n"
+	"  float3 a=manifold.points[0].position;best=-1;bestScore=0.0f;for(uint j=0u;j<count;++j){float3 d=points[j].position-a;\n"
+	"    float3 v=d-dot(d,manifold.normal)*manifold.normal;float separation=max(0.0f,-points[j].separation);\n"
+	"    float score=dot(v,v)+4.0f*separation*separation;if(bias*score>bestScore){best=int(j);bestScore=score;}}\n"
+	"  if(bestScore<tolSqr||best<0)return;manifold.points[1]=points[best];points[best]=points[count-1u];count-=1u;manifold.pointCount=2u;\n"
+	"  float3 b=manifold.points[1].position,ba=b-a;best=-1;bestScore=tolSqr;float bestSignedArea=0.0f;\n"
+	"  for(uint j=0u;j<count;++j){float signedArea=dot(manifold.normal,cross(ba,points[j].position-a));float score=fabs(signedArea);\n"
+	"    if(bias*score>=bestScore){best=int(j);bestScore=score;bestSignedArea=signedArea;}}if(best<0)return;\n"
+	"  manifold.points[2]=points[best];points[best]=points[count-1u];count-=1u;manifold.pointCount=3u;float3 c=manifold.points[2].position;\n"
+	"  best=-1;bestScore=tolSqr;float sign=bestSignedArea<0.0f?-1.0f:1.0f;for(uint j=0u;j<count;++j){float3 q=points[j].position;\n"
+	"    float u1=sign*dot(manifold.normal,cross(q-a,ba));float u2=sign*dot(manifold.normal,cross(q-b,c-b));\n"
+	"    float u3=sign*dot(manifold.normal,cross(q-c,a-c));float score=max(u1,max(u2,u3));if(bias*score>bestScore){best=int(j);bestScore=score;}}\n"
+	"  if(best>=0){manifold.points[3]=points[best];manifold.pointCount=4u;}}\n"
+	"void box_build_face(thread BoxManifold& manifold,ShapeGeometry refHull,ShapeGeometry incHull,float4 incRotation,float3 incPosition,\n"
+	"                    uint refFace,uint incVertex,float speculativeDistance,const device float4* hullPoints,\n"
+	"                    const device float4* hullPlanes,const device HullEdge* hullEdges,const device uint* hullFaces){\n"
+	"  manifold.valid=0u;manifold.pointCount=0u;float4 refPlane=hullPlanes[refHull.planeOffset+refFace];manifold.normal=refPlane.xyz;\n"
+	"  float3 refNormalInInc=inv_rotate(incRotation,refPlane.xyz);uint incFace=box_find_incident_face(incHull,refNormalInInc,incVertex,hullPoints,hullPlanes,hullEdges);\n"
+	"  if(incFace==0xffffffffu)return;thread BoxClipVertex buffer1[8];thread BoxClipVertex buffer2[8];uint start=hullFaces[incHull.planeOffset+incFace];\n"
+	"  uint edgeIndex=start,pointCount=0u;for(uint iteration=0u;iteration<8u;++iteration){HullEdge edge=hullEdges[incHull.edgeOffset+edgeIndex];\n"
+	"    uint nextIndex=edge.next;HullEdge next=hullEdges[incHull.edgeOffset+nextIndex];if(pointCount>=8u)return;BoxClipVertex clipped;\n"
+	"    clipped.position=rotate(incRotation,hullPoints[incHull.pointOffset+next.origin].xyz)+incPosition;\n"
+	"    clipped.separation=dot(refPlane.xyz,clipped.position)-refPlane.w;clipped.feature=box_make_feature(1u,edgeIndex,1u,nextIndex);\n"
+	"    buffer1[pointCount++]=clipped;edgeIndex=nextIndex;if(edgeIndex==start)break;}if(pointCount!=4u)return;\n"
+	"  thread BoxClipVertex* input=buffer1;thread BoxClipVertex* output=buffer2;start=hullFaces[refHull.planeOffset+refFace];edgeIndex=start;\n"
+	"  uint sideCount=0u;for(uint iteration=0u;iteration<8u;++iteration){HullEdge edge=hullEdges[refHull.edgeOffset+edgeIndex];\n"
+	"    uint nextIndex=edge.next;HullEdge next=hullEdges[refHull.edgeOffset+nextIndex];float3 vertex1=hullPoints[refHull.pointOffset+edge.origin].xyz;\n"
+	"    float3 vertex2=hullPoints[refHull.pointOffset+next.origin].xyz;float3 tangent=normalize(vertex2-vertex1);float3 binormal=cross(tangent,refPlane.xyz);\n"
+	"    pointCount=box_clip_polygon(output,input,pointCount,binormal,dot(binormal,vertex1),edgeIndex,refPlane.xyz,refPlane.w);\n"
+	"    if(pointCount<3u||pointCount>8u)return;thread BoxClipVertex* swap=input;input=output;output=swap;edgeIndex=nextIndex;sideCount+=1u;\n"
+	"    if(edgeIndex==start)break;}if(sideCount!=4u)return;float minSeparation=3.40282347e+38f;\n"
+	"  for(uint j=0u;j<pointCount;++j){minSeparation=min(minSeparation,input[j].separation);input[j].position-=0.5f*input[j].separation*refPlane.xyz;}\n"
+	"  manifold.minSeparation=minSeparation;manifold.valid=1u;if(minSeparation>=speculativeDistance)return;\n"
+	"  box_reduce(manifold,input,pointCount,speculativeDistance);}\n"
+	"struct BoxEdgeQuery { float3 normal; float separation; uint indexA,indexB,valid; };\n"
+	"BoxEdgeQuery box_query_edges(ShapeGeometry hullA,ShapeGeometry hullB,float4 rotationB,float3 positionB,\n"
+	"                             const device float4* hullPoints,const device float4* hullPlanes,const device HullEdge* hullEdges,\n"
+	"                             float speculativeDistance){\n"
+	"  BoxEdgeQuery query;query.normal=float3(0.0f);query.separation=-3.40282347e+38f;query.indexA=0u;query.indexB=0u;query.valid=0u;\n"
+	"  const float eps=-0.0001f,squaredTolerance=0.000025f;\n"
+	"  for(uint indexB=0u;indexB<hullB.edgeCount;indexB+=2u){HullEdge edgeB=hullEdges[hullB.edgeOffset+indexB];\n"
+	"    HullEdge twinB=hullEdges[hullB.edgeOffset+edgeB.twin];float3 pointB=hullPoints[hullB.pointOffset+edgeB.origin].xyz;\n"
+	"    float3 edgeVectorB=hullPoints[hullB.pointOffset+twinB.origin].xyz-pointB;float3 c=-rotate(rotationB,hullPlanes[hullB.planeOffset+edgeB.face].xyz);\n"
+	"    float3 d=-rotate(rotationB,hullPlanes[hullB.planeOffset+twinB.face].xyz),dc=-rotate(rotationB,edgeVectorB);\n"
+	"    float3 bv0=-(rotate(rotationB,pointB)+positionB);\n"
+	"    for(uint indexA=0u;indexA<hullA.edgeCount;indexA+=2u){HullEdge edgeA=hullEdges[hullA.edgeOffset+indexA];\n"
+	"      HullEdge twinA=hullEdges[hullA.edgeOffset+edgeA.twin];float3 av0=hullPoints[hullA.pointOffset+edgeA.origin].xyz;\n"
+	"      float3 edgeVectorA=hullPoints[hullA.pointOffset+twinA.origin].xyz-av0;float3 a=hullPlanes[hullA.planeOffset+edgeA.face].xyz;\n"
+	"      float3 b=hullPlanes[hullA.planeOffset+twinA.face].xyz;float cba=dot(c,edgeVectorA),dba=dot(d,edgeVectorA);\n"
+	"      if(cba*dba>=eps)continue;float adc=dot(a,dc),bdc=dot(b,dc);if(adc*bdc>=eps||cba*bdc>=eps)continue;\n"
+	"      if(max(cba*cba,dba*dba)<=squaredTolerance*dot(edgeVectorA,edgeVectorA))continue;float t=-cba/(dba-cba);\n"
+	"      float3 axis=c+t*(d-c);float axisLengthSquared=dot(axis,axis);if(axisLengthSquared<=1000.0f*1.17549435e-38f)continue;\n"
+	"      axis*=rsqrt(axisLengthSquared);float separation=-dot(axis,av0+bv0);\n"
+	"      if(separation>query.separation){query.normal=axis;query.separation=separation;query.indexA=indexA;query.indexB=indexB;query.valid=1u;\n"
+	"        if(separation>speculativeDistance)return query;}}}return query;}\n"
+	"uint box_build_edge(thread BoxManifold& manifold,ShapeGeometry hullA,ShapeGeometry hullB,float4 rotationB,float3 positionB,\n"
+	"                    BoxEdgeQuery query,const device float4* hullPoints,const device HullEdge* hullEdges){\n"
+	"  HullEdge edgeA=hullEdges[hullA.edgeOffset+query.indexA],twinA=hullEdges[hullA.edgeOffset+edgeA.twin];\n"
+	"  HullEdge edgeB=hullEdges[hullB.edgeOffset+query.indexB],twinB=hullEdges[hullB.edgeOffset+edgeB.twin];\n"
+	"  float3 pA=hullPoints[hullA.pointOffset+edgeA.origin].xyz,qA=hullPoints[hullA.pointOffset+twinA.origin].xyz,eA=qA-pA;\n"
+	"  float3 pB=rotate(rotationB,hullPoints[hullB.pointOffset+edgeB.origin].xyz)+positionB;\n"
+	"  float3 qB=rotate(rotationB,hullPoints[hullB.pointOffset+twinB.origin].xyz)+positionB,eB=qB-pB,w=pA-pB;\n"
+	"  float a11=dot(eA,eA),a12=-dot(eA,eB),a21=dot(eB,eA),a22=-dot(eB,eB);\n"
+	"  float b1=-dot(eA,w),b2=-dot(eB,w),det=a11*a22-a12*a21,s1,s2;\n"
+	"  if(det*det<1000.0f*1.17549435e-38f){s1=dot(pB-pA,eA)/a11;s2=0.0f;}\n"
+	"  else{s1=(a22*b1-a12*b2)/det;s2=(a11*b2-a21*b1)/det;}\n"
+	"  if(s1<0.0f||s1>1.0f||s2<0.0f||s2>1.0f)return 0u;float3 pointA=pA+s1*eA,pointB=pB+s2*eB;\n"
+	"  manifold.normal=query.normal;manifold.pointCount=1u;manifold.minSeparation=dot(query.normal,pointB-pointA);manifold.valid=1u;\n"
+	"  manifold.points[0].position=0.5f*(pointA+pointB);manifold.points[0].separation=manifold.minSeparation;\n"
+	"  manifold.points[0].feature=box_make_feature(0u,query.indexA,1u,query.indexB);return 1u;}\n"
 	"kernel void b3_convex_manifolds(const device ConvexManifoldInput* inputs [[buffer(0)]],\n"
 	"                                device ConvexManifoldResult* results [[buffer(1)]],\n"
 	"                                constant ConvexManifoldParams& p [[buffer(2)]],\n"
@@ -1039,6 +1157,8 @@ static const char* b3_metalSource =
 	"                                const device HullTriangle* hullTriangles [[buffer(5)]],\n"
 	"                                const device ShapeGeometry* shapeGeometry [[buffer(6)]],\n"
 	"                                const device BodyTransform* bodyTransforms [[buffer(7)]],\n"
+	"                                const device HullEdge* hullEdges [[buffer(8)]],\n"
+	"                                const device uint* hullFaces [[buffer(9)]],\n"
 	"                                uint i [[thread_position_in_grid]]) {\n"
 	"  if(i>=p.contactCount)return; ConvexManifoldInput in=inputs[i]; ConvexManifoldResult out={};out.inputIndex=i;\n"
 	"  if(in.eligible==0u){results[i]=out;return;} out.eligible=1u;\n"
@@ -1061,6 +1181,41 @@ static const char* b3_metalSource =
 	"  float3 a1=float3(geometryA.point1X,geometryA.point1Y,geometryA.point1Z),a2=float3(geometryA.point2X,geometryA.point2Y,geometryA.point2Z);\n"
 	"  float3 b1=rotate(relativeRotation,float3(geometryB.point1X,geometryB.point1Y,geometryB.point1Z))+relativePosition;\n"
 	"  float3 b2=rotate(relativeRotation,float3(geometryB.point2X,geometryB.point2Y,geometryB.point2Z))+relativePosition;\n"
+	"  if(geometryA.type==3u&&geometryB.type==3u){\n"
+	"    if(geometryA.pointCount!=8u||geometryA.planeCount!=6u||geometryA.edgeCount!=24u||\n"
+	"       geometryB.pointCount!=8u||geometryB.planeCount!=6u||geometryB.edgeCount!=24u){out.eligible=0u;results[i]=out;return;}\n"
+	"    if(transformA.index>=0&&transformB.index>=0){out.eligible=0u;results[i]=out;return;}\n"
+	"    float3 lowerA=float3(3.40282347e+38f),upperA=float3(-3.40282347e+38f),lowerB=lowerA,upperB=upperA;\n"
+	"    for(uint pointIndex=0u;pointIndex<8u;++pointIndex){float3 pointA=hullPoints[geometryA.pointOffset+pointIndex].xyz;float3 pointB=hullPoints[geometryB.pointOffset+pointIndex].xyz;\n"
+	"      lowerA=min(lowerA,pointA);upperA=max(upperA,pointA);lowerB=min(lowerB,pointB);upperB=max(upperB,pointB);}\n"
+	"    if(any(fabs((upperA-lowerA)-(upperB-lowerB))>float3(p.linearSlop))){out.eligible=0u;results[i]=out;return;}\n"
+	"    float faceASeparation=-3.40282347e+38f,faceBSeparation=-3.40282347e+38f;uint faceA=0u,vertexB=0u,faceB=0u,vertexA=0u;\n"
+	"    for(uint face=0u;face<geometryA.planeCount;++face){float4 plane=hullPlanes[geometryA.planeOffset+face];\n"
+	"      float separation=3.40282347e+38f;uint support=0u;for(uint pointIndex=0u;pointIndex<geometryB.pointCount;++pointIndex){\n"
+	"        float3 point=rotate(relativeRotation,hullPoints[geometryB.pointOffset+pointIndex].xyz)+relativePosition;float value=dot(plane.xyz,point)-plane.w;\n"
+	"        if(value<separation){separation=value;support=pointIndex;}}if(separation>faceASeparation){faceASeparation=separation;faceA=face;vertexB=support;}}\n"
+	"    for(uint face=0u;face<geometryB.planeCount;++face){float4 plane=hullPlanes[geometryB.planeOffset+face];float3 normal=rotate(relativeRotation,plane.xyz);\n"
+	"      float offset=plane.w+dot(normal,relativePosition),separation=3.40282347e+38f;uint support=0u;\n"
+	"      for(uint pointIndex=0u;pointIndex<geometryA.pointCount;++pointIndex){float value=dot(normal,hullPoints[geometryA.pointOffset+pointIndex].xyz)-offset;\n"
+	"        if(value<separation){separation=value;support=pointIndex;}}if(separation>faceBSeparation){faceBSeparation=separation;faceB=face;vertexA=support;}}\n"
+	"    if(faceASeparation>p.speculativeDistance||faceBSeparation>p.speculativeDistance){results[i]=out;return;}\n"
+	"    BoxEdgeQuery edgeQuery=box_query_edges(geometryA,geometryB,relativeRotation,relativePosition,hullPoints,hullPlanes,hullEdges,p.speculativeDistance);\n"
+	"    if(edgeQuery.valid!=0u&&edgeQuery.separation>p.speculativeDistance){results[i]=out;return;}BoxManifold manifold={};\n"
+	"    if(faceASeparation>faceBSeparation){box_build_face(manifold,geometryA,geometryB,relativeRotation,relativePosition,faceA,vertexB,p.speculativeDistance,hullPoints,hullPlanes,hullEdges,hullFaces);}\n"
+	"    else{float4 inverseRotation=float4(-relativeRotation.xyz,relativeRotation.w);float3 inversePosition=inv_rotate(relativeRotation,-relativePosition);\n"
+	"      box_build_face(manifold,geometryB,geometryA,inverseRotation,inversePosition,faceB,vertexA,p.speculativeDistance,hullPoints,hullPlanes,hullEdges,hullFaces);\n"
+	"      if(manifold.valid!=0u){manifold.normal=-rotate(relativeRotation,manifold.normal);for(uint j=0u;j<manifold.pointCount;++j){\n"
+	"        manifold.points[j].position=rotate(relativeRotation,manifold.points[j].position)+relativePosition;manifold.points[j].feature=box_flip_feature(manifold.points[j].feature);}}}\n"
+	"    if(edgeQuery.valid!=0u&&(manifold.pointCount==0u||edgeQuery.separation>manifold.minSeparation+p.linearSlop)){\n"
+	"      BoxManifold edgeManifold={};if(box_build_edge(edgeManifold,geometryA,geometryB,relativeRotation,relativePosition,edgeQuery,hullPoints,hullEdges)!=0u)manifold=edgeManifold;}\n"
+	"    if(manifold.valid==0u){out.eligible=0u;results[i]=out;return;}\n"
+	"    if(manifold.pointCount==0u){results[i]=out;return;}out.touching=1u;out.pointCount=manifold.pointCount;\n"
+	"    out.nx=manifold.normal.x;out.ny=manifold.normal.y;out.nz=manifold.normal.z;BoxClipVertex point=manifold.points[0];\n"
+	"    out.p1x=point.position.x;out.p1y=point.position.y;out.p1z=point.position.z;out.separation1=point.separation;out.feature1=point.feature;\n"
+	"    if(manifold.pointCount>1u){point=manifold.points[1];out.p2x=point.position.x;out.p2y=point.position.y;out.p2z=point.position.z;out.separation2=point.separation;out.feature2=point.feature;}\n"
+	"    if(manifold.pointCount>2u){point=manifold.points[2];out.p3x=point.position.x;out.p3y=point.position.y;out.p3z=point.position.z;out.separation3=point.separation;out.feature3=point.feature;}\n"
+	"    if(manifold.pointCount>3u){point=manifold.points[3];out.p4x=point.position.x;out.p4y=point.position.y;out.p4z=point.position.z;out.separation4=point.separation;out.feature4=point.feature;}\n"
+	"    results[i]=out;return;}\n"
 	"  if(geometryA.type==3u){ShapeGeometry hull=geometryA;\n"
 	"    float bestPlane=-3.40282347e+38f;float3 bestNormal=float3(0.0f,1.0f,0.0f);uint bestFace=0u;\n"
 	"    for(uint j=0u;j<hull.planeCount;++j){float4 plane=hullPlanes[hull.planeOffset+j];float separation=dot(plane.xyz,b1)-plane.w;\n"
@@ -1921,6 +2076,8 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->convexHullPointBuffer release];
 	[context->convexHullPlaneBuffer release];
 	[context->convexHullTriangleBuffer release];
+	[context->convexHullEdgeBuffer release];
+	[context->convexHullFaceBuffer release];
 	[context->convexShapeGeometryBuffer release];
 	[context->convexBodyTransformBuffer release];
 	[context->contactConstraintBuffer release];
@@ -2178,7 +2335,7 @@ static bool b3MetalEnsureConvexManifoldCapacity( b3MetalContext* context, NSUInt
 }
 
 static bool b3MetalEnsureShapeGeometryCapacity( b3MetalContext* context, int recordCount, NSUInteger hullPointBytes,
-	NSUInteger hullPlaneBytes, NSUInteger hullTriangleBytes )
+	NSUInteger hullPlaneBytes, NSUInteger hullTriangleBytes, NSUInteger hullEdgeBytes, NSUInteger hullFaceBytes )
 {
 	if ( recordCount < 0 || (NSUInteger)recordCount > NSUIntegerMax / sizeof( b3MetalShapeGeometry ) ) return false;
 	NSUInteger recordBytes = (NSUInteger)recordCount * sizeof( b3MetalShapeGeometry );
@@ -2196,6 +2353,8 @@ static bool b3MetalEnsureShapeGeometryCapacity( b3MetalContext* context, int rec
 	hullPointBytes = hullPointBytes > sizeof( b3MetalFloat4 ) ? hullPointBytes : sizeof( b3MetalFloat4 );
 	hullPlaneBytes = hullPlaneBytes > sizeof( b3MetalFloat4 ) ? hullPlaneBytes : sizeof( b3MetalFloat4 );
 	hullTriangleBytes = hullTriangleBytes > sizeof( b3MetalHullTriangle ) ? hullTriangleBytes : sizeof( b3MetalHullTriangle );
+	hullEdgeBytes = hullEdgeBytes > sizeof( b3MetalHullEdge ) ? hullEdgeBytes : sizeof( b3MetalHullEdge );
+	hullFaceBytes = hullFaceBytes > sizeof( uint32_t ) ? hullFaceBytes : sizeof( uint32_t );
 	if ( context->convexHullPointCapacity < hullPointBytes )
 	{
 		NSUInteger capacity = context->convexHullPointCapacity > 0 ? context->convexHullPointCapacity : 4096;
@@ -2225,6 +2384,26 @@ static bool b3MetalEnsureShapeGeometryCapacity( b3MetalContext* context, int rec
 		[context->convexHullTriangleBuffer release];
 		context->convexHullTriangleBuffer = buffer;
 		context->convexHullTriangleCapacity = capacity;
+	}
+	if ( context->convexHullEdgeCapacity < hullEdgeBytes )
+	{
+		NSUInteger capacity = context->convexHullEdgeCapacity > 0 ? context->convexHullEdgeCapacity : 4096;
+		while ( capacity < hullEdgeBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->convexHullEdgeBuffer release];
+		context->convexHullEdgeBuffer = buffer;
+		context->convexHullEdgeCapacity = capacity;
+	}
+	if ( context->convexHullFaceCapacity < hullFaceBytes )
+	{
+		NSUInteger capacity = context->convexHullFaceCapacity > 0 ? context->convexHullFaceCapacity : 4096;
+		while ( capacity < hullFaceBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->convexHullFaceBuffer release];
+		context->convexHullFaceBuffer = buffer;
+		context->convexHullFaceCapacity = capacity;
 	}
 	return true;
 }
@@ -3961,7 +4140,7 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 	}
 }
 
-static bool b3MetalSupportsHull( const b3Shape* shape )
+static bool b3MetalHasValidHullTopology( const b3Shape* shape )
 {
 	if ( shape->type != b3_hullShape || shape->hull == NULL ) return false;
 	const b3HullData* hull = shape->hull;
@@ -3971,12 +4150,46 @@ static bool b3MetalSupportsHull( const b3Shape* shape )
 	{
 		return false;
 	}
+	return true;
+}
+
+static bool b3MetalSupportsHull( const b3Shape* shape )
+{
+	if ( b3MetalHasValidHullTopology( shape ) == false ) return false;
+	const b3HullData* hull = shape->hull;
 	b3Vec3 extent = b3Sub( hull->aabb.upperBound, hull->aabb.lowerBound );
 	float minExtent = b3MinFloat( extent.x, b3MinFloat( extent.y, extent.z ) );
 	float maxExtent = b3MaxFloat( extent.x, b3MaxFloat( extent.y, extent.z ) );
 	// Boundary-triangle closest points are stable for ordinary compact hulls.
 	// High-aspect hulls retain GJK on CPU until that exact simplex path is ported.
 	return minExtent > B3_LINEAR_SLOP && maxExtent <= 16.0f * minExtent;
+}
+
+static bool b3MetalSupportsBoxHull( const b3Shape* shape )
+{
+	if ( b3MetalHasValidHullTopology( shape ) == false ) return false;
+	const b3HullData* hull = shape->hull;
+	// Restrict the first hull-hull path to the canonical Box3D box allocation and topology.
+	// Generic eight-vertex hulls stay on the CPU until the full hull SAT path is ported.
+	return hull->vertexCount == 8 && hull->faceCount == 6 && hull->edgeCount == 24 &&
+		hull->byteCount == (int32_t)sizeof( b3BoxHull ) && hull->vertexOffset == (int32_t)offsetof( b3BoxHull, boxVertices ) &&
+		hull->pointOffset == (int32_t)offsetof( b3BoxHull, boxPoints ) && hull->edgeOffset == (int32_t)offsetof( b3BoxHull, boxEdges ) &&
+		hull->planeOffset == (int32_t)offsetof( b3BoxHull, boxPlanes ) && hull->faceOffset == (int32_t)offsetof( b3BoxHull, boxFaces );
+}
+
+static bool b3MetalSupportsBoxPair( const b3World* world, const b3Shape* shapeA, const b3Shape* shapeB )
+{
+	if ( world == NULL || b3MetalSupportsBoxHull( shapeA ) == false || b3MetalSupportsBoxHull( shapeB ) == false ||
+		shapeA->bodyId < 0 || shapeA->bodyId >= world->bodies.count || shapeB->bodyId < 0 || shapeB->bodyId >= world->bodies.count )
+	{
+		return false;
+	}
+	const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
+	const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
+	if ( ( bodyA->type == b3_staticBody ) == ( bodyB->type == b3_staticBody ) ) return false;
+	b3Vec3 extentA = b3Sub( shapeA->hull->aabb.upperBound, shapeA->hull->aabb.lowerBound );
+	b3Vec3 extentB = b3Sub( shapeB->hull->aabb.upperBound, shapeB->hull->aabb.lowerBound );
+	return b3LengthSquared( b3Sub( extentA, extentB ) ) <= B3_LINEAR_SLOP * B3_LINEAR_SLOP;
 }
 
 static bool b3MetalSupportsHullSphere( const b3Shape* shapeA, const b3Shape* shapeB )
@@ -4030,11 +4243,17 @@ static bool b3MetalEnsureShapeGeometryRegistry( b3MetalContext* context, const b
 	uint64_t hullPointCount = 0;
 	uint64_t hullPlaneCount = 0;
 	uint64_t hullTriangleCount = 0;
+	uint64_t hullEdgeCount = 0;
+	uint64_t hullFaceCount = 0;
 	bool valid = true;
 	for ( int shapeIndex = 0; shapeIndex < shapeCount; ++shapeIndex )
 	{
 		const b3Shape* shape = world->shapes.data + shapeIndex;
-		if ( shape->id != shapeIndex || b3MetalSupportsHull( shape ) == false ) continue;
+		if ( shape->id != shapeIndex ||
+			( b3MetalSupportsHull( shape ) == false && b3MetalSupportsBoxHull( shape ) == false ) )
+		{
+			continue;
+		}
 		supportedShapeCount += 1;
 		const b3HullData* hull = shape->hull;
 		b3HullMap_itr itr = b3HullMap_get_or_insert( &hullMap, hull, uniqueCount );
@@ -4051,7 +4270,10 @@ static bool b3MetalEnsureShapeGeometryRegistry( b3MetalContext* context, const b
 		hullPointCount += (uint32_t)hull->vertexCount;
 		hullPlaneCount += (uint32_t)hull->faceCount;
 		hullTriangleCount += (uint32_t)triangleCount;
-		if ( hullPointCount > UINT32_MAX || hullPlaneCount > UINT32_MAX || hullTriangleCount > UINT32_MAX )
+		hullEdgeCount += (uint32_t)hull->edgeCount;
+		hullFaceCount += (uint32_t)hull->faceCount;
+		if ( hullPointCount > UINT32_MAX || hullPlaneCount > UINT32_MAX || hullTriangleCount > UINT32_MAX ||
+			 hullEdgeCount > UINT32_MAX || hullFaceCount > UINT32_MAX )
 		{
 			valid = false;
 			break;
@@ -4061,15 +4283,19 @@ static bool b3MetalEnsureShapeGeometryRegistry( b3MetalContext* context, const b
 
 	if ( valid && ( hullPointCount > NSUIntegerMax / sizeof( b3MetalFloat4 ) ||
 					 hullPlaneCount > NSUIntegerMax / sizeof( b3MetalFloat4 ) ||
-					 hullTriangleCount > NSUIntegerMax / sizeof( b3MetalHullTriangle ) ) )
+					 hullTriangleCount > NSUIntegerMax / sizeof( b3MetalHullTriangle ) ||
+					 hullEdgeCount > NSUIntegerMax / sizeof( b3MetalHullEdge ) ||
+					 hullFaceCount > NSUIntegerMax / sizeof( uint32_t ) ) )
 	{
 		valid = false;
 	}
 	NSUInteger hullPointBytes = (NSUInteger)hullPointCount * sizeof( b3MetalFloat4 );
 	NSUInteger hullPlaneBytes = (NSUInteger)hullPlaneCount * sizeof( b3MetalFloat4 );
 	NSUInteger hullTriangleBytes = (NSUInteger)hullTriangleCount * sizeof( b3MetalHullTriangle );
+	NSUInteger hullEdgeBytes = (NSUInteger)hullEdgeCount * sizeof( b3MetalHullEdge );
+	NSUInteger hullFaceBytes = (NSUInteger)hullFaceCount * sizeof( uint32_t );
 	if ( valid == false || b3MetalEnsureShapeGeometryCapacity( context, shapeCount, hullPointBytes, hullPlaneBytes,
-			hullTriangleBytes ) == false )
+			hullTriangleBytes, hullEdgeBytes, hullFaceBytes ) == false )
 	{
 		free( shapeUniqueIndices );
 		free( uniqueHulls );
@@ -4083,13 +4309,18 @@ static bool b3MetalEnsureShapeGeometryRegistry( b3MetalContext* context, const b
 	b3MetalFloat4* hullPoints = context->convexHullPointBuffer.contents;
 	b3MetalFloat4* hullPlanes = context->convexHullPlaneBuffer.contents;
 	b3MetalHullTriangle* hullTriangles = context->convexHullTriangleBuffer.contents;
+	b3MetalHullEdge* hullEdges = context->convexHullEdgeBuffer.contents;
+	uint32_t* hullFaces = context->convexHullFaceBuffer.contents;
 	uint32_t hullPointCursor = 0;
 	uint32_t hullPlaneCursor = 0;
 	uint32_t hullTriangleCursor = 0;
+	uint32_t hullEdgeCursor = 0;
+	uint32_t hullFaceCursor = 0;
 	for ( int uniqueIndex = 0; uniqueIndex < uniqueCount; ++uniqueIndex )
 	{
 		const b3HullData* hull = uniqueHulls[uniqueIndex];
 		const b3Vec3* points = b3GetHullPoints( hull );
+		const b3HullVertex* vertices = b3GetHullVertices( hull );
 		const b3Plane* planes = b3GetHullPlanes( hull );
 		const b3HullFace* faces = b3GetHullFaces( hull );
 		const b3HullHalfEdge* edges = b3GetHullEdges( hull );
@@ -4099,8 +4330,9 @@ static bool b3MetalEnsureShapeGeometryRegistry( b3MetalContext* context, const b
 		record->pointCount = (uint32_t)hull->vertexCount;
 		for ( int pointIndex = 0; pointIndex < hull->vertexCount; ++pointIndex )
 		{
-			hullPoints[hullPointCursor++] =
-				(b3MetalFloat4){ points[pointIndex].x, points[pointIndex].y, points[pointIndex].z, 0.0f };
+			hullPoints[hullPointCursor++] = (b3MetalFloat4){
+				points[pointIndex].x, points[pointIndex].y, points[pointIndex].z, (float)vertices[pointIndex].edge,
+			};
 		}
 		record->planeOffset = hullPlaneCursor;
 		record->planeCount = (uint32_t)hull->faceCount;
@@ -4127,6 +4359,18 @@ static bool b3MetalEnsureShapeGeometryRegistry( b3MetalContext* context, const b
 			}
 		}
 		record->triangleCount = hullTriangleCursor - record->triangleOffset;
+		record->edgeOffset = hullEdgeCursor;
+		record->edgeCount = (uint32_t)hull->edgeCount;
+		for ( int edgeIndex = 0; edgeIndex < hull->edgeCount; ++edgeIndex )
+		{
+			hullEdges[hullEdgeCursor++] = (b3MetalHullEdge){
+				edges[edgeIndex].origin, edges[edgeIndex].twin, edges[edgeIndex].next, edges[edgeIndex].face,
+			};
+		}
+		for ( int faceIndex = 0; faceIndex < hull->faceCount; ++faceIndex )
+		{
+			hullFaces[hullFaceCursor++] = faces[faceIndex].edge;
+		}
 		record->supported = 1;
 	}
 
@@ -4181,6 +4425,8 @@ static bool b3MetalEnsureShapeGeometryRegistry( b3MetalContext* context, const b
 	B3_ASSERT( hullPointCursor == hullPointCount );
 	B3_ASSERT( hullPlaneCursor == hullPlaneCount );
 	B3_ASSERT( hullTriangleCursor == hullTriangleCount );
+	B3_ASSERT( hullEdgeCursor == hullEdgeCount );
+	B3_ASSERT( hullFaceCursor == hullFaceCount );
 	context->convexShapeGeometryCount = shapeCount;
 	context->convexShapeGeometryRevision = world->metalPairShapeRevision;
 	context->convexShapeMaterialRevision = world->metalContactMaterialRevision;
@@ -4474,7 +4720,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 				bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
 					( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
 					( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
-					b3MetalSupportsHullSphere( shapeA, shapeB );
+					b3MetalSupportsHullSphere( shapeA, shapeB ) || b3MetalSupportsBoxPair( world, shapeA, shapeB );
 				candidateCount += eligible;
 				hitEventContactCount += eligible && ( ( shapeA->flags & b3_enableHitEvents ) != 0 ||
 					( shapeB->flags & b3_enableHitEvents ) != 0 );
@@ -4535,7 +4781,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 				bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
 					( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
 					( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
-					b3MetalSupportsHullSphere( shapeA, shapeB );
+					b3MetalSupportsHullSphere( shapeA, shapeB ) || b3MetalSupportsBoxPair( world, shapeA, shapeB );
 				if ( eligible == false ) continue;
 				if ( ( shapeA->flags & b3_enableHitEvents ) != 0 || ( shapeB->flags & b3_enableHitEvents ) != 0 )
 				{
@@ -4622,6 +4868,8 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		[encoder setBuffer:context->convexHullTriangleBuffer offset:0 atIndex:5];
 		[encoder setBuffer:context->convexShapeGeometryBuffer offset:0 atIndex:6];
 		[encoder setBuffer:context->convexBodyTransformBuffer offset:0 atIndex:7];
+		[encoder setBuffer:context->convexHullEdgeBuffer offset:0 atIndex:8];
+		[encoder setBuffer:context->convexHullFaceBuffer offset:0 atIndex:9];
 		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
 		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -4665,7 +4913,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		if ( commandBuffer.status != MTLCommandBufferStatusCompleted ) return false;
 		const b3MetalPairSummary* summary = context->convexManifoldSummaryBuffer.contents;
 		uint64_t resultLimit = residentBypassCountOut != NULL ? (uint64_t)contactCount : (uint64_t)candidateCount;
-		if ( (uint64_t)summary->writeFlags > 2ull * summary->flags || summary->totalCount > resultLimit ||
+		if ( (uint64_t)summary->writeFlags > 4ull * summary->flags || summary->totalCount > resultLimit ||
 			 summary->totalCount > INT32_MAX ||
 			 summary->flags > (uint32_t)candidateCount ||
 			 ( residentBypassCountOut != NULL && summary->totalCount + summary->flags != (uint64_t)contactCount ) )
@@ -4680,7 +4928,8 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		for ( int i = 0; i < resultCount; ++i )
 		{
 			uint32_t persistedBits = completedResults[i].persistedBits;
-			persistenceMatchCount += ( persistedBits & 1u ) + ( ( persistedBits >> 1 ) & 1u );
+			persistenceMatchCount += ( persistedBits & 1u ) + ( ( persistedBits >> 1 ) & 1u ) +
+				( ( persistedBits >> 2 ) & 1u ) + ( ( persistedBits >> 3 ) & 1u );
 			prepareDeviceRefreshCount += ( completedResults[i].residentFlags & 2u ) != 0;
 		}
 		( (b3World*)world )->metalContactPersistenceMatchCount += persistenceMatchCount;

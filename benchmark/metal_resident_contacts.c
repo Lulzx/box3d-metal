@@ -5,8 +5,9 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
-static b3WorldId CreateResidentContactWorld( int contactCount, int workerCount, bool enableMetal )
+static b3WorldId CreateResidentContactWorld( int contactCount, int workerCount, bool enableMetal, bool useBoxes )
 {
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.gravity = b3Vec3_zero;
@@ -28,6 +29,7 @@ static b3WorldId CreateResidentContactWorld( int contactCount, int workerCount, 
 	b3World_SetContactRecycleDistance( worldId, 0.0f );
 
 	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3BoxHull box = b3MakeBoxHull( 0.5f, 0.5f, 0.5f );
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
 	shapeDef.baseMaterial.friction = 0.6f;
 	shapeDef.baseMaterial.rollingResistance = 0.05f;
@@ -36,14 +38,21 @@ static b3WorldId CreateResidentContactWorld( int contactCount, int workerCount, 
 		b3BodyDef staticDef = b3DefaultBodyDef();
 		staticDef.position = (b3Pos){ 0.0, 0.0, 3.0 * (double)i };
 		b3BodyId staticBody = b3CreateBody( worldId, &staticDef );
-		b3CreateSphereShape( staticBody, &shapeDef, &sphere );
+		if ( useBoxes )
+			b3CreateHullShape( staticBody, &shapeDef, &box.base );
+		else
+			b3CreateSphereShape( staticBody, &shapeDef, &sphere );
 
 		b3BodyDef dynamicDef = b3DefaultBodyDef();
 		dynamicDef.type = b3_dynamicBody;
 		dynamicDef.enableSleep = false;
-		dynamicDef.position = (b3Pos){ 0.99, 0.0, 3.0 * (double)i };
+		dynamicDef.position = useBoxes ? (b3Pos){ 0.0, 0.99, 3.0 * (double)i }
+								   : (b3Pos){ 0.99, 0.0, 3.0 * (double)i };
 		b3BodyId dynamicBody = b3CreateBody( worldId, &dynamicDef );
-		b3CreateSphereShape( dynamicBody, &shapeDef, &sphere );
+		if ( useBoxes )
+			b3CreateHullShape( dynamicBody, &shapeDef, &box.base );
+		else
+			b3CreateSphereShape( dynamicBody, &shapeDef, &sphere );
 	}
 	return worldId;
 }
@@ -67,12 +76,15 @@ int main( void )
 	const int workerCount = 8;
 	const char* countText = getenv( "BOX3D_METAL_RESIDENT_CONTACT_COUNT" );
 	const char* repeatText = getenv( "BOX3D_METAL_RESIDENT_CONTACT_REPEATS" );
+	const char* shapeText = getenv( "BOX3D_METAL_RESIDENT_CONTACT_SHAPE" );
+	bool useBoxes = shapeText != NULL && strcmp( shapeText, "box" ) == 0;
 	int requestedCount = countText != NULL ? atoi( countText ) : 0;
 	int requestedRepeats = repeatText != NULL ? atoi( repeatText ) : 0;
 	const int counts[] = { 512, 2048, 8192, 32768, 65536 };
 	int testCount = requestedCount > 0 ? 1 : (int)( sizeof( counts ) / sizeof( counts[0] ) );
 
-	printf( "# operation=whole_world_resident_sphere_contacts substeps=4 workers=%d timing=wall_clock_step\n", workerCount );
+	printf( "# operation=whole_world_resident_%s_contacts substeps=4 workers=%d timing=wall_clock_step\n",
+		useBoxes ? "box" : "sphere", workerCount );
 	printf( "contacts,repeats,cpu_ms,gpu_ms,speedup,prepare_dispatches,device_prepare_refreshes,collision_bypasses,cpu_collision_"
 			"contacts,last_collision_exceptions,manifold_exception_bytes,input_packs,input_reuses,last_input_bytes,coverage_"
 			"bypasses,state_walk_bypasses,last_state_clear_bytes,hit_clear_bypasses,last_hit_clear_bytes,awake_island_clear_"
@@ -88,11 +100,11 @@ int main( void )
 					  : contactCount <= 8192  ? 20
 					  : contactCount <= 32768 ? 8
 											  : 4;
-		b3WorldId cpuWorld = CreateResidentContactWorld( contactCount, workerCount, false );
+		b3WorldId cpuWorld = CreateResidentContactWorld( contactCount, workerCount, false, useBoxes );
 		double cpuMs = TimeWorld( cpuWorld, 8, repeats );
 		b3DestroyWorld( cpuWorld );
 
-		b3WorldId gpuWorld = CreateResidentContactWorld( contactCount, workerCount, true );
+		b3WorldId gpuWorld = CreateResidentContactWorld( contactCount, workerCount, true, useBoxes );
 		if ( B3_IS_NULL( gpuWorld ) )
 		{
 			fprintf( stderr, "Metal initialization failed\n" );

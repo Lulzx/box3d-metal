@@ -104,7 +104,7 @@ awake-shape result set. Compatibility routes apply the flat result after body
 bookkeeping; private routes leave the CPU AABB mirror stale until a query or
 fallback explicitly synchronizes it. `finalizationShapeTraversalBypassCount`
 reports those phases. On the unconstrained route and the contact-only route with
-complete resident sphere/capsule/hull-sphere collision and preparation coverage,
+complete resident sphere/capsule/hull-sphere or admitted canonical box-pair collision and preparation coverage,
 the entire contiguous CPU body bookkeeping walk is also omitted. Mesh, overflow,
 joint, callback, hit-event, topology-exception, sleep, and CCD routes retain it.
 
@@ -299,7 +299,7 @@ When it is unchanged, the input/order buffer is reused without gathering graph
 contact IDs or writing CPU records. The MSL kernel follows shape-to-body ids to
 load current transforms, body indices, and transient fast flags directly.
 
-Full 160-byte narrow-phase outputs are private. A deterministic 256-lane block
+Full 240-byte narrow-phase outputs are private. A deterministic 256-lane block
 scan, serial block prefix, and parallel scatter classify stable resident
 contacts separately from ordered CPU exceptions in the same command buffer.
 Every supported result is finalized into the private contact-ID table, while
@@ -379,7 +379,7 @@ the private contact-id table and writes the existing 1,696-byte SIMD-wide
 constraint ABI. Finalized anchors, point persistence, default materials, tangent
 velocity, and normal warm starts come from the private result. Body indices,
 custom callback results, contact-scope impulses, and manifold storage identity are retained in a
-generation-tagged 152-byte shared table indexed by contact ID. The CPU seeds a
+generation-tagged 224-byte shared table indexed by contact ID. The CPU seeds a
 record when a contact first becomes eligible. On later generation-stable steps,
 the manifold scatter validates the prior impulse and preparation records, then
 refreshes the table in place with current body indices, finalized anchors and
@@ -397,10 +397,10 @@ CPU convex preparation is rerun before the CPU solver fallback. This removes
 CPU preparation arithmetic plus the dedicated solver-time contact traversal and
 144-byte lane stream. CPU manifold allocation, custom callbacks, exceptional table writes,
 the graph-color schedule, events, and topology remain.
-The 80-byte post-solve record carries contact generation plus each point's
+The 112-byte post-solve record carries contact generation plus each point's
 feature ID. The next manifold scatter validates contact identity and generation,
 claims matching features in upstream order, and writes normal impulses and
-persistence bits into the 160-byte finalized record. Friction, twist, and rolling
+persistence bits into the 240-byte finalized record. Friction, twist, and rolling
 warm-start terms are restored at contact scope. A recycled contact slot with a
 different generation cannot inherit the old result.
 Successful resident solves now skip the all-contact CPU impulse-store walk.
@@ -429,8 +429,8 @@ paths, not yet the final performance architecture.
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 | Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
-| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere geometry, COM-relative anchors, point persistence/warm-start matching, default material mixing, and tangent velocity are finalized on Metal. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Ordered callback/topology/first-touch exceptions retain the CPU path. Lazy CPU mirrors synchronize only at explicit boundaries. CPU retains cold/revision packing, manifold allocation, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, other hull pairs, meshes, height fields, and compounds remain CPU |
-| Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts an 80-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
+| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and equal canonical box pairs with exactly one static body are finalized on Metal. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Ordered callback/topology/first-touch exceptions retain the CPU path. Lazy CPU mirrors synchronize only at explicit boundaries. CPU retains cold/revision packing, manifold allocation, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, unequal or dynamic-dynamic boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
+| Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts a 112-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
 | Double-precision world positions | VF64 exact add plus directed narrowing produces conservative far-world AABBs on Metal |
