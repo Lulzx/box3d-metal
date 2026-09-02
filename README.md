@@ -32,8 +32,12 @@ Double-precision worlds use VF64 software binary64 for exact world translation
 and directed float AABB narrowing on Metal. Across unchanged resident steps,
 the prior Metal fat bounds are now the authoritative containment input; any
 CPU tree revision invalidates that state and reseeds it from the CPU oracle.
+The full 64-byte shape result now lives in private Metal storage. Collision-free
+non-CCD worlds with contact masks disabled do not blit or apply that stream;
+public AABB queries stage only the requested 64-byte record, while route changes
+and Metal disable synchronize the remaining results explicitly.
 The stages remain off by default;
-CPU shape bookkeeping/readback is still a regression, while GPU tree traversal
+per-step CPU shape-input packing is still a regression, while GPU tree traversal
 crosses over only in large measured worlds.
 See [the architecture and compatibility contract](docs/metal_architecture.md)
 for the exact supported surface and current CPU-only stages.

@@ -579,6 +579,10 @@ bool b3World_SetMetalFinalization( b3WorldId worldId, bool enabled )
 		return false;
 	}
 
+	if ( enabled == false )
+	{
+		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false ) return false;
+	}
 	world->metalFinalizationEnabled = enabled;
 	return true;
 }
@@ -593,6 +597,7 @@ bool b3World_SetMetalBroadPhase( b3WorldId worldId, bool enabled )
 
 	if ( world->metalBroadPhaseEnabled && enabled == false )
 	{
+		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false ) return false;
 		// Metal pair traversal deliberately retains enlarged CPU tree nodes while
 		// its resident snapshot is refit on-device. Restore the ordinary CPU tree
 		// invariant before returning control to the CPU broad-phase.
@@ -613,7 +618,20 @@ void b3World_DisableMetal( b3WorldId worldId )
 
 	if ( world->metalBroadPhaseEnabled )
 	{
+		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
+		{
+			b3Log( "Box3D Metal disable kept the context because shape-bound readback failed\n" );
+			return;
+		}
 		b3BroadPhase_RebuildTrees( world );
+	}
+	else
+	{
+		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
+		{
+			b3Log( "Box3D Metal disable kept the context because shape-bound readback failed\n" );
+			return;
+		}
 	}
 
 	b3MetalDestroyContext( world->metalContext );
@@ -649,6 +667,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.shapeFallbackCount = world->metalShapeFallbackCount;
 	profile.shapeCompactDispatchCount = world->metalShapeCompactDispatchCount;
 	profile.shapeBoundsResidentDispatchCount = world->metalShapeBoundsResidentDispatchCount;
+	profile.shapeResultApplyCount = world->metalShapeResultApplyCount;
+	profile.shapeBoundsSyncCount = world->metalShapeBoundsSyncCount;
 	profile.lastShapeResultCount = world->metalLastShapeResultCount;
 	profile.lastEnlargedShapeResultCount = world->metalLastEnlargedShapeResultCount;
 	profile.pairDispatchCount = world->metalPairDispatchCount;
@@ -1169,6 +1189,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	{
 		return;
 	}
+
+#if defined( BOX3D_METAL )
+	// A revision-stable, collision-free non-CCD world may deliberately leave
+	// current shape AABBs resident. Any route expansion or CPU mutation fails
+	// closed before the next step can consume those mirrors.
+	if ( world->metalShapeCpuBoundsStale &&
+		( world->broadPhase.treeRevision != world->metalShapeCpuStaleRevision || world->enableContinuous ||
+		  world->contacts.count != 0 || world->sensors.count != 0 ) )
+	{
+		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
+		{
+			b3Log( "Box3D Metal step skipped because shape-bound readback failed\n" );
+			return;
+		}
+	}
+#endif
 
 	B3_REC( world, Step, worldId, timeStep, subStepCount );
 

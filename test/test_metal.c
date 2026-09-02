@@ -627,16 +627,31 @@ static int MetalShapeCompactionTest( void )
 	{
 		ENSURE( world->broadPhase.moveArray.data[i] == movingProxyKeys[i] );
 	}
+	// Public AABB access materializes just the requested shape from the shared
+	// Metal result while the rest of the CPU mirror remains deliberately stale.
+	b3Shape* queryShape = world->shapes.data + movingShapeIds[0].index1 - 1;
+	queryShape->aabb = (b3AABB){ { -1.0e6f, -1.0e6f, -1.0e6f }, { -9.0e5f, -9.0e5f, -9.0e5f } };
+	b3AABB queryAABB = b3Shape_GetAABB( movingShapeIds[0] );
+	ENSURE( queryAABB.lowerBound.x > -1000.0f );
+	profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.shapeResultApplyCount == 0 );
+	ENSURE( profile.shapeBoundsSyncCount == 1 );
 	// A public mutation increments the tree revision, so the following dispatch
 	// must reseed from CPU bounds instead of trusting the old resident layout.
 	b3Body_SetTransform( mutationBodyId, (b3Pos){ 3.0f, 2.0f, 0.0f }, b3Quat_identity );
 	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 	profile = b3World_GetMetalProfile( worldId );
 	ENSURE( profile.shapeBoundsResidentDispatchCount == 1 );
-	printf( "    shape compaction enlarged=%d/%d stableOrder=yes residentBounds=%llu\n",
+	ENSURE( profile.shapeResultApplyCount == 0 );
+	ENSURE( profile.shapeBoundsSyncCount == bodyCount - 1 );
+	printf( "    shape compaction enlarged=%d/%d stableOrder=yes residentBounds=%llu fullApplies=%llu syncShapes=%llu\n",
 		profile.lastEnlargedShapeResultCount, profile.lastShapeResultCount,
-		(unsigned long long)profile.shapeBoundsResidentDispatchCount );
+		(unsigned long long)profile.shapeBoundsResidentDispatchCount,
+		(unsigned long long)profile.shapeResultApplyCount, (unsigned long long)profile.shapeBoundsSyncCount );
 
+	b3World_DisableMetal( worldId );
+	ENSURE( world->metalShapeCpuBoundsStale == false );
+	ENSURE( world->metalShapeBoundsSyncCount == 2 * bodyCount - 1 );
 	free( movingShapeIds );
 	free( movingProxyKeys );
 	b3DestroyWorld( worldId );
@@ -705,6 +720,9 @@ static int MetalWorldIntegrationTest( void )
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
 	b3World* gpuWorldInternal = b3GetWorldFromId( gpuWorld );
 	ENSURE( VerifyResidentPairTraversal( gpuWorldInternal ) == 0 );
+	ENSURE( gpuWorldInternal->metalShapeCpuBoundsStale );
+	b3AABB firstBodyAABB = b3Body_ComputeAABB( gpuBodies[0] );
+	ENSURE( b3IsValidAABB( firstBodyAABB ) );
 
 	float maxPositionError = 0.0f;
 	float maxRotationError = 0.0f;
@@ -747,9 +765,11 @@ static int MetalWorldIntegrationTest( void )
 
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    integrated world device=%s fusedDispatches=%llu shapeDispatches=%llu compact=%d/%d "
-			"maxPositionError=%.3g maxRotationError=%.3g maxAABBError=%.3g\n", profile.deviceName,
+			"fullApplies=%llu syncShapes=%llu maxPositionError=%.3g maxRotationError=%.3g maxAABBError=%.3g\n", profile.deviceName,
 			(unsigned long long)profile.unconstrainedDispatchCount, (unsigned long long)profile.shapeDispatchCount,
-			profile.lastEnlargedShapeResultCount, profile.lastShapeResultCount, maxPositionError, maxRotationError, maxAABBError );
+			profile.lastEnlargedShapeResultCount, profile.lastShapeResultCount,
+			(unsigned long long)profile.shapeResultApplyCount, (unsigned long long)profile.shapeBoundsSyncCount,
+			maxPositionError, maxRotationError, maxAABBError );
 	ENSURE( profile.enabled );
 	ENSURE( profile.unconstrainedDispatchCount == 4 );
 	ENSURE( profile.unconstrainedFallbackCount == 0 );
@@ -758,6 +778,8 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.shapeDispatchCount == 1 );
 	ENSURE( profile.shapeFallbackCount == 0 );
 	ENSURE( profile.shapeCompactDispatchCount == 1 );
+	ENSURE( profile.shapeResultApplyCount == 0 );
+	ENSURE( profile.shapeBoundsSyncCount == count );
 	ENSURE( profile.lastShapeResultCount == count );
 	ENSURE( 0 < profile.lastEnlargedShapeResultCount && profile.lastEnlargedShapeResultCount <= count );
 	ENSURE( gpuWorldInternal->broadPhase.moveArray.count == profile.lastEnlargedShapeResultCount );
@@ -990,6 +1012,8 @@ static int MetalConvexFrictionContactTest( void )
 	ENSURE( profile.finalizationDispatchCount == 10 );
 	ENSURE( profile.shapeDispatchCount == 10 );
 	ENSURE( profile.shapeFallbackCount == 0 );
+	ENSURE( profile.shapeResultApplyCount == 10 );
+	ENSURE( profile.shapeBoundsSyncCount == 0 );
 	ENSURE( profile.pairTreeUploadCount == 1 );
 	ENSURE( profile.pairTreeRefitCount == 10 );
 	ENSURE( profile.positionDispatchCount == 0 );

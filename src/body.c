@@ -14,6 +14,9 @@
 #include "sensor.h"
 #include "shape.h"
 #include "solver_set.h"
+#if defined( BOX3D_METAL )
+#include "metal_backend.h"
+#endif
 
 // needed for dll export
 #include "box3d/box3d.h"
@@ -501,10 +504,26 @@ b3AABB b3Body_ComputeAABB( b3BodyId bodyId )
 	}
 
 	b3Shape* shape = b3Array_Get( world->shapes, body->headShapeId );
+#if defined( BOX3D_METAL )
+	if ( world->metalShapeCpuBoundsStale && shape->metalResultIndex != B3_NULL_INDEX &&
+		b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
+	{
+		shape->aabb = b3ComputeFatShapeAABB( shape, b3GetBodyTransformQuick( world, body ), B3_SPECULATIVE_DISTANCE );
+		shape->metalResultIndex = B3_NULL_INDEX;
+	}
+#endif
 	b3AABB aabb = shape->aabb;
 	while ( shape->nextShapeId != B3_NULL_INDEX )
 	{
 		shape = b3Array_Get( world->shapes, shape->nextShapeId );
+#if defined( BOX3D_METAL )
+		if ( world->metalShapeCpuBoundsStale && shape->metalResultIndex != B3_NULL_INDEX &&
+			b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
+		{
+			shape->aabb = b3ComputeFatShapeAABB( shape, b3GetBodyTransformQuick( world, body ), B3_SPECULATIVE_DISTANCE );
+			shape->metalResultIndex = B3_NULL_INDEX;
+		}
+#endif
 		aabb = b3AABB_Union( aabb, shape->aabb );
 	}
 
@@ -1098,6 +1117,7 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
 		b3Shape* shape = b3Array_Get( world->shapes, shapeId );
 		b3AABB aabb = b3ComputeFatShapeAABB( shape, transform, speculativeDistance );
 		shape->aabb = aabb;
+		shape->metalResultIndex = B3_NULL_INDEX;
 
 		if ( b3AABB_Contains( shape->fatAABB, aabb ) == false )
 		{

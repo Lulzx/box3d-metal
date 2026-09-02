@@ -81,6 +81,24 @@ steps, but the buffer is still shared and the full result is still applied to
 CPU shapes for current public-query, mesh-contact, sensor, CCD, and fallback
 consumers.
 
+The 64-byte result allocation itself is `MTLStorageModePrivate`. On the bounded
+resident route—continuous collision disabled, no sensors or existing contacts,
+and every awake shape masking out contacts—the command buffer does not encode a
+full result blit and the CPU does not execute the flat apply task. The shared
+handoff is only the stable 32-byte enlarged subset. `b3Shape_GetAABB` and
+`b3Body_ComputeAABB` stage individual 64-byte records on demand. Mutation,
+fallback-route expansion, finalization/broad-phase disable, and context disable
+perform a checked bulk synchronization; a failed blit keeps the Metal context
+and skips the unsafe transition. CPU-oracle recomputation is the single-query
+fallback.
+
+`shapeResultApplyCount` distinguishes compatibility-route full applies from
+the no-apply resident route, and `shapeBoundsSyncCount` reports how many shape
+records were explicitly materialized. This removes the shared full-result
+stream and traversal for the bounded route, but shape geometry/input packing
+still walks awake body shape lists every step and remains the next residency
+target.
+
 Enable it with:
 
 ```c
@@ -208,3 +226,5 @@ correctness checkpoint is in
 [`benchmarks/m4-pro-pair-prefix-2026-09-02.md`](benchmarks/m4-pro-pair-prefix-2026-09-02.md).
 Resident leaf refit and VF64 far-world validation are recorded in
 [`benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md`](benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md).
+Private shape results and selective synchronization are recorded in
+[`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).

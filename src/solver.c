@@ -887,6 +887,7 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 
 // Implements b3ParallelForCallback. The Metal results are flat so this avoids the per-body
 // shape-list traversal in the ordinary (non-CCD) finalization path.
+#if defined( BOX3D_METAL )
 static void b3ApplyMetalShapeResultsTask( int startIndex, int endIndex, int workerIndex, void* context )
 {
 	b3StepContext* stepContext = context;
@@ -922,6 +923,7 @@ static void b3ApplyMetalShapeResultsTask( int startIndex, int endIndex, int work
 		}
 	}
 }
+#endif
 
 typedef struct b3BlockDim
 {
@@ -1812,6 +1814,7 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		stepContext->metalEnlargedShapeResultCount = 0;
 		stepContext->metalStatesResident = false;
 		stepContext->metalShapeBoundsResident = false;
+		stepContext->metalDeferShapeResultApply = false;
 
 		// count contacts, joints, and colors
 		int activeColorCount = 0;
@@ -2277,13 +2280,22 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		// Finalize bodies. Must happen after the constraint solver and after island splitting.
 #if defined( BOX3D_METAL )
 		b3ExecuteMetalFinalization( stepContext, awakeBodyCount );
-#endif
 		b3ParallelFor( world, &b3FinalizeBodiesTask, awakeBodyCount, 16, stepContext, "ccd" );
-		if ( stepContext->metalShapeResultCount > 0 )
+		if ( stepContext->metalShapeResultCount == 0 )
+		{
+			world->metalShapeCpuBoundsStale = false;
+		}
+		bool deferMetalShapeApply = stepContext->metalTreeRefit && stepContext->metalDeferShapeResultApply;
+		if ( stepContext->metalShapeResultCount > 0 && deferMetalShapeApply == false )
 		{
 			b3ParallelFor( world, &b3ApplyMetalShapeResultsTask, stepContext->metalShapeResultCount, 32, stepContext,
 				"metal shape finalize" );
+			world->metalShapeResultApplyCount += 1;
+			world->metalShapeCpuBoundsStale = false;
 		}
+#else
+		b3ParallelFor( world, &b3FinalizeBodiesTask, awakeBodyCount, 16, stepContext, "ccd" );
+#endif
 
 		// Free in reverse order
 		b3StackFree( &world->stack, graphBlocks );
@@ -2507,12 +2519,12 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 			{
 				const b3MetalEnlargedShapeResult* result = stepContext->metalEnlargedShapeResults + resultIndex;
 				b3Shape* shape = world->shapes.data + result->shapeId;
-				B3_ASSERT( shape->flags & b3_enlargedAABB );
 				B3_ASSERT( shape->proxyKey == result->proxyKey );
 				b3AABB fatAABB = {
 					{ result->lowerX, result->lowerY, result->lowerZ },
 					{ result->upperX, result->upperY, result->upperZ },
 				};
+				shape->fatAABB = fatAABB;
 				b3BroadPhase_EnlargeProxy( broadPhase, result->proxyKey, fatAABB );
 				shape->flags &= ~b3_enlargedAABB;
 			}
@@ -2652,6 +2664,11 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 	if ( stepContext->metalTreeRefit )
 	{
 		b3MetalCommitPairTreeRefit( world->metalContext, &world->broadPhase );
+		if ( stepContext->metalDeferShapeResultApply )
+		{
+			world->metalShapeCpuBoundsStale = true;
+			world->metalShapeCpuStaleRevision = world->broadPhase.treeRevision;
+		}
 	}
 #endif
 

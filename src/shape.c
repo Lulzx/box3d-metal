@@ -9,6 +9,9 @@
 #include "physics_world.h"
 #include "recording.h"
 #include "sensor.h"
+#if defined( BOX3D_METAL )
+#include "metal_backend.h"
+#endif
 
 // needed for dll export
 #include "aabb.h"
@@ -83,6 +86,7 @@ static void b3UpdateShapeAABBs( b3Shape* shape, b3WorldTransform transform, b3Bo
 
 	b3AABB aabb = b3ComputeFatShapeAABB( shape, transform, speculativeDistance );
 	shape->aabb = aabb;
+	shape->metalResultIndex = B3_NULL_INDEX;
 
 	// Smaller margin for static bodies. Cannot be zero due to TOI tolerance.
 	float margin = proxyType == b3_staticBody ? speculativeDistance : aabbMargin;
@@ -183,6 +187,7 @@ static b3Shape* b3CreateShapeInternal( b3World* world, b3Body* body, b3WorldTran
 	shape->flags |= def->enablePreSolveEvents ? b3_enablePreSolveEvents : 0;
 	shape->flags |= def->enableSpeculativeContact ? b3_enableSpeculative : 0;
 	shape->proxyKey = B3_NULL_INDEX;
+	shape->metalResultIndex = B3_NULL_INDEX;
 	shape->localCentroid = b3GetShapeCentroid( shape );
 	shape->aabbMargin = b3ComputeShapeMargin( shape );
 	shape->aabb = (b3AABB){ b3Vec3_zero, b3Vec3_zero };
@@ -1811,6 +1816,15 @@ b3AABB b3Shape_GetAABB( b3ShapeId shapeId )
 	}
 
 	b3Shape* shape = b3GetShape( world, shapeId );
+#if defined( BOX3D_METAL )
+	if ( world->locked == false && world->metalShapeCpuBoundsStale && shape->metalResultIndex != B3_NULL_INDEX &&
+		b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
+	{
+		b3Body* body = world->bodies.data + shape->bodyId;
+		shape->aabb = b3ComputeFatShapeAABB( shape, b3GetBodyTransformQuick( world, body ), B3_SPECULATIVE_DISTANCE );
+		shape->metalResultIndex = B3_NULL_INDEX;
+	}
+#endif
 	return shape->aabb;
 }
 

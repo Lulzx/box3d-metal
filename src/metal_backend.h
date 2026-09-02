@@ -15,6 +15,7 @@ typedef struct b3ContactConstraintWide b3ContactConstraintWide;
 typedef struct b3ContactConstraint b3ContactConstraint;
 typedef struct b3ManifoldConstraint b3ManifoldConstraint;
 typedef struct b3BroadPhase b3BroadPhase;
+typedef struct b3World b3World;
 
 typedef struct b3MetalPairQueryRecord
 {
@@ -103,3 +104,9 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 // Mark the resident tree snapshot as matching CPU bounds after a successful
 // shape-result leaf update/refit and the corresponding CPU bookkeeping pass.
 void b3MetalCommitPairTreeRefit( b3MetalContext* context, const b3BroadPhase* broadPhase );
+
+// Materialize current Metal-produced AABBs into the CPU shape mirror. The
+// single-shape form is used by public queries; the all-shape form is a
+// fail-closed boundary for route changes, fallback, and context destruction.
+bool b3MetalSyncShapeBounds( b3MetalContext* context, b3World* world, int shapeId );
+bool b3MetalSyncAllShapeBounds( b3MetalContext* context, b3World* world );
