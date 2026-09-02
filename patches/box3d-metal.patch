@@ -22,10 +22,10 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..f83ec60 100644
+index cfe16e4..3eb77d9 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,178 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,179 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -60,9 +60,10 @@ index cfe16e4..f83ec60 100644
 +public AABB queries stage only the requested 64-byte record, while route changes
 +and Metal disable synchronize the remaining results explicitly.
 +Revision-stable steps also reuse the persistent 72-byte shape-input registry:
-+an exact awake-body id sequence protects each cached body index, so geometry,
-+filters, proxy keys, and local bounds are not repacked or recomputed. Sleep,
-+wake, topology, transform, and filter changes rebuild fail-closed.
++a monotonic awake-order revision protects each cached body index in constant
++time, so stable steps neither scan body ids nor repack geometry, filters, proxy
++keys, and local bounds. Sleep, wake, topology, transform, and filter changes
++rebuild fail-closed.
 +On the sleep-disabled, non-CCD route, finalization also authors deterministic
 +move events into private Metal storage. Public event queries lazily materialize
 +only that 72-byte-per-body stream; unqueried steps perform no move-event
@@ -1195,10 +1196,10 @@ index 0000000..a465241
 +}
 diff --git a/benchmark/metal_world.c b/benchmark/metal_world.c
 new file mode 100644
-index 0000000..0c9e1d3
+index 0000000..11459cc
 --- /dev/null
 +++ b/benchmark/metal_world.c
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,157 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -1278,6 +1279,7 @@ index 0000000..0c9e1d3
 +		enableBroadPhase ? "on" : "off", createShapes ? "sphere_per_body" : "none" );
 +	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,finalization_readback_bytes,finalization_readback_bypasses,"
 +		"finalization_shape_traversal_bypasses,finalization_body_traversal_bypasses,body_sim_syncs,last_body_sim_sync_count,"
++		"shape_input_packs,shape_input_reuses,shape_input_order_revision_checks,"
 +		"move_event_dispatches,move_event_syncs,last_move_event_readback_bytes,"
 +		"transform_device_refreshes,pair_kernel_ms,pair_dispatches,"
 +		"body_state_uploads,body_state_reuses,last_body_state_upload_bytes,body_state_revision_checks,body_state_syncs,last_body_state_readback_bytes,"
@@ -1316,7 +1318,9 @@ index 0000000..0c9e1d3
 +		{
 +			uint64_t expectedSteps = (uint64_t)( 5 + repeats );
 +			if ( metal.finalizationBodyTraversalBypassCount != expectedSteps || metal.bodySimSyncCount != 0 ||
-+				metal.lastBodySimSyncCount != 0 )
++				metal.lastBodySimSyncCount != 0 ||
++				( createShapes && ( metal.shapeInputPackCount != 1 || metal.shapeInputReuseCount + 1 != expectedSteps ||
++					metal.shapeInputOrderRevisionCheckCount != expectedSteps ) ) )
 +			{
 +				fprintf( stderr, "unexpected body-finalization residency telemetry: bypasses=%llu expected=%llu syncs=%llu last=%llu\n",
 +					(unsigned long long)metal.finalizationBodyTraversalBypassCount, (unsigned long long)expectedSteps,
@@ -1324,7 +1328,7 @@ index 0000000..0c9e1d3
 +				return 1;
 +			}
 +		}
-+		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.3f\n",
++		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.3f\n",
 +			bodyCount,
 +			repeats, cpuMs, gpuMs,
 +			metal.lastUnconstrainedGpuMilliseconds, (unsigned long long)metal.lastFinalizationReadbackBytes,
@@ -1333,6 +1337,9 @@ index 0000000..0c9e1d3
 +			(unsigned long long)metal.finalizationBodyTraversalBypassCount,
 +			(unsigned long long)metal.bodySimSyncCount,
 +			(unsigned long long)metal.lastBodySimSyncCount,
++			(unsigned long long)metal.shapeInputPackCount,
++			(unsigned long long)metal.shapeInputReuseCount,
++			(unsigned long long)metal.shapeInputOrderRevisionCheckCount,
 +			(unsigned long long)metal.bodyMoveEventDispatchCount,
 +			(unsigned long long)metal.bodyMoveEventSyncCount,
 +			(unsigned long long)metal.lastBodyMoveEventReadbackBytes,
@@ -4109,6 +4116,67 @@ index 0000000..21b7859
 +BOX3D_METAL_SHAPES=1 BOX3D_METAL_FINALIZATION=1 \
 +  ./build/metal-release/bin/metal_world_benchmark
 +```
+diff --git a/docs/benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md b/docs/benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md
+new file mode 100644
+index 0000000..8894732
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md
+@@ -0,0 +1,55 @@
++# M4 Pro shape-input order revision — 2026-09-03
++
++## Scope
++
++Stable shape finalization previously validated its cached `bodyIndex` mapping
++by scanning every awake `b3BodySim` and comparing body IDs. This checkpoint
++replaces that O(body count) validation with a monotonic awake-body order
++revision stored beside the persistent shape-input registry.
++
++Create/destroy, wake/sleep, awake-set transfers, and snapshot restoration
++advance the revision. A stable non-CCD step checks the cached body count and
++revision in constant time, then reuses the 72-byte-per-shape input registry
++without touching the CPU body array. CCD retains its separate fast-body scan.
++Cold or invalidated routes still rebuild from Erin's CPU data as the oracle.
++
++## Correctness evidence
++
++The registry differential performs a sleep followed immediately by a wake
++before the next step. The awake count returns to 64, while swap-removal plus
++append changes body ordering. The revision changes twice, rejects the stale
++mapping, rebuilds once, and then resumes reuse. A filter-only mutation also
++forces the established rebuild path.
++
++Both float and double/VF64 warning-as-error `MetalTest` suites pass. The
++524,288-body benchmark additionally fails if its expected one pack, ten reuses,
++and eleven order-revision checks are not observed.
++
++## Whole-world signal
++
++The Release harness used an Apple M4 Pro (12 CPU cores, 16 GPU cores, 24 GB
++unified memory), 524,288 dynamic bodies with one sphere each, four substeps,
++eight workers, five warm-up steps, and six measured steps.
++
++```text
++run                              1          2
++CPU ms                      46.210     45.750
++Metal ms                    20.349     21.466
++Metal kernel ms             13.656     14.333
++speedup                       2.271x     2.131x
++
++shape-input packs / reuses          1 / 10
++order-revision checks              11
++body traversal bypasses            11 / 11
++body-sim synchronizations           0
++body-state readback bytes           0
++finalization readback bytes         0
++move-event readback bytes           0
++```
++
++This is loaded-host directional evidence, not an accepted quiet-host result.
++Chrome, WindowServer, Telegram, Playwright, and an unrelated `ffmpeg` process
++were active during capture. Compared with the immediately preceding loaded-host
++checkpoint (1.88–1.97x), the result is consistent with removing the final
++steady CPU awake-body scan, but host load prevents attributing the entire
++difference to this change. A quiet-host matrix remains required.
 diff --git a/docs/benchmarks/m4-pro-shape-input-registry-2026-09-02.md b/docs/benchmarks/m4-pro-shape-input-registry-2026-09-02.md
 new file mode 100644
 index 0000000..9e757a7
@@ -4282,10 +4350,10 @@ index 0000000..bf16de3
 +before that traversal and state readback can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..ddad964
+index 0000000..23816ac
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,555 @@
+@@ -0,0 +1,559 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -4394,15 +4462,17 @@ index 0000000..ddad964
 +compatibility routes retain it.
 +
 +The 72-byte shape-input records are also persistent across revision-stable
-+steps. The CPU checks the exact awake-body id sequence while it already walks
-+body simulations; a match preserves every cached body index and dispatches the
-+existing geometry, filter, proxy, local-bound, and resident-fat-bound records
-+without counting shapes or walking body shape lists. Sleep/wake swap-removal,
-+tree revision changes, explicit transforms, and filter-only edits invalidate
-+the registry. A rebuild first materializes any stale CPU mirrors, then repacks
-+from the CPU oracle. `shapeInputPackCount` and `shapeInputReuseCount` expose the
-+two routes. Cold/topology rebuilds are still CPU work; maintaining the registry
-+directly in every topology mutator is a later refinement.
++steps. Every awake-set membership or ordering mutation advances a monotonic
++world revision; the cache stores that revision with its body count. A match
++preserves every cached body index in constant time and dispatches the existing
++geometry, filter, proxy, local-bound, and resident-fat-bound records without
++scanning body ids, counting shapes, or walking body shape lists. Create,
++destroy, sleep/wake swap-removal, awake-set transfers, snapshot restore, tree
++revision changes, explicit transforms, and filter-only edits invalidate the
++appropriate registry authority. A rebuild first materializes stale CPU
++mirrors, then repacks from the CPU oracle. `shapeInputPackCount`,
++`shapeInputReuseCount`, and `shapeInputOrderRevisionCheckCount` expose the two
++routes and their O(1) authorization. Cold/topology rebuilds remain CPU work.
 +
 +Enable it with:
 +
@@ -4841,6 +4911,8 @@ index 0000000..ddad964
 +The complete unconstrained CPU body-finalization traversal bypass and its
 +loaded-host whole-world signal are recorded in
 +[`benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md`](benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md).
++The follow-on removal of the steady awake-body ID scan is recorded in
++[`benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md`](benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md).
 diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
 index 2e82590..cd49acf 100644
 --- a/include/box3d/box3d.h
@@ -4857,10 +4929,10 @@ index 2e82590..cd49acf 100644
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000..73d997b
+index 0000000..31954e0
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,227 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -4993,6 +5065,9 @@ index 0000000..73d997b
 +	uint64_t shapeBoundsResidentDispatchCount;
 +	uint64_t shapeInputPackCount;
 +	uint64_t shapeInputReuseCount;
++	/// Constant-time awake-body order revision checks that authorize shape-input
++	/// reuse without scanning every body id.
++	uint64_t shapeInputOrderRevisionCheckCount;
 +	uint64_t shapeResultApplyCount;
 +	uint64_t shapeBoundsSyncCount;
 +	int lastShapeResultCount;
@@ -5131,7 +5206,7 @@ index 941c6fb..f4a6813 100644
  	message(STATUS "Box3D on Emscripten")
  	# SSE2/wasm SIMD flags are set directory-wide in the top-level CMakeLists so the
 diff --git a/src/body.c b/src/body.c
-index f517e7b..55108ce 100644
+index f517e7b..f0265dc 100644
 --- a/src/body.c
 +++ b/src/body.c
 @@ -14,6 +14,9 @@
@@ -5197,12 +5272,16 @@ index f517e7b..55108ce 100644
  
  	bool isAwake = ( def->isAwake || def->enableSleep == false ) && def->isEnabled;
  
-@@ -299,6 +320,12 @@ b3BodyId b3CreateBody( b3WorldId worldId, const b3BodyDef* def )
+@@ -299,6 +320,16 @@ b3BodyId b3CreateBody( b3WorldId worldId, const b3BodyDef* def )
  
  	b3BodyId id = { bodyId + 1, world->worldId, body->generation };
  
 +#if defined( BOX3D_METAL )
 +	world->metalBodyTransformRevision += 1;
++	if ( setId == b3_awakeSet )
++	{
++		b3BumpMetalAwakeBodyRevision( world );
++	}
 +	b3BumpMetalBodyPropertyRevision( world );
 +	b3BumpMetalBodyStateRevision( world );
 +#endif
@@ -5210,7 +5289,7 @@ index f517e7b..55108ce 100644
  	world->locked = false;
  
  	B3_REC_CREATE( world, CreateBody, id, worldId, *def );
-@@ -344,6 +371,16 @@ void b3DestroyBody( b3BodyId bodyId )
+@@ -344,6 +375,16 @@ void b3DestroyBody( b3BodyId bodyId )
  	B3_REC( world, DestroyBody, bodyId );
  
  	world->locked = true;
@@ -5227,12 +5306,16 @@ index f517e7b..55108ce 100644
  
  	b3Body* body = b3GetBodyFullId( world, bodyId );
  
-@@ -424,6 +461,12 @@ void b3DestroyBody( b3BodyId bodyId )
+@@ -424,6 +465,16 @@ void b3DestroyBody( b3BodyId bodyId )
  	body->localIndex = B3_NULL_INDEX;
  	body->id = B3_NULL_INDEX;
  
 +#if defined( BOX3D_METAL )
 +	world->metalBodyTransformRevision += 1;
++	if ( set->setIndex == b3_awakeSet )
++	{
++		b3BumpMetalAwakeBodyRevision( world );
++	}
 +	b3BumpMetalBodyPropertyRevision( world );
 +	b3BumpMetalBodyStateRevision( world );
 +#endif
@@ -5240,7 +5323,7 @@ index f517e7b..55108ce 100644
  	b3ValidateSolverSets( world );
  
  	world->locked = false;
-@@ -465,6 +508,7 @@ int b3Body_GetContactData( b3BodyId bodyId, b3ContactData* contactData, int capa
+@@ -465,6 +516,7 @@ int b3Body_GetContactData( b3BodyId bodyId, b3ContactData* contactData, int capa
  		// Is contact touching?
  		if ( contact->flags & b3_contactTouchingFlag )
  		{
@@ -5248,7 +5331,7 @@ index f517e7b..55108ce 100644
  			b3Shape* shapeA = b3Array_Get( world->shapes, contact->shapeIdA );
  			b3Shape* shapeB = b3Array_Get( world->shapes, contact->shapeIdB );
  
-@@ -501,10 +545,28 @@ b3AABB b3Body_ComputeAABB( b3BodyId bodyId )
+@@ -501,10 +553,28 @@ b3AABB b3Body_ComputeAABB( b3BodyId bodyId )
  	}
  
  	b3Shape* shape = b3Array_Get( world->shapes, body->headShapeId );
@@ -5277,7 +5360,7 @@ index f517e7b..55108ce 100644
  		aabb = b3AABB_Union( aabb, shape->aabb );
  	}
  
-@@ -842,7 +904,7 @@ b3BodyTOIResult b3Body_TimeOfImpactMover( b3BodyId bodyId, b3Pos origin, const b
+@@ -842,7 +912,7 @@ b3BodyTOIResult b3Body_TimeOfImpactMover( b3BodyId bodyId, b3Pos origin, const b
  		B3_VALIDATE( output.state != b3_toiStateUnknown );
  
  		// Mimic behavior in b3ContinuousQueryCallback. Ignore shapes that initially overlap.
@@ -5286,7 +5369,7 @@ index f517e7b..55108ce 100644
  		{
  			input.maxFraction = output.fraction;
  
-@@ -862,6 +924,8 @@ b3BodyTOIResult b3Body_TimeOfImpactMover( b3BodyId bodyId, b3Pos origin, const b
+@@ -862,6 +932,8 @@ b3BodyTOIResult b3Body_TimeOfImpactMover( b3BodyId bodyId, b3Pos origin, const b
  
  void b3UpdateBodyMassData( b3World* world, b3Body* body )
  {
@@ -5295,7 +5378,7 @@ index f517e7b..55108ce 100644
  	b3BodySim* bodySim = b3GetBodySim( world, body );
  
  	// Mass is no longer dirty
-@@ -1071,6 +1135,13 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
+@@ -1071,6 +1143,13 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
  	B3_ASSERT( b3Body_IsValid( bodyId ) );
  	b3World* world = b3GetWorld( bodyId.world0 );
  	B3_ASSERT( world->locked == false );
@@ -5309,7 +5392,7 @@ index f517e7b..55108ce 100644
  
  	B3_REC( world, BodySetTransform, bodyId, position, rotation );
  
-@@ -1087,7 +1158,15 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
+@@ -1087,7 +1166,15 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
  	bodySim->rotation0 = bodySim->transform.q;
  	bodySim->center0 = bodySim->center;
  
@@ -5325,7 +5408,7 @@ index f517e7b..55108ce 100644
  
  	b3WorldTransform transform = bodySim->transform;
  	const float speculativeDistance = B3_SPECULATIVE_DISTANCE;
-@@ -1098,6 +1177,7 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
+@@ -1098,6 +1185,7 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
  		b3Shape* shape = b3Array_Get( world->shapes, shapeId );
  		b3AABB aabb = b3ComputeFatShapeAABB( shape, transform, speculativeDistance );
  		shape->aabb = aabb;
@@ -5333,7 +5416,7 @@ index f517e7b..55108ce 100644
  
  		if ( b3AABB_Contains( shape->fatAABB, aabb ) == false )
  		{
-@@ -1173,6 +1253,7 @@ void b3Body_SetLinearVelocity( b3BodyId bodyId, b3Vec3 linearVelocity )
+@@ -1173,6 +1261,7 @@ void b3Body_SetLinearVelocity( b3BodyId bodyId, b3Vec3 linearVelocity )
  	}
  
  	state->linearVelocity = linearVelocity;
@@ -5341,7 +5424,7 @@ index f517e7b..55108ce 100644
  }
  
  void b3Body_SetAngularVelocity( b3BodyId bodyId, b3Vec3 angularVelocity )
-@@ -1208,6 +1289,7 @@ void b3Body_SetAngularVelocity( b3BodyId bodyId, b3Vec3 angularVelocity )
+@@ -1208,6 +1297,7 @@ void b3Body_SetAngularVelocity( b3BodyId bodyId, b3Vec3 angularVelocity )
  	}
  
  	state->angularVelocity = w;
@@ -5349,7 +5432,7 @@ index f517e7b..55108ce 100644
  }
  
  void b3Body_SetTargetTransform( b3BodyId bodyId, b3WorldTransform target, float timeStep, bool wake )
-@@ -1280,6 +1362,7 @@ void b3Body_SetTargetTransform( b3BodyId bodyId, b3WorldTransform target, float
+@@ -1280,6 +1370,7 @@ void b3Body_SetTargetTransform( b3BodyId bodyId, b3WorldTransform target, float
  	b3BodyState* state = b3GetBodyState( world, body );
  	state->linearVelocity = linearVelocity;
  	state->angularVelocity = angularVelocity;
@@ -5357,7 +5440,7 @@ index f517e7b..55108ce 100644
  }
  
  b3Vec3 b3Body_GetLocalPointVelocity( b3BodyId bodyId, b3Vec3 localPoint )
-@@ -1338,6 +1421,7 @@ void b3Body_ApplyForce( b3BodyId bodyId, b3Vec3 force, b3Pos point, bool wake )
+@@ -1338,6 +1429,7 @@ void b3Body_ApplyForce( b3BodyId bodyId, b3Vec3 force, b3Pos point, bool wake )
  		b3BodySim* bodySim = b3GetBodySim( world, body );
  		bodySim->force = b3Add( bodySim->force, force );
  		bodySim->torque = b3Add( bodySim->torque, b3Cross( b3SubPos( point, bodySim->center ), force ) );
@@ -5365,7 +5448,7 @@ index f517e7b..55108ce 100644
  	}
  }
  
-@@ -1360,6 +1444,7 @@ void b3Body_ApplyForceToCenter( b3BodyId bodyId, b3Vec3 force, bool wake )
+@@ -1360,6 +1452,7 @@ void b3Body_ApplyForceToCenter( b3BodyId bodyId, b3Vec3 force, bool wake )
  	{
  		b3BodySim* bodySim = b3GetBodySim( world, body );
  		bodySim->force = b3Add( bodySim->force, force );
@@ -5373,7 +5456,7 @@ index f517e7b..55108ce 100644
  	}
  }
  
-@@ -1382,6 +1467,7 @@ void b3Body_ApplyTorque( b3BodyId bodyId, b3Vec3 torque, bool wake )
+@@ -1382,6 +1475,7 @@ void b3Body_ApplyTorque( b3BodyId bodyId, b3Vec3 torque, bool wake )
  	{
  		b3BodySim* bodySim = b3GetBodySim( world, body );
  		bodySim->torque = b3Add( bodySim->torque, torque );
@@ -5381,7 +5464,7 @@ index f517e7b..55108ce 100644
  	}
  }
  
-@@ -1403,10 +1489,8 @@ void b3Body_ApplyLinearImpulse( b3BodyId bodyId, b3Vec3 impulse, b3Pos point, bo
+@@ -1403,10 +1497,8 @@ void b3Body_ApplyLinearImpulse( b3BodyId bodyId, b3Vec3 impulse, b3Pos point, bo
  
  	if ( body->setIndex == b3_awakeSet )
  	{
@@ -5394,7 +5477,7 @@ index f517e7b..55108ce 100644
  
  		state->linearVelocity = b3MulAdd( state->linearVelocity, bodySim->invMass, impulse );
  
-@@ -1418,6 +1502,7 @@ void b3Body_ApplyLinearImpulse( b3BodyId bodyId, b3Vec3 impulse, b3Pos point, bo
+@@ -1418,6 +1510,7 @@ void b3Body_ApplyLinearImpulse( b3BodyId bodyId, b3Vec3 impulse, b3Pos point, bo
  
  		b3Vec3 delta = b3MulMV( bodySim->invInertiaWorld, b3Cross( b3SubPos( point, bodySim->center ), impulse ) );
  		state->angularVelocity = b3Add( state->angularVelocity, delta );
@@ -5402,7 +5485,7 @@ index f517e7b..55108ce 100644
  	}
  }
  
-@@ -1438,10 +1523,8 @@ void b3Body_ApplyLinearImpulseToCenter( b3BodyId bodyId, b3Vec3 impulse, bool wa
+@@ -1438,10 +1531,8 @@ void b3Body_ApplyLinearImpulseToCenter( b3BodyId bodyId, b3Vec3 impulse, bool wa
  
  	if ( body->setIndex == b3_awakeSet )
  	{
@@ -5415,7 +5498,7 @@ index f517e7b..55108ce 100644
  		state->linearVelocity = b3MulAdd( state->linearVelocity, bodySim->invMass, impulse );
  
  		float maxLinearSpeed = world->maxLinearSpeed;
-@@ -1449,6 +1532,7 @@ void b3Body_ApplyLinearImpulseToCenter( b3BodyId bodyId, b3Vec3 impulse, bool wa
+@@ -1449,6 +1540,7 @@ void b3Body_ApplyLinearImpulseToCenter( b3BodyId bodyId, b3Vec3 impulse, bool wa
  		{
  			state->linearVelocity = b3MulSV( maxLinearSpeed, b3Normalize( state->linearVelocity ) );
  		}
@@ -5423,7 +5506,7 @@ index f517e7b..55108ce 100644
  	}
  }
  
-@@ -1473,15 +1557,14 @@ void b3Body_ApplyAngularImpulse( b3BodyId bodyId, b3Vec3 impulse, bool wake )
+@@ -1473,15 +1565,14 @@ void b3Body_ApplyAngularImpulse( b3BodyId bodyId, b3Vec3 impulse, bool wake )
  
  	if ( body->setIndex == b3_awakeSet )
  	{
@@ -5442,7 +5525,7 @@ index f517e7b..55108ce 100644
  	}
  }
  
-@@ -1757,8 +1840,13 @@ const char* b3Body_GetName( b3BodyId bodyId )
+@@ -1757,8 +1848,13 @@ const char* b3Body_GetName( b3BodyId bodyId )
  void b3Body_SetUserData( b3BodyId bodyId, void* userData )
  {
  	b3World* world = b3GetWorld( bodyId.world0 );
@@ -5456,7 +5539,7 @@ index f517e7b..55108ce 100644
  }
  
  void* b3Body_GetUserData( b3BodyId bodyId )
-@@ -1830,6 +1918,7 @@ void b3Body_SetMassData( b3BodyId bodyId, b3MassData massData )
+@@ -1830,6 +1926,7 @@ void b3Body_SetMassData( b3BodyId bodyId, b3MassData massData )
  
  	b3Body* body = b3GetBodyFullId( world, bodyId );
  	b3BodySim* bodySim = b3GetBodySim( world, body );
@@ -5464,7 +5547,7 @@ index f517e7b..55108ce 100644
  
  	// Mass is no longer dirty
  	body->flags &= ~b3_dirtyMass;
-@@ -1930,6 +2019,7 @@ void b3Body_SetLinearDamping( b3BodyId bodyId, float linearDamping )
+@@ -1930,6 +2027,7 @@ void b3Body_SetLinearDamping( b3BodyId bodyId, float linearDamping )
  	b3Body* body = b3GetBodyFullId( world, bodyId );
  	b3BodySim* bodySim = b3GetBodySim( world, body );
  	bodySim->linearDamping = linearDamping;
@@ -5472,7 +5555,7 @@ index f517e7b..55108ce 100644
  }
  
  float b3Body_GetLinearDamping( b3BodyId bodyId )
-@@ -1955,6 +2045,7 @@ void b3Body_SetAngularDamping( b3BodyId bodyId, float angularDamping )
+@@ -1955,6 +2053,7 @@ void b3Body_SetAngularDamping( b3BodyId bodyId, float angularDamping )
  	b3Body* body = b3GetBodyFullId( world, bodyId );
  	b3BodySim* bodySim = b3GetBodySim( world, body );
  	bodySim->angularDamping = angularDamping;
@@ -5480,7 +5563,7 @@ index f517e7b..55108ce 100644
  }
  
  float b3Body_GetAngularDamping( b3BodyId bodyId )
-@@ -1981,6 +2072,7 @@ void b3Body_SetGravityScale( b3BodyId bodyId, float gravityScale )
+@@ -1981,6 +2080,7 @@ void b3Body_SetGravityScale( b3BodyId bodyId, float gravityScale )
  	b3Body* body = b3GetBodyFullId( world, bodyId );
  	b3BodySim* bodySim = b3GetBodySim( world, body );
  	bodySim->gravityScale = gravityScale;
@@ -5488,7 +5571,7 @@ index f517e7b..55108ce 100644
  }
  
  float b3Body_GetGravityScale( b3BodyId bodyId )
-@@ -2301,6 +2393,7 @@ void b3Body_SetMotionLocks( b3BodyId bodyId, b3MotionLocks locks )
+@@ -2301,6 +2401,7 @@ void b3Body_SetMotionLocks( b3BodyId bodyId, b3MotionLocks locks )
  
  	if ( state != NULL )
  	{
@@ -5496,7 +5579,7 @@ index f517e7b..55108ce 100644
  		if ( locks.linearX )
  		{
  			state->linearVelocity.x = 0.0f;
-@@ -2460,6 +2553,7 @@ void b3Body_EnableHitEvents( b3BodyId bodyId, bool flag )
+@@ -2460,6 +2561,7 @@ void b3Body_EnableHitEvents( b3BodyId bodyId, bool flag )
  		shape->flags = flag ? shape->flags | b3_enableHitEvents : shape->flags & ~b3_enableHitEvents;
  		shapeId = shape->nextShapeId;
  	}
@@ -7001,10 +7084,10 @@ index 0000000..3ebcd9d
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..8e90e47
+index 0000000..76eda2a
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,5635 @@
+@@ -0,0 +1,5625 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -7107,9 +7190,8 @@ index 0000000..8e90e47
 +	uint64_t bodyMoveResultStepIndex;
 +	id<MTLBuffer> shapeInputBuffer;
 +	NSUInteger shapeInputCapacity;
-+	int* shapeInputBodyIds;
-+	int shapeInputBodyCapacity;
 +	int shapeInputBodyCount;
++	uint64_t shapeInputBodyRevision;
 +	int shapeInputCount;
 +	bool shapeInputAllMasksDisabled;
 +	bool shapeInputCacheValid;
@@ -8895,7 +8977,6 @@ index 0000000..8e90e47
 +	[context->bodyMoveResultBuffer release];
 +	[context->bodyMoveReadbackBuffer release];
 +	[context->shapeInputBuffer release];
-+	free( context->shapeInputBodyIds );
 +	[context->shapeResultBuffer release];
 +	[context->shapeReadbackBuffer release];
 +	[context->shapeCompactBuffer release];
@@ -9959,18 +10040,6 @@ index 0000000..8e90e47
 +	}
 +}
 +
-+static bool b3MetalEnsureShapeBodyCapacity( b3MetalContext* context, int bodyCount )
-+{
-+	if ( context->shapeInputBodyCapacity >= bodyCount ) return true;
-+	int capacity = context->shapeInputBodyCapacity > 0 ? context->shapeInputBodyCapacity : 64;
-+	while ( capacity < bodyCount ) capacity *= 2;
-+	int* bodyIds = realloc( context->shapeInputBodyIds, (size_t)capacity * sizeof( int ) );
-+	if ( bodyIds == NULL ) return false;
-+	context->shapeInputBodyIds = bodyIds;
-+	context->shapeInputBodyCapacity = capacity;
-+	return true;
-+}
-+
 +static void b3MetalAdvanceShapeResultGeneration( b3World* world )
 +{
 +	world->metalShapeResultGeneration += 1;
@@ -9993,13 +10062,18 @@ index 0000000..8e90e47
 +	int bodyCount = world->solverSets.data[b3_awakeSet].bodySims.count;
 +	bool treeRefitEligible = world->metalBroadPhaseEnabled && world->userTreeTask == NULL &&
 +		context->pairTreeBuffer != nil && context->pairTreeRevision == world->broadPhase.treeRevision;
-+	bool bodyOrderMatches = context->shapeInputCacheValid && context->shapeInputBodyCount == bodyCount;
-+	for ( int simIndex = 0; simIndex < bodyCount; ++simIndex )
++	bool bodyOrderMatches = context->shapeInputCacheValid && context->shapeInputBodyCount == bodyCount &&
++		context->shapeInputBodyRevision == world->metalAwakeBodyRevision;
++	world->metalShapeInputOrderRevisionCheckCount += 1;
++	if ( world->enableContinuous )
 +	{
-+		if ( sims[simIndex].flags & b3_isFast ) treeRefitEligible = false;
-+		if ( bodyOrderMatches && context->shapeInputBodyIds[simIndex] != sims[simIndex].bodyId )
++		for ( int simIndex = 0; simIndex < bodyCount; ++simIndex )
 +		{
-+			bodyOrderMatches = false;
++			if ( sims[simIndex].flags & b3_isFast )
++			{
++				treeRefitEligible = false;
++				break;
++			}
 +		}
 +	}
 +
@@ -10033,8 +10107,7 @@ index 0000000..8e90e47
 +		stepContext->metalShapeFinalizationComplete = true;
 +		return 0;
 +	}
-+	if ( b3MetalEnsureShapeBodyCapacity( context, bodyCount ) == false ||
-+		b3MetalEnsureShapeCapacity( context, (NSUInteger)shapeCount * sizeof( b3MetalShapeInput ),
++	if ( b3MetalEnsureShapeCapacity( context, (NSUInteger)shapeCount * sizeof( b3MetalShapeInput ),
 +		(NSUInteger)shapeCount * sizeof( b3MetalShapeAABBResult ) ) == false )
 +	{
 +		context->shapeInputCacheValid = false;
@@ -10047,7 +10120,6 @@ index 0000000..8e90e47
 +	int outputIndex = 0;
 +	for ( int simIndex = 0; simIndex < bodyCount; ++simIndex )
 +	{
-+		context->shapeInputBodyIds[simIndex] = sims[simIndex].bodyId;
 +		b3Body* body = world->bodies.data + sims[simIndex].bodyId;
 +		int shapeId = body->headShapeId;
 +		while ( shapeId != B3_NULL_INDEX )
@@ -10104,6 +10176,7 @@ index 0000000..8e90e47
 +	}
 +	B3_ASSERT( outputIndex == shapeCount );
 +	context->shapeInputBodyCount = bodyCount;
++	context->shapeInputBodyRevision = world->metalAwakeBodyRevision;
 +	context->shapeInputCount = shapeCount;
 +	context->shapeInputAllMasksDisabled = allMasksDisabled;
 +	context->shapeInputCacheValid = true;
@@ -13781,7 +13854,7 @@ index 0000000..a4424e5
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..d514876 100644
+index 29c13c7..c7e15cf 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -13857,7 +13930,7 @@ index 29c13c7..d514876 100644
  
  	b3DestroyStack( &world->stack );
  
-@@ -538,12 +565,301 @@ int b3GetWorldCount( void )
+@@ -538,12 +565,302 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -14100,6 +14173,7 @@ index 29c13c7..d514876 100644
 +	profile.shapeBoundsResidentDispatchCount = world->metalShapeBoundsResidentDispatchCount;
 +	profile.shapeInputPackCount = world->metalShapeInputPackCount;
 +	profile.shapeInputReuseCount = world->metalShapeInputReuseCount;
++	profile.shapeInputOrderRevisionCheckCount = world->metalShapeInputOrderRevisionCheckCount;
 +	profile.shapeResultApplyCount = world->metalShapeResultApplyCount;
 +	profile.shapeBoundsSyncCount = world->metalShapeBoundsSyncCount;
 +	profile.lastShapeResultCount = world->metalLastShapeResultCount;
@@ -14160,7 +14234,7 @@ index 29c13c7..d514876 100644
  // Used to hide the random-access latency of contact lookups while we work on an
  // earlier index.
  static inline void b3PrefetchContact( const b3Contact* contact )
-@@ -582,18 +898,69 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -582,18 +899,69 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  	const int contactPrefetchDistance = 4;
  	int prefetchEnd = endIndex - contactPrefetchDistance;
  
@@ -14231,7 +14305,7 @@ index 29c13c7..d514876 100644
  
  		b3Shape* shapeA = shapes + contact->shapeIdA;
  		b3Shape* shapeB = shapes + contact->shapeIdB;
-@@ -653,8 +1020,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -653,8 +1021,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		// Contact recycling optimization. Please cite this library if you use this optimization.
  		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
  		// However, this allows larger relative motion and has fewer tuning parameters (just one).
@@ -14243,7 +14317,7 @@ index 29c13c7..d514876 100644
  		{
  			// The scalar part of b3InvMulQuat is just the quaternion dot product.
  			// cos(relative_angle/2) = scalar(conj(q1) * q2) = dot(q1, q2)
-@@ -741,9 +1109,103 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -741,9 +1110,103 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
  		contact->flags |= b3_relativeTransformValid;
  
@@ -14350,7 +14424,7 @@ index 29c13c7..d514876 100644
  
  		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
  		if ( bucketIndex > 0 )
-@@ -814,6 +1276,32 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
+@@ -814,6 +1277,32 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
  	}
  }
  
@@ -14383,7 +14457,7 @@ index 29c13c7..d514876 100644
  // Narrow-phase collision
  static void b3Collide( b3StepContext* context )
  {
-@@ -825,12 +1313,17 @@ static void b3Collide( b3StepContext* context )
+@@ -825,12 +1314,17 @@ static void b3Collide( b3StepContext* context )
  
  	// Gather contacts from all the graph colors into a single array for easier parallel-for
  	int touchingCount = 0;
@@ -14401,7 +14475,7 @@ index 29c13c7..d514876 100644
  
  	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
  	int nonTouchingCount = awakeSet->contactIndices.count;
-@@ -843,55 +1336,119 @@ static void b3Collide( b3StepContext* context )
+@@ -843,55 +1337,119 @@ static void b3Collide( b3StepContext* context )
  		return;
  	}
  
@@ -14552,7 +14626,7 @@ index 29c13c7..d514876 100644
  	contactIndices = NULL;
  
  	// Serially update contact state
-@@ -900,8 +1457,10 @@ static void b3Collide( b3StepContext* context )
+@@ -900,8 +1458,10 @@ static void b3Collide( b3StepContext* context )
  
  	int satMultiplier = context->dt > 0.0f ? 1 : 0;
  
@@ -14565,7 +14639,7 @@ index 29c13c7..d514876 100644
  	world->satCallCount = satMultiplier * world->taskContexts.data[0].satCallCount;
  	world->satCacheHitCount = satMultiplier * world->taskContexts.data[0].satCacheHitCount;
  	memcpy( world->manifoldCounts, world->taskContexts.data[0].manifoldCounts,
-@@ -909,7 +1468,8 @@ static void b3Collide( b3StepContext* context )
+@@ -909,7 +1469,8 @@ static void b3Collide( b3StepContext* context )
  
  	for ( int i = 1; i < world->workerCount; ++i )
  	{
@@ -14575,7 +14649,7 @@ index 29c13c7..d514876 100644
  		world->satCallCount += world->taskContexts.data[i].satCallCount;
  		world->satCacheHitCount += world->taskContexts.data[i].satCacheHitCount;
  		for ( int j = 0; j < B3_CONTACT_MANIFOLD_COUNT_BUCKETS; ++j )
-@@ -932,7 +1492,8 @@ static void b3Collide( b3StepContext* context )
+@@ -932,7 +1493,8 @@ static void b3Collide( b3StepContext* context )
  	uint16_t worldId = world->worldId;
  
  	// Process contact state changes. Iterate over set bits
@@ -14585,7 +14659,7 @@ index 29c13c7..d514876 100644
  	{
  		uint64_t bits = bitSet->bits[k];
  		while ( bits != 0 )
-@@ -1027,6 +1588,12 @@ static void b3Collide( b3StepContext* context )
+@@ -1027,6 +1589,12 @@ static void b3Collide( b3StepContext* context )
  	b3ValidateSolverSets( world );
  	b3ValidateContacts( world );
  
@@ -14598,7 +14672,7 @@ index 29c13c7..d514876 100644
  	b3TracyCZoneEnd( contact_state );
  	b3TracyCZoneEnd( collide );
  }
-@@ -1039,6 +1606,34 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1607,34 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -14633,7 +14707,7 @@ index 29c13c7..d514876 100644
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -1055,6 +1650,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1055,6 +1651,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Prepare to capture events
  	// Ensure user does not access stale data if there is an early return
  	b3Array_Clear( world->bodyMoveEvents );
@@ -14644,7 +14718,7 @@ index 29c13c7..d514876 100644
  	b3Array_Clear( world->sensorBeginEvents );
  	b3Array_Clear( world->contactBeginEvents );
  	b3Array_Clear( world->contactHitEvents );
-@@ -1095,6 +1694,19 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1095,6 +1695,19 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		world->profile.pairs = b3GetMilliseconds( pairTicks );
  	}
  
@@ -14664,7 +14738,7 @@ index 29c13c7..d514876 100644
  	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
  
  	b3StepContext context = { 0 };
-@@ -1176,6 +1788,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1176,6 +1789,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  
  	if ( world->recording != NULL )
  	{
@@ -14685,7 +14759,7 @@ index 29c13c7..d514876 100644
  		uint64_t hash = b3HashWorldState( world );
  		b3RecArgs_StateHash stateHash = { worldId, hash };
  		b3RecWrite_StateHash( world->recording, &stateHash );
-@@ -1440,7 +2066,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1440,7 +2067,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  				b3WorldTransform transform = { bodySim->center, bodySim->transform.q };
  				draw->DrawTransformFcn( transform, draw->context );
  
@@ -14694,7 +14768,7 @@ index 29c13c7..d514876 100644
  				{
  					b3Vec3 offset = { 0.05f, 0.05f, 0.05f };
  					b3Pos p = b3TransformWorldPoint( transform, offset );
-@@ -1517,6 +2143,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1517,6 +2144,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  					// avoid double draw
  					if ( b3GetBit( &world->debugContactSet, contactId ) == false )
  					{
@@ -14706,7 +14780,7 @@ index 29c13c7..d514876 100644
  						b3Body* bodyA = b3Array_Get( world->bodies, contact->edges[0].bodyId );
  						b3BodySim* bodySimA = b3GetBodySim( world, bodyA );
  						b3Body* bodyB = b3Array_Get( world->bodies, contact->edges[1].bodyId );
-@@ -1753,6 +2384,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
+@@ -1753,6 +2385,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
  		return (b3BodyEvents){ 0 };
  	}
  
@@ -14721,7 +14795,7 @@ index 29c13c7..d514876 100644
  	int count = world->bodyMoveEvents.count;
  	b3BodyEvents events = { world->bodyMoveEvents.data, count };
  	return events;
-@@ -2125,6 +2764,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
+@@ -2125,6 +2765,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
  	B3_REC( world, WorldSetContactRecycleDistance, worldId, recycleDistance );
  
  	world->contactRecycleDistance = b3ClampFloat( recycleDistance, 0.0f, FLT_MAX );
@@ -14729,7 +14803,7 @@ index 29c13c7..d514876 100644
  }
  
  float b3World_GetContactRecycleDistance( b3WorldId worldId )
-@@ -2259,6 +2899,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
+@@ -2259,6 +2900,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
  	}
  
  	world->frictionCallback = callback != NULL ? callback : b3DefaultFrictionCallback;
@@ -14740,7 +14814,7 @@ index 29c13c7..d514876 100644
  }
  
  void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* callback )
-@@ -2270,6 +2914,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
+@@ -2270,6 +2915,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
  	}
  
  	world->restitutionCallback = callback != NULL ? callback : b3DefaultRestitutionCallback;
@@ -14751,7 +14825,7 @@ index 29c13c7..d514876 100644
  }
  
  void b3World_SetWorkerCount( b3WorldId worldId, int count )
-@@ -2312,6 +2960,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
+@@ -2312,6 +2961,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
  	}
  
  	b3StartRecordingIntoBuffer( world, recording );
@@ -14759,7 +14833,7 @@ index 29c13c7..d514876 100644
  }
  
  void b3World_StopRecording( b3WorldId worldId )
-@@ -2323,6 +2972,7 @@ void b3World_StopRecording( b3WorldId worldId )
+@@ -2323,6 +2973,7 @@ void b3World_StopRecording( b3WorldId worldId )
  	}
  
  	b3StopRecordingInternal( world );
@@ -14767,7 +14841,7 @@ index 29c13c7..d514876 100644
  }
  
  void b3World_DumpMemoryStats( b3WorldId worldId )
-@@ -3313,6 +3963,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
+@@ -3313,6 +3964,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
  	}
  	world->preSolveFcn = fcn;
  	world->preSolveContext = context;
@@ -14775,7 +14849,7 @@ index 29c13c7..d514876 100644
  }
  
  void b3World_SetGravity( b3WorldId worldId, b3Vec3 gravity )
-@@ -3445,6 +4096,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3445,6 +4097,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	}
  
  	B3_REC( world, WorldExplode, worldId, *explosionDef );
@@ -14787,7 +14861,7 @@ index 29c13c7..d514876 100644
  
  	// Locked due to waking
  	world->locked = true;
-@@ -3457,6 +4113,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3457,6 +4114,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	b3AABB aabb = b3OffsetAABB( localBox, position );
  
  	b3DynamicTree_Query( world->broadPhase.trees + b3_dynamicBody, aabb, maskBits, false, ExplosionCallback, &explosionContext );
@@ -14795,7 +14869,7 @@ index 29c13c7..d514876 100644
  
  	world->locked = false;
  }
-@@ -3473,6 +4130,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +4131,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -14807,7 +14881,7 @@ index 29c13c7..d514876 100644
  }
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
-@@ -3637,7 +4299,15 @@ void b3ValidateSolverSets( b3World* world )
+@@ -3637,7 +4300,15 @@ void b3ValidateSolverSets( b3World* world )
  					uint32_t syncedFlags = body->flags & ~b3_bodyTransientFlags;
  					B3_ASSERT( ( bodySim->flags & syncedFlags ) == syncedFlags );
  
@@ -14825,7 +14899,7 @@ index 29c13c7..d514876 100644
  					{
  						B3_ASSERT( ( bodyState->flags & syncedFlags ) == syncedFlags );
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8..b6fd42c 100644
+index 8bd3df8..49c5995 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
 @@ -10,6 +10,7 @@
@@ -14844,7 +14918,7 @@ index 8bd3df8..b6fd42c 100644
  
  	b3DebugPoint points[B3_DEBUG_POINT_CAPACITY];
  	int pointCount;
-@@ -266,6 +268,119 @@ typedef struct b3World
+@@ -266,6 +268,121 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
@@ -14904,6 +14978,8 @@ index 8bd3df8..b6fd42c 100644
 +	uint64_t metalShapeBoundsResidentDispatchCount;
 +	uint64_t metalShapeInputPackCount;
 +	uint64_t metalShapeInputReuseCount;
++	uint64_t metalShapeInputOrderRevisionCheckCount;
++	uint64_t metalAwakeBodyRevision;
 +	uint64_t metalShapeResultApplyCount;
 +	uint64_t metalShapeBoundsSyncCount;
 +	uint64_t metalShapeCpuStaleRevision;
@@ -14964,7 +15040,7 @@ index 8bd3df8..b6fd42c 100644
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -288,6 +403,67 @@ typedef struct b3World
+@@ -288,6 +405,78 @@ typedef struct b3World
  	bool inUse;
  } b3World;
  
@@ -15018,6 +15094,17 @@ index 8bd3df8..b6fd42c 100644
 +#endif
 +}
 +
++static inline void b3BumpMetalAwakeBodyRevision( b3World* world )
++{
++#if defined( BOX3D_METAL )
++	world->metalAwakeBodyRevision += 1;
++	if ( world->metalAwakeBodyRevision == 0 )
++		world->metalAwakeBodyRevision = 1;
++#else
++	B3_UNUSED( world );
++#endif
++}
++
 +static inline void b3BumpMetalBodyStateRevision( b3World* world )
 +{
 +#if defined( BOX3D_METAL )
@@ -15032,7 +15119,7 @@ index 8bd3df8..b6fd42c 100644
  b3World* b3GetUnlockedWorldFromId( b3WorldId id );
  b3World* b3GetWorldFromId( b3WorldId id );
  
-@@ -347,4 +523,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +536,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
@@ -16675,10 +16762,10 @@ index 7c8a1c7..332a54c 100644
  		.massScale = a2 * a3,
  		.impulseScale = a3,
 diff --git a/src/solver_set.c b/src/solver_set.c
-index f050a86..dc28b1a 100644
+index f050a86..3945acd 100644
 --- a/src/solver_set.c
 +++ b/src/solver_set.c
-@@ -35,10 +35,15 @@ void b3DestroySolverSet( b3World* world, int setIndex )
+@@ -35,10 +35,16 @@ void b3DestroySolverSet( b3World* world, int setIndex )
  // This handles contact types 1 and 3. Type 2 doesn't need any action.
  void b3WakeSolverSet( b3World* world, int setIndex )
  {
@@ -16689,12 +16776,13 @@ index f050a86..dc28b1a 100644
  	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
  	b3SolverSet* disabledSet = b3Array_Get( world->solverSets, b3_disabledSet );
 +	b3BumpMetalContactInputRevision( world );
++	b3BumpMetalAwakeBodyRevision( world );
 +	b3BumpMetalBodyPropertyRevision( world );
 +	b3BumpMetalBodyStateRevision( world );
  
  	b3Body* bodies = world->bodies.data;
  
-@@ -152,6 +157,30 @@ void b3WakeSolverSet( b3World* world, int setIndex )
+@@ -152,6 +158,30 @@ void b3WakeSolverSet( b3World* world, int setIndex )
  
  void b3TrySleepIsland( b3World* world, int islandId )
  {
@@ -16725,11 +16813,12 @@ index f050a86..dc28b1a 100644
  	b3Island* island = b3Array_Get( world->islands, islandId );
  	B3_ASSERT( island->setIndex == b3_awakeSet );
  
-@@ -160,6 +189,23 @@ void b3TrySleepIsland( b3World* world, int islandId )
+@@ -160,6 +190,24 @@ void b3TrySleepIsland( b3World* world, int islandId )
  	{
  		return;
  	}
 +	b3BumpMetalContactInputRevision( world );
++	b3BumpMetalAwakeBodyRevision( world );
 +	b3BumpMetalBodyPropertyRevision( world );
 +	b3BumpMetalBodyStateRevision( world );
 +	if ( island->contacts.count > 0 )
@@ -16749,7 +16838,7 @@ index f050a86..dc28b1a 100644
  
  	// island is sleeping
  	// - create new sleeping solver set
-@@ -534,6 +580,18 @@ void b3TransferBody( b3World* world, b3SolverSet* targetSet, b3SolverSet* source
+@@ -534,6 +582,22 @@ void b3TransferBody( b3World* world, b3SolverSet* targetSet, b3SolverSet* source
  	{
  		return;
  	}
@@ -16763,13 +16852,17 @@ index f050a86..dc28b1a 100644
 +	{
 +		return;
 +	}
++	if ( targetSet->setIndex == b3_awakeSet || sourceSet->setIndex == b3_awakeSet )
++	{
++		b3BumpMetalAwakeBodyRevision( world );
++	}
 +	b3BumpMetalBodyPropertyRevision( world );
 +	b3BumpMetalBodyStateRevision( world );
  
  	int sourceIndex = body->localIndex;
  	b3BodySim* sourceSim = b3Array_Get( sourceSet->bodySims, sourceIndex );
 diff --git a/src/world_snapshot.c b/src/world_snapshot.c
-index 9efaee9..1aee1e0 100644
+index 9efaee9..44d7c17 100644
 --- a/src/world_snapshot.c
 +++ b/src/world_snapshot.c
 @@ -789,8 +789,12 @@ static void b3SerContacts( b3RecBuffer* buf, b3World* world )
@@ -16803,7 +16896,7 @@ index 9efaee9..1aee1e0 100644
  		// Transient moveResults/movePairs stay at shell's NULL/0
  	}
  
-@@ -1331,5 +1338,19 @@ bool b3DeserializeIntoShell( const uint8_t* data, int size, b3World* world, b3Re
+@@ -1331,5 +1338,20 @@ bool b3DeserializeIntoShell( const uint8_t* data, int size, b3World* world, b3Re
  
  	b3DesNames( r, &world->names );
  
@@ -16816,6 +16909,7 @@ index 9efaee9..1aee1e0 100644
 +		world->metalPairShapeRevision += 1;
 +		world->metalBodyTransformRevision += 1;
 +		b3BumpMetalContactInputRevision( world );
++		b3BumpMetalAwakeBodyRevision( world );
 +		b3BumpMetalBodyPropertyRevision( world );
 +		b3BumpMetalBodyStateRevision( world );
 +	}
@@ -16864,10 +16958,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..93f5e82
+index 0000000..a12e3c1
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,3602 @@
+@@ -0,0 +1,3604 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -19116,28 +19210,29 @@ index 0000000..93f5e82
 +	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
 +	ENSURE( profile.shapeInputPackCount == 1 );
 +	ENSURE( profile.shapeInputReuseCount == 1 );
++	ENSURE( profile.shapeInputOrderRevisionCheckCount == 2 );
 +
-+	// Sleeping a middle body swap-removes an awake sim without changing shape
-+	// geometry. Exact cached body ids must reject the old bodyIndex mapping.
++	// Sleep and immediately wake a middle body before the next step. The awake
++	// count returns to its old value, but swap-removal plus append changes the
++	// bodyIndex mapping; only the monotonic order revision can reject this cache.
++	b3World* world = b3GetWorldFromId( worldId );
++	uint64_t orderRevision = world->metalAwakeBodyRevision;
 +	b3Body_SetAwake( bodies[17], false );
 +	ENSURE( b3Body_IsAwake( bodies[17] ) == false );
-+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
-+	profile = b3World_GetMetalProfile( worldId );
-+	ENSURE( profile.shapeInputPackCount == 2 );
-+	ENSURE( profile.shapeInputReuseCount == 1 );
-+	ENSURE( profile.shapeBoundsSyncCount == bodyCount );
-+
 +	b3Body_SetAwake( bodies[17], true );
 +	ENSURE( b3Body_IsAwake( bodies[17] ) );
++	ENSURE( world->metalAwakeBodyRevision == orderRevision + 2 );
 +	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 +	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 +	profile = b3World_GetMetalProfile( worldId );
-+	printf( "    shape registry packs=%llu reuses=%llu awakeReorders=2 syncShapes=%llu\n",
++	printf( "    shape registry packs=%llu reuses=%llu orderChecks=%llu awakeReorders=2 syncShapes=%llu\n",
 +			(unsigned long long)profile.shapeInputPackCount, (unsigned long long)profile.shapeInputReuseCount,
++			(unsigned long long)profile.shapeInputOrderRevisionCheckCount,
 +			(unsigned long long)profile.shapeBoundsSyncCount );
-+	ENSURE( profile.shapeInputPackCount == 3 );
++	ENSURE( profile.shapeInputPackCount == 2 );
 +	ENSURE( profile.shapeInputReuseCount == 2 );
-+	ENSURE( profile.shapeBoundsSyncCount == 2 * bodyCount - 1 );
++	ENSURE( profile.shapeInputOrderRevisionCheckCount == 4 );
++	ENSURE( profile.shapeBoundsSyncCount == bodyCount );
 +
 +	// Filter-only edits may deliberately skip immediate contact invocation and
 +	// therefore do not need to mutate tree topology. They still invalidate the
@@ -19147,9 +19242,10 @@ index 0000000..93f5e82
 +	b3Shape_SetFilter( shapes[9], filter, false );
 +	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 +	profile = b3World_GetMetalProfile( worldId );
-+	ENSURE( profile.shapeInputPackCount == 4 );
++	ENSURE( profile.shapeInputPackCount == 3 );
 +	ENSURE( profile.shapeInputReuseCount == 2 );
-+	ENSURE( profile.shapeBoundsSyncCount == 3 * bodyCount - 1 );
++	ENSURE( profile.shapeInputOrderRevisionCheckCount == 5 );
++	ENSURE( profile.shapeBoundsSyncCount == 2 * bodyCount );
 +	ENSURE( profile.shapeResultApplyCount == 1 );
 +
 +	b3DestroyWorld( worldId );
