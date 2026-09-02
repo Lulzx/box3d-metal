@@ -123,6 +123,8 @@ struct b3MetalContext
 	bool residentPairMovesValid;
 	id<MTLBuffer> pairMoveBuffer;
 	NSUInteger pairMoveCapacity;
+	id<MTLBuffer> pairTreeUploadBuffer;
+	NSUInteger pairTreeUploadCapacity;
 	id<MTLBuffer> pairTreeBuffer;
 	NSUInteger pairTreeCapacity;
 	id<MTLBuffer> pairMovedBuffer;
@@ -2205,6 +2207,7 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->shapeBlockBuffer release];
 	[context->shapeSummaryBuffer release];
 	[context->pairMoveBuffer release];
+	[context->pairTreeUploadBuffer release];
 	[context->pairTreeBuffer release];
 	[context->pairMovedBuffer release];
 	[context->pairShapeBuffer release];
@@ -2661,14 +2664,25 @@ static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveB
 		context->pairCpuFilterMoveBuffer = buffer;
 		context->pairCpuFilterMoveCapacity = capacity;
 	}
-	if ( context->pairTreeCapacity < treeBytes )
+	if ( context->pairTreeCapacity < treeBytes || context->pairTreeUploadCapacity < treeBytes )
 	{
 		NSUInteger capacity = context->pairTreeCapacity > 0 ? context->pairTreeCapacity : 4096;
 		while ( capacity < treeBytes ) capacity *= 2;
-		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
-		if ( buffer == nil ) return false;
+		id<MTLBuffer> uploadBuffer =
+			[context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		id<MTLBuffer> treeBuffer =
+			[context->device newBufferWithLength:capacity options:MTLResourceStorageModePrivate];
+		if ( uploadBuffer == nil || treeBuffer == nil )
+		{
+			[uploadBuffer release];
+			[treeBuffer release];
+			return false;
+		}
+		[context->pairTreeUploadBuffer release];
 		[context->pairTreeBuffer release];
-		context->pairTreeBuffer = buffer;
+		context->pairTreeUploadBuffer = uploadBuffer;
+		context->pairTreeUploadCapacity = capacity;
+		context->pairTreeBuffer = treeBuffer;
 		context->pairTreeCapacity = capacity;
 		context->pairTreeRevision = 0;
 	}
@@ -4343,17 +4357,16 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 				}
 			}
 		}
-		if ( context->pairTreeRevision != broadPhase->treeRevision )
+		bool uploadPairTree = context->pairTreeRevision != broadPhase->treeRevision;
+		if ( uploadPairTree )
 		{
-			b3TreeNode* nodeDestination = context->pairTreeBuffer.contents;
+			b3TreeNode* nodeDestination = context->pairTreeUploadBuffer.contents;
 			for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
 			{
 				const b3DynamicTree* tree = broadPhase->trees + treeIndex;
 				memcpy( nodeDestination + nodeOffsets[treeIndex], tree->nodes,
 					(NSUInteger)tree->nodeCapacity * sizeof( b3TreeNode ) );
 			}
-			context->pairTreeRevision = broadPhase->treeRevision;
-			if ( stats != NULL ) stats->treeUploadCount = 1;
 		}
 		memset( context->pairSummaryBuffer.contents, 0, sizeof( b3MetalPairSummary ) );
 		uint32_t movedEpoch = context->pairMovedEpoch + 1u;
@@ -4393,8 +4406,17 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 
 		id<MTLComputePipelineState> pairPipeline = context->pairCandidatesPipeline;
 		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
+		if ( commandBuffer == nil ) return false;
+		if ( uploadPairTree )
+		{
+			id<MTLBlitCommandEncoder> uploadEncoder = [commandBuffer blitCommandEncoder];
+			if ( uploadEncoder == nil ) return false;
+			[uploadEncoder copyFromBuffer:context->pairTreeUploadBuffer sourceOffset:0
+				toBuffer:context->pairTreeBuffer destinationOffset:0 size:treeBytes];
+			[uploadEncoder endEncoding];
+		}
 		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-		if ( commandBuffer == nil || encoder == nil ) return false;
+		if ( encoder == nil ) return false;
 		id<MTLBuffer> residentMoveBuffer = context->shapeCompactBuffer != nil ? context->shapeCompactBuffer : context->pairMoveBuffer;
 		[encoder setComputePipelineState:context->pairMarkMovesPipeline];
 		[encoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
@@ -4477,6 +4499,7 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 		[commandBuffer commit];
 		[commandBuffer waitUntilCompleted];
 		if ( commandBuffer.status != MTLCommandBufferStatusCompleted ) return false;
+		if ( uploadPairTree ) context->pairTreeRevision = broadPhase->treeRevision;
 		if ( stats != NULL ) stats->commandBufferCount = 1;
 
 		double gpuMilliseconds = commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime
@@ -4587,6 +4610,9 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 		if ( stats != NULL )
 		{
 			stats->gpuMilliseconds = gpuMilliseconds;
+			stats->treeUploadCount = uploadPairTree ? 1 : 0;
+			stats->pairTreeUploadBytes = uploadPairTree ? treeBytes : 0;
+			stats->pairTreePrivateBytes = treeBytes;
 			stats->pairRequiresCpuFiltering = summary->cpuFilterMoveCount != 0;
 			stats->pairContactSeedCount = compactSeedPlan ? (int)summary->totalCount : 0;
 			stats->pairContactSeedDispatchCount = compactSeedPlan && summary->totalCount > 0 ? 1 : 0;

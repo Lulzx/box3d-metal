@@ -106,6 +106,10 @@ typedef struct b3MetalDispatchStats
 	int bodyCount;
 	int commandBufferCount;
 	int treeUploadCount;
+	// Bytes copied from shared staging into the private persistent pair tree by
+	// this dispatch, and the logical byte size of that private snapshot.
+	uint64_t pairTreeUploadBytes;
+	uint64_t pairTreePrivateBytes;
 	int metadataUploadCount;
 	int pairSetUploadCount;
 	int pairFilterRegistryUploadCount;
