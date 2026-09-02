@@ -936,9 +936,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
 		contact->flags |= b3_relativeTransformValid;
 
-		// This updates solid contacts. Metal convex results contain only local
-		// geometry; the CPU still owns material callbacks, manifold persistence,
-		// events, recycling, and graph/island transitions.
+		// This updates solid contacts. Metal convex results contain world-oriented
+		// geometry relative to body A; the CPU still owns material callbacks,
+		// manifold persistence, events, recycling, and graph/island transitions.
 		const b3LocalManifold* precomputedConvexManifold = NULL;
 #if defined( BOX3D_METAL )
 		b3LocalManifold localConvexManifold = { 0 };
@@ -973,6 +973,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 #endif
 		bool touching = b3UpdateContact( world, workerIndex, contact, shapeA, bodySimA->localCenter, transformA, shapeB,
 										 bodySimB->localCenter, transformB, isFast, precomputedConvexManifold,
+										 precomputedConvexManifold != NULL,
 										 taskContext->arena );
 
 		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );

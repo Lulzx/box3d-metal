@@ -54,7 +54,9 @@ rotations plus VF64-capable world translations for the collision step. Each
 16-byte contact record now carries only eligibility and two shape ids. Full
 80-byte outputs stay in private Metal storage; a stable scan/prefix/scatter pass
 returns only active results, tagged by original contact index, in the same
-command buffer. CPU workers lower-bound once per range and consume the compact ordered local geometry
+command buffer. The scatter also rotates normals and points into world axes,
+so CPU workers lower-bound once per range and consume geometry already finalized
+for Box3D manifold persistence
 while retaining manifold allocation, warm-start feature matching, materials,
 pre-solve callbacks, events, and island mutation. Other shape pairs stay on the
 unchanged CPU path. High-aspect and speculative hull-sphere contacts explicitly

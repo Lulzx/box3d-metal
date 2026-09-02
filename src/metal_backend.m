@@ -955,8 +955,15 @@ static const char* b3_metalSource =
 	"  constant ManifoldCompactParams& p [[buffer(2)]]){uint total=0u;for(uint i=0u;i<p.blockCount;++i){PairBlock b=blocks[i];\n"
 	"    b.offset=total;blocks[i]=b;total+=b.sum;}summary->totalCount=ulong(total);summary->flags=0u;summary->writeFlags=0u;}\n"
 	"kernel void b3_manifold_scatter(const device ConvexManifoldResult* results [[buffer(0)]],const device PairBlock* blocks [[buffer(1)]],\n"
-	"  device ConvexManifoldResult* compact [[buffer(2)]],constant ManifoldCompactParams& p [[buffer(3)]],uint i [[thread_position_in_grid]]){\n"
-	"  if(i>=p.contactCount)return;ConvexManifoldResult r=results[i];if(r.eligible==0u)return;uint output=blocks[i/256u].offset+r.padding3;\n"
+	"  device ConvexManifoldResult* compact [[buffer(2)]],const device ConvexManifoldInput* inputs [[buffer(3)]],\n"
+	"  const device ShapeGeometry* shapeGeometry [[buffer(4)]],const device BodyTransform* bodyTransforms [[buffer(5)]],\n"
+	"  constant ManifoldCompactParams& p [[buffer(6)]],uint i [[thread_position_in_grid]]){\n"
+	"  if(i>=p.contactCount)return;ConvexManifoldResult r=results[i];if(r.eligible==0u)return;ShapeGeometry geometryA=shapeGeometry[inputs[i].shapeIdA];\n"
+	"  BodyTransform transformA=bodyTransforms[geometryA.bodyId];float4 q=float4(transformA.qx,transformA.qy,transformA.qz,transformA.qw);\n"
+	"  if(r.pointCount>0u){float3 n=rotate(q,float3(r.nx,r.ny,r.nz));float3 p1=rotate(q,float3(r.p1x,r.p1y,r.p1z));\n"
+	"    r.nx=n.x;r.ny=n.y;r.nz=n.z;r.p1x=p1.x;r.p1y=p1.y;r.p1z=p1.z;}\n"
+	"  if(r.pointCount>1u){float3 p2=rotate(q,float3(r.p2x,r.p2y,r.p2z));r.p2x=p2.x;r.p2y=p2.y;r.p2z=p2.z;}\n"
+	"  uint output=blocks[i/256u].offset+r.padding3;\n"
 	"  r.inputIndex=i;r.padding3=0u;compact[output]=r;}\n";
 #pragma clang diagnostic pop
 
@@ -3611,7 +3618,10 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		[encoder setBuffer:context->convexManifoldResultBuffer offset:0 atIndex:0];
 		[encoder setBuffer:context->convexManifoldBlockBuffer offset:0 atIndex:1];
 		[encoder setBuffer:context->convexManifoldCompactBuffer offset:0 atIndex:2];
-		[encoder setBytes:&compactParams length:sizeof( compactParams ) atIndex:3];
+		[encoder setBuffer:context->convexManifoldInputBuffer offset:0 atIndex:3];
+		[encoder setBuffer:context->convexShapeGeometryBuffer offset:0 atIndex:4];
+		[encoder setBuffer:context->convexBodyTransformBuffer offset:0 atIndex:5];
+		[encoder setBytes:&compactParams length:sizeof( compactParams ) atIndex:6];
 		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
 		[encoder endEncoding];

@@ -123,9 +123,10 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 
 // Batch the first common convex narrow-phase route. The returned array contains
 // only active Metal results, ordered by inputIndex; eligibleCount is its length.
-// Exact VF64 subtraction is used for double-precision world translations before
-// converting the relative displacement to float, matching Box3D's scalar
-// narrow-phase boundary.
+// Result normals and points are oriented into world axes, while points remain
+// relative to body A's origin. Exact VF64 subtraction is used for double-precision
+// world translations before converting the relative displacement to float,
+// matching Box3D's scalar narrow-phase boundary.
 bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
 	int contactCount, const b3MetalConvexManifoldResult** results, int* eligibleCount, b3MetalDispatchStats* stats );
 

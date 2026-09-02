@@ -188,6 +188,11 @@ carries its original contact-array index and remains ordered by that index. CPU
 collision workers use one lower-bound search per parallel range followed by a
 linear walk; no dense result-to-contact map is allocated. Unsupported records
 and explicit per-record CPU fallbacks do not enter the shared payload.
+The scatter pass also rotates active normals and frame-A points with the
+resident body quaternion. CPU application therefore skips matrix construction
+and local-to-world vector transforms; points remain relative to body A's origin
+so exact far-world anchor construction and center-of-mass adjustment retain the
+existing CPU semantics.
 
 Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 unsupported joint solution, continuous collision, events, and sleeping/island
@@ -294,6 +299,8 @@ The body-transform registry and 16-byte pair-record checkpoint is recorded in
 Private full manifold results and active-only deterministic readback are
 recorded in
 [`benchmarks/m4-pro-private-manifold-results-2026-09-02.md`](benchmarks/m4-pro-private-manifold-results-2026-09-02.md).
+Fused manifold orientation finalization is recorded in
+[`benchmarks/m4-pro-manifold-finalization-2026-09-02.md`](benchmarks/m4-pro-manifold-finalization-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

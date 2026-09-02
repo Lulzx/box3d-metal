@@ -735,6 +735,15 @@ static int MetalConvexManifoldTest( void )
 			ineligibleCount += 1;
 			continue;
 		}
+		if ( reference.pointCount > 0 )
+		{
+			b3Matrix3 matrixA = b3MakeMatrixFromQuat( b3GetBodyTransformQuick( world, body1 ).q );
+			reference.normal = b3MulMV( matrixA, reference.normal );
+			for ( int pointIndex = 0; pointIndex < reference.pointCount; ++pointIndex )
+			{
+				points[pointIndex].point = b3MulMV( matrixA, points[pointIndex].point );
+			}
+		}
 		ENSURE( result != NULL );
 		ENSURE( result->eligible == 1 );
 		ENSURE( result->touching == (uint32_t)( reference.pointCount > 0 ) );
