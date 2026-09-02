@@ -3585,6 +3585,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
 
 	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
 	b3DynamicTree_Rebuild( staticTree, true );
+	world->broadPhase.treeRevision += 1;
+	if ( world->broadPhase.treeRevision == 0 )
+	{
+		world->broadPhase.treeRevision = 1;
+	}
 }
 
 void b3World_EnableSpeculative( b3WorldId worldId, bool flag )

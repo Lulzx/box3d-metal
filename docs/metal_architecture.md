@@ -80,7 +80,10 @@ resources. `minimumBodyCount` is deliberately caller-controlled until benchmark
 coverage establishes stable defaults across Apple GPU families.
 
 An independently opt-in pair stage copies Erin's existing static, kinematic,
-and dynamic tree topology into persistent shared Metal buffers. A count pass
+and dynamic tree topology into persistent shared Metal buffers. A monotonic
+broad-phase revision lets unchanged node snapshots remain resident across pair
+queries; create, destroy, move, enlarge, and rebuild operations invalidate the
+snapshot before it can be reused. A count pass
 traverses leaves in upstream stack order. A deterministic 256-lane hierarchical
 scan computes stable per-move offsets: SIMD subgroups scan each block, a short
 serial kernel prefixes block totals, and a parallel add applies block offsets.
@@ -172,5 +175,6 @@ The follow-on shape-AABB implementation and result-stream measurements are in
 [`benchmarks/m4-pro-shape-finalization-2026-09-02.md`](benchmarks/m4-pro-shape-finalization-2026-09-02.md).
 Experimental dynamic-tree traversal results are in
 [`benchmarks/m4-pro-pair-generation-2026-09-02.md`](benchmarks/m4-pro-pair-generation-2026-09-02.md).
-The follow-on on-device stable scan and compaction correctness checkpoint is in
+The follow-on on-device stable scan, compaction, and unchanged-tree residency
+correctness checkpoint is in
 [`benchmarks/m4-pro-pair-prefix-2026-09-02.md`](benchmarks/m4-pro-pair-prefix-2026-09-02.md).

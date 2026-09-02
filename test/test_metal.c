@@ -390,10 +390,14 @@ static int MetalPairTraversalTest( void )
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
 		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
 	ENSURE( stats.commandBufferCount == 2 );
+	ENSURE( stats.treeUploadCount == 1 );
 	double growthGpuMilliseconds = stats.gpuMilliseconds;
+	stats = (b3MetalDispatchStats){ 0 };
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
 		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
 	ENSURE( stats.commandBufferCount == 1 );
+	ENSURE( stats.treeUploadCount == 0 );
+	double steadyGpuMilliseconds = stats.gpuMilliseconds;
 
 	int cpuCapacity = bodyCount * bodyCount;
 	b3MetalPairCandidate* cpuCandidates = malloc( (size_t)cpuCapacity * sizeof( b3MetalPairCandidate ) );
@@ -433,8 +437,25 @@ static int MetalPairTraversalTest( void )
 		totalCpuCount += capture.count;
 	}
 	ENSURE( totalCpuCount == gpuCandidateCount );
+	int dynamicProxyKey = B3_NULL_INDEX;
+	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
+	{
+		if ( B3_PROXY_TYPE( broadPhase->moveArray.data[moveIndex] ) == b3_dynamicBody )
+		{
+			dynamicProxyKey = broadPhase->moveArray.data[moveIndex];
+			break;
+		}
+	}
+	ENSURE( dynamicProxyKey != B3_NULL_INDEX );
+	int dynamicProxyId = B3_PROXY_ID( dynamicProxyKey );
+	b3AABB unchangedAABB = b3DynamicTree_GetAABB( broadPhase->trees + b3_dynamicBody, dynamicProxyId );
+	b3BroadPhase_EnlargeProxy( broadPhase, dynamicProxyKey, unchangedAABB );
+	stats = (b3MetalDispatchStats){ 0 };
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
+		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
+	ENSURE( stats.treeUploadCount == 1 );
 	printf( "    pair traversal moves=%d candidates=%d growth=%.3f ms steady=%.3f ms exactOrder=yes\n", moveCount,
-		gpuCandidateCount, growthGpuMilliseconds, stats.gpuMilliseconds );
+		gpuCandidateCount, growthGpuMilliseconds, steadyGpuMilliseconds );
 
 	free( cpuCandidates );
 	b3DestroyWorld( worldId );

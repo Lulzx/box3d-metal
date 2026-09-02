@@ -70,6 +70,7 @@ struct b3MetalContext
 	NSUInteger pairMoveCapacity;
 	id<MTLBuffer> pairTreeBuffer;
 	NSUInteger pairTreeCapacity;
+	uint64_t pairTreeRevision;
 	id<MTLBuffer> pairRecordBuffer;
 	NSUInteger pairRecordCapacity;
 	id<MTLBuffer> pairCandidateBuffer;
@@ -1340,6 +1341,7 @@ static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveB
 		[context->pairTreeBuffer release];
 		context->pairTreeBuffer = buffer;
 		context->pairTreeCapacity = capacity;
+		context->pairTreeRevision = 0;
 	}
 	if ( context->pairRecordCapacity < recordBytes )
 	{
@@ -2139,12 +2141,17 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 		}
 
 		memcpy( context->pairMoveBuffer.contents, moveArray, moveBytes );
-		b3TreeNode* nodeDestination = context->pairTreeBuffer.contents;
-		for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
+		if ( context->pairTreeRevision != broadPhase->treeRevision )
 		{
-			const b3DynamicTree* tree = broadPhase->trees + treeIndex;
-			memcpy( nodeDestination + nodeOffsets[treeIndex], tree->nodes,
-				(NSUInteger)tree->nodeCapacity * sizeof( b3TreeNode ) );
+			b3TreeNode* nodeDestination = context->pairTreeBuffer.contents;
+			for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
+			{
+				const b3DynamicTree* tree = broadPhase->trees + treeIndex;
+				memcpy( nodeDestination + nodeOffsets[treeIndex], tree->nodes,
+					(NSUInteger)tree->nodeCapacity * sizeof( b3TreeNode ) );
+			}
+			context->pairTreeRevision = broadPhase->treeRevision;
+			if ( stats != NULL ) stats->treeUploadCount = 1;
 		}
 		memset( context->pairRecordBuffer.contents, 0, recordBytes );
 		memset( context->pairSummaryBuffer.contents, 0, sizeof( b3MetalPairSummary ) );

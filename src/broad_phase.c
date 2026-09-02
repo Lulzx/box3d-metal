@@ -18,6 +18,15 @@
 
 #include <string.h>
 
+static void b3IncrementTreeRevision( b3BroadPhase* bp )
+{
+	bp->treeRevision += 1;
+	if ( bp->treeRevision == 0 )
+	{
+		bp->treeRevision = 1;
+	}
+}
+
 void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity )
 {
 	_Static_assert( b3_bodyTypeCount == 3, "must be three body types" );
@@ -31,6 +40,7 @@ void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity )
 	bp->movePairCapacity = 0;
 	b3AtomicStoreInt( &bp->movePairIndex, 0 );
 	bp->pairSet = b3CreateSet( 2 * capacity->contactCount );
+	bp->treeRevision = 1;
 
 	int staticCapacity = b3MaxInt( 16, capacity->staticShapeCount );
 	bp->trees[b3_staticBody] = b3DynamicTree_Create( staticCapacity );
@@ -90,6 +100,7 @@ int b3BroadPhase_CreateProxy( b3BroadPhase* bp, b3BodyType proxyType, b3AABB aab
 {
 	B3_ASSERT( 0 <= proxyType && proxyType < b3_bodyTypeCount );
 	int proxyId = b3DynamicTree_CreateProxy( bp->trees + proxyType, aabb, categoryBits, shapeIndex );
+	b3IncrementTreeRevision( bp );
 	int proxyKey = B3_PROXY_KEY( proxyId, proxyType );
 	if ( proxyType != b3_staticBody || forcePairCreation )
 	{
@@ -107,6 +118,7 @@ void b3BroadPhase_DestroyProxy( b3BroadPhase* bp, int proxyKey )
 
 	B3_ASSERT( 0 <= proxyType && proxyType <= b3_bodyTypeCount );
 	b3DynamicTree_DestroyProxy( bp->trees + proxyType, proxyId );
+	b3IncrementTreeRevision( bp );
 }
 
 void b3BroadPhase_MoveProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb )
@@ -115,6 +127,7 @@ void b3BroadPhase_MoveProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb )
 	int proxyId = B3_PROXY_ID( proxyKey );
 
 	b3DynamicTree_MoveProxy( bp->trees + proxyType, proxyId, aabb );
+	b3IncrementTreeRevision( bp );
 	b3BufferMove( bp, proxyKey );
 }
 
@@ -127,6 +140,7 @@ void b3BroadPhase_EnlargeProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb )
 	B3_ASSERT( typeIndex != b3_staticBody );
 
 	b3DynamicTree_EnlargeProxy( bp->trees + typeIndex, proxyId, aabb );
+	b3IncrementTreeRevision( bp );
 	b3BufferMove( bp, proxyKey );
 }
 
@@ -441,8 +455,12 @@ static void b3UpdateTreesTask( void* context )
 	b3TracyCZoneNC( tree_task, "Rebuild Trees", b3_colorFireBrick, true );
 
 	b3World* world = (b3World*)context;
-	b3DynamicTree_Rebuild( world->broadPhase.trees + b3_dynamicBody, false );
-	b3DynamicTree_Rebuild( world->broadPhase.trees + b3_kinematicBody, false );
+	int dynamicLeafCount = b3DynamicTree_Rebuild( world->broadPhase.trees + b3_dynamicBody, false );
+	int kinematicLeafCount = b3DynamicTree_Rebuild( world->broadPhase.trees + b3_kinematicBody, false );
+	if ( dynamicLeafCount > 1 || kinematicLeafCount > 1 )
+	{
+		b3IncrementTreeRevision( &world->broadPhase );
+	}
 
 	b3TracyCZoneEnd( tree_task );
 }

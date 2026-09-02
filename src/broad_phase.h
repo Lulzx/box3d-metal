@@ -27,6 +27,9 @@ typedef struct b3World b3World;
 typedef struct b3BroadPhase
 {
 	b3DynamicTree trees[b3_bodyTypeCount];
+	// Changes whenever node topology or traversal-visible bounds change. Metal
+	// uses this to retain an unchanged tree snapshot across pair queries.
+	uint64_t treeRevision;
 
 	// Per body-type bit sets indexed by proxyId, marking proxies moved this step.
 	// Paired with moveArray which preserves deterministic insertion order for pair queries.

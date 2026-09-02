@@ -37,6 +37,7 @@ typedef struct b3MetalDispatchStats
 	double gpuMilliseconds;
 	int bodyCount;
 	int commandBufferCount;
+	int treeUploadCount;
 } b3MetalDispatchStats;
 
 // Returns false when there is no usable Metal device or the shader pipeline
