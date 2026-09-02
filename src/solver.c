@@ -921,6 +921,7 @@ static void b3ApplyMetalShapeResultsTask( int startIndex, int endIndex, int work
 			shape->flags |= b3_enlargedAABB;
 			b3SetBit( enlargedSimBitSet, result->simIndex );
 		}
+		shape->metalSyncGeneration = world->metalShapeResultGeneration;
 	}
 }
 #endif

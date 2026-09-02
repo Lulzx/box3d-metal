@@ -620,6 +620,8 @@ static int MetalShapeCompactionTest( void )
 	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
 	ENSURE( profile.shapeCompactDispatchCount == 2 );
 	ENSURE( profile.shapeBoundsResidentDispatchCount == 1 );
+	ENSURE( profile.shapeInputPackCount == 1 );
+	ENSURE( profile.shapeInputReuseCount == 1 );
 	ENSURE( profile.lastShapeResultCount == bodyCount );
 	ENSURE( profile.lastEnlargedShapeResultCount == bodyCount / 2 );
 	ENSURE( world->broadPhase.moveArray.count == bodyCount / 2 );
@@ -636,24 +638,99 @@ static int MetalShapeCompactionTest( void )
 	profile = b3World_GetMetalProfile( worldId );
 	ENSURE( profile.shapeResultApplyCount == 0 );
 	ENSURE( profile.shapeBoundsSyncCount == 1 );
-	// A public mutation increments the tree revision, so the following dispatch
-	// must reseed from CPU bounds instead of trusting the old resident layout.
-	b3Body_SetTransform( mutationBodyId, (b3Pos){ 3.0f, 2.0f, 0.0f }, b3Quat_identity );
+	// A public transform synchronizes stale peers and invalidates the packed
+	// registry even when the new AABB remains inside the existing fat bound.
+	b3Body_SetTransform( mutationBodyId, (b3Pos){ 3.0f, 0.01f, 0.0f }, b3Quat_identity );
 	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 	profile = b3World_GetMetalProfile( worldId );
 	ENSURE( profile.shapeBoundsResidentDispatchCount == 1 );
+	ENSURE( profile.shapeInputPackCount == 2 );
+	ENSURE( profile.shapeInputReuseCount == 1 );
 	ENSURE( profile.shapeResultApplyCount == 0 );
-	ENSURE( profile.shapeBoundsSyncCount == bodyCount - 1 );
-	printf( "    shape compaction enlarged=%d/%d stableOrder=yes residentBounds=%llu fullApplies=%llu syncShapes=%llu\n",
+	ENSURE( profile.shapeBoundsSyncCount == bodyCount );
+	printf( "    shape compaction enlarged=%d/%d stableOrder=yes residentBounds=%llu inputPacks=%llu inputReuses=%llu "
+		"fullApplies=%llu syncShapes=%llu\n",
 		profile.lastEnlargedShapeResultCount, profile.lastShapeResultCount,
 		(unsigned long long)profile.shapeBoundsResidentDispatchCount,
+		(unsigned long long)profile.shapeInputPackCount, (unsigned long long)profile.shapeInputReuseCount,
 		(unsigned long long)profile.shapeResultApplyCount, (unsigned long long)profile.shapeBoundsSyncCount );
 
 	b3World_DisableMetal( worldId );
 	ENSURE( world->metalShapeCpuBoundsStale == false );
-	ENSURE( world->metalShapeBoundsSyncCount == 2 * bodyCount - 1 );
+	ENSURE( world->metalShapeBoundsSyncCount == 2 * bodyCount );
 	free( movingShapeIds );
 	free( movingProxyKeys );
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
+static int MetalShapeInputRegistryTest( void )
+{
+	const int bodyCount = 64;
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableContinuous = false;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( worldId, true ) );
+	ENSURE( b3World_SetMetalBroadPhase( worldId, true ) );
+
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.filter.maskBits = 0;
+	shapeDef.invokeContactCreation = false;
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.2f };
+	b3BodyId bodies[bodyCount];
+	b3ShapeId shapes[bodyCount];
+	for ( int i = 0; i < bodyCount; ++i )
+	{
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_dynamicBody;
+		bodyDef.position = (b3Pos){ 2.0f * (float)i, 0.0f, 0.0f };
+		bodies[i] = b3CreateBody( worldId, &bodyDef );
+		shapes[i] = b3CreateSphereShape( bodies[i], &shapeDef, &sphere );
+	}
+
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.shapeInputPackCount == 1 );
+	ENSURE( profile.shapeInputReuseCount == 1 );
+
+	// Sleeping a middle body swap-removes an awake sim without changing shape
+	// geometry. Exact cached body ids must reject the old bodyIndex mapping.
+	b3Body_SetAwake( bodies[17], false );
+	ENSURE( b3Body_IsAwake( bodies[17] ) == false );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.shapeInputPackCount == 2 );
+	ENSURE( profile.shapeInputReuseCount == 1 );
+	ENSURE( profile.shapeBoundsSyncCount == bodyCount );
+
+	b3Body_SetAwake( bodies[17], true );
+	ENSURE( b3Body_IsAwake( bodies[17] ) );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	profile = b3World_GetMetalProfile( worldId );
+	printf( "    shape registry packs=%llu reuses=%llu awakeReorders=2 syncShapes=%llu\n",
+		(unsigned long long)profile.shapeInputPackCount, (unsigned long long)profile.shapeInputReuseCount,
+		(unsigned long long)profile.shapeBoundsSyncCount );
+	ENSURE( profile.shapeInputPackCount == 3 );
+	ENSURE( profile.shapeInputReuseCount == 2 );
+	ENSURE( profile.shapeBoundsSyncCount == 2 * bodyCount - 1 );
+
+	// Filter-only edits may deliberately skip immediate contact invocation and
+	// therefore do not need to mutate tree topology. They still invalidate the
+	// cached eligibility bit and force an exact registry rebuild.
+	b3Filter filter = b3Shape_GetFilter( shapes[9] );
+	filter.maskBits = 1;
+	b3Shape_SetFilter( shapes[9], filter, false );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.shapeInputPackCount == 4 );
+	ENSURE( profile.shapeInputReuseCount == 2 );
+	ENSURE( profile.shapeBoundsSyncCount == 3 * bodyCount - 1 );
+	ENSURE( profile.shapeResultApplyCount == 1 );
+
 	b3DestroyWorld( worldId );
 	return 0;
 }
@@ -1012,6 +1089,8 @@ static int MetalConvexFrictionContactTest( void )
 	ENSURE( profile.finalizationDispatchCount == 10 );
 	ENSURE( profile.shapeDispatchCount == 10 );
 	ENSURE( profile.shapeFallbackCount == 0 );
+	ENSURE( profile.shapeInputPackCount == 1 );
+	ENSURE( profile.shapeInputReuseCount == 9 );
 	ENSURE( profile.shapeResultApplyCount == 10 );
 	ENSURE( profile.shapeBoundsSyncCount == 0 );
 	ENSURE( profile.pairTreeUploadCount == 1 );
@@ -1709,6 +1788,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalPairTraversalTest );
 	RUN_SUBTEST( MetalPairTraversalFallbackTest );
 	RUN_SUBTEST( MetalShapeCompactionTest );
+	RUN_SUBTEST( MetalShapeInputRegistryTest );
 	RUN_SUBTEST( MetalWorldIntegrationTest );
 	RUN_SUBTEST( MetalDistanceJointContactTest );
 	RUN_SUBTEST( MetalUnsupportedJointFallbackTest );

@@ -110,3 +110,4 @@ void b3MetalCommitPairTreeRefit( b3MetalContext* context, const b3BroadPhase* br
 // fail-closed boundary for route changes, fallback, and context destruction.
 bool b3MetalSyncShapeBounds( b3MetalContext* context, b3World* world, int shapeId );
 bool b3MetalSyncAllShapeBounds( b3MetalContext* context, b3World* world );
+void b3MetalInvalidateShapeInputCache( b3MetalContext* context );

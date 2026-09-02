@@ -506,6 +506,7 @@ b3AABB b3Body_ComputeAABB( b3BodyId bodyId )
 	b3Shape* shape = b3Array_Get( world->shapes, body->headShapeId );
 #if defined( BOX3D_METAL )
 	if ( world->metalShapeCpuBoundsStale && shape->metalResultIndex != B3_NULL_INDEX &&
+		shape->metalSyncGeneration != world->metalShapeResultGeneration &&
 		b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
 	{
 		shape->aabb = b3ComputeFatShapeAABB( shape, b3GetBodyTransformQuick( world, body ), B3_SPECULATIVE_DISTANCE );
@@ -518,6 +519,7 @@ b3AABB b3Body_ComputeAABB( b3BodyId bodyId )
 		shape = b3Array_Get( world->shapes, shape->nextShapeId );
 #if defined( BOX3D_METAL )
 		if ( world->metalShapeCpuBoundsStale && shape->metalResultIndex != B3_NULL_INDEX &&
+			shape->metalSyncGeneration != world->metalShapeResultGeneration &&
 			b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
 		{
 			shape->aabb = b3ComputeFatShapeAABB( shape, b3GetBodyTransformQuick( world, body ), B3_SPECULATIVE_DISTANCE );
@@ -1090,6 +1092,13 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
 	B3_ASSERT( b3Body_IsValid( bodyId ) );
 	b3World* world = b3GetWorld( bodyId.world0 );
 	B3_ASSERT( world->locked == false );
+#if defined( BOX3D_METAL )
+	if ( world->metalShapeCpuBoundsStale && b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
+	{
+		b3Log( "Box3D body transform skipped because Metal shape-bound readback failed\n" );
+		return;
+	}
+#endif
 
 	B3_REC( world, BodySetTransform, bodyId, position, rotation );
 
@@ -1107,6 +1116,9 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
 	bodySim->center0 = bodySim->center;
 
 	b3BroadPhase* broadPhase = &world->broadPhase;
+#if defined( BOX3D_METAL )
+	b3MetalInvalidateShapeInputCache( world->metalContext );
+#endif
 
 	b3WorldTransform transform = bodySim->transform;
 	const float speculativeDistance = B3_SPECULATIVE_DISTANCE;

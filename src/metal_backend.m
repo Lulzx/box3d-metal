@@ -16,6 +16,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined( BOX3D_DOUBLE_PRECISION )
@@ -76,6 +77,12 @@ struct b3MetalContext
 	NSUInteger finalizePropertiesCapacity;
 	id<MTLBuffer> shapeInputBuffer;
 	NSUInteger shapeInputCapacity;
+	int* shapeInputBodyIds;
+	int shapeInputBodyCapacity;
+	int shapeInputBodyCount;
+	int shapeInputCount;
+	bool shapeInputAllMasksDisabled;
+	bool shapeInputCacheValid;
 	id<MTLBuffer> shapeResultBuffer;
 	NSUInteger shapeResultCapacity;
 	id<MTLBuffer> shapeReadbackBuffer;
@@ -1294,6 +1301,7 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->finalizeResultBuffer release];
 	[context->finalizePropertiesBuffer release];
 	[context->shapeInputBuffer release];
+	free( context->shapeInputBodyIds );
 	[context->shapeResultBuffer release];
 	[context->shapeReadbackBuffer release];
 	[context->shapeCompactBuffer release];
@@ -1884,6 +1892,24 @@ static void b3MetalPackFinalizeProperties( b3MetalFinalizeProperties* properties
 	}
 }
 
+static bool b3MetalEnsureShapeBodyCapacity( b3MetalContext* context, int bodyCount )
+{
+	if ( context->shapeInputBodyCapacity >= bodyCount ) return true;
+	int capacity = context->shapeInputBodyCapacity > 0 ? context->shapeInputBodyCapacity : 64;
+	while ( capacity < bodyCount ) capacity *= 2;
+	int* bodyIds = realloc( context->shapeInputBodyIds, (size_t)capacity * sizeof( int ) );
+	if ( bodyIds == NULL ) return false;
+	context->shapeInputBodyIds = bodyIds;
+	context->shapeInputBodyCapacity = capacity;
+	return true;
+}
+
+static void b3MetalAdvanceShapeResultGeneration( b3World* world )
+{
+	world->metalShapeResultGeneration += 1;
+	if ( world->metalShapeResultGeneration == 0 ) world->metalShapeResultGeneration = 1;
+}
+
 static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepContext )
 {
 	stepContext->metalShapeResults = NULL;
@@ -1897,33 +1923,67 @@ static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepC
 	b3World* world = stepContext->world;
 	b3BodySim* sims = stepContext->sims;
 	int bodyCount = world->solverSets.data[b3_awakeSet].bodySims.count;
+	bool treeRefitEligible = world->metalBroadPhaseEnabled && world->userTreeTask == NULL &&
+		context->pairTreeBuffer != nil && context->pairTreeRevision == world->broadPhase.treeRevision;
+	bool bodyOrderMatches = context->shapeInputCacheValid && context->shapeInputBodyCount == bodyCount;
+	for ( int simIndex = 0; simIndex < bodyCount; ++simIndex )
+	{
+		if ( sims[simIndex].flags & b3_isFast ) treeRefitEligible = false;
+		if ( bodyOrderMatches && context->shapeInputBodyIds[simIndex] != sims[simIndex].bodyId )
+		{
+			bodyOrderMatches = false;
+		}
+	}
+
+	bool boundsResident = context->shapeBoundsRevision == world->broadPhase.treeRevision &&
+		context->shapeBoundsCount == context->shapeInputCount;
+	if ( bodyOrderMatches && boundsResident && context->shapeInputCount > 0 )
+	{
+		stepContext->metalShapeBoundsResident = true;
+		stepContext->metalDeferShapeResultApply = world->enableContinuous == false && world->contacts.count == 0 &&
+			world->sensors.count == 0 && context->shapeInputAllMasksDisabled;
+		stepContext->metalTreeRefitEligible = treeRefitEligible;
+		world->metalShapeInputReuseCount += 1;
+		return context->shapeInputCount;
+	}
+	if ( world->metalShapeCpuBoundsStale && b3MetalSyncAllShapeBounds( context, world ) == false )
+	{
+		context->shapeInputCacheValid = false;
+		world->metalShapeFallbackCount += 1;
+		return 0;
+	}
+
 	int shapeCount = 0;
 	for ( int i = 0; i < bodyCount; ++i )
 	{
 		shapeCount += world->bodies.data[sims[i].bodyId].shapeCount;
 	}
-	if ( shapeCount == 0 ) return 0;
-	if ( b3MetalEnsureShapeCapacity( context, (NSUInteger)shapeCount * sizeof( b3MetalShapeInput ),
+	if ( shapeCount == 0 )
+	{
+		context->shapeInputCacheValid = false;
+		return 0;
+	}
+	if ( b3MetalEnsureShapeBodyCapacity( context, bodyCount ) == false ||
+		b3MetalEnsureShapeCapacity( context, (NSUInteger)shapeCount * sizeof( b3MetalShapeInput ),
 		(NSUInteger)shapeCount * sizeof( b3MetalShapeAABBResult ) ) == false )
 	{
+		context->shapeInputCacheValid = false;
 		world->metalShapeFallbackCount += 1;
 		return 0;
 	}
 
 	b3MetalShapeInput* inputs = context->shapeInputBuffer.contents;
-	bool treeRefitEligible = world->metalBroadPhaseEnabled && world->userTreeTask == NULL &&
-		context->pairTreeBuffer != nil && context->pairTreeRevision == world->broadPhase.treeRevision;
-	bool deferShapeResultApply = world->enableContinuous == false && world->contacts.count == 0 && world->sensors.count == 0;
+	bool allMasksDisabled = true;
 	int outputIndex = 0;
 	for ( int simIndex = 0; simIndex < bodyCount; ++simIndex )
 	{
-		if ( sims[simIndex].flags & b3_isFast ) treeRefitEligible = false;
+		context->shapeInputBodyIds[simIndex] = sims[simIndex].bodyId;
 		b3Body* body = world->bodies.data + sims[simIndex].bodyId;
 		int shapeId = body->headShapeId;
 		while ( shapeId != B3_NULL_INDEX )
 		{
 			b3Shape* shape = world->shapes.data + shapeId;
-			if ( shape->filter.maskBits != 0 ) deferShapeResultApply = false;
+			if ( shape->filter.maskBits != 0 ) allMasksDisabled = false;
 			shape->metalResultIndex = outputIndex;
 			b3MetalShapeInput* input = inputs + outputIndex++;
 			*input = (b3MetalShapeInput){
@@ -1973,10 +2033,14 @@ static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepC
 		}
 	}
 	B3_ASSERT( outputIndex == shapeCount );
-	stepContext->metalShapeBoundsResident = context->shapeBoundsRevision == world->broadPhase.treeRevision &&
-		context->shapeBoundsCount == shapeCount;
-	stepContext->metalDeferShapeResultApply = deferShapeResultApply;
+	context->shapeInputBodyCount = bodyCount;
+	context->shapeInputCount = shapeCount;
+	context->shapeInputAllMasksDisabled = allMasksDisabled;
+	context->shapeInputCacheValid = true;
+	stepContext->metalDeferShapeResultApply = world->enableContinuous == false && world->contacts.count == 0 &&
+		world->sensors.count == 0 && allMasksDisabled;
 	stepContext->metalTreeRefitEligible = treeRefitEligible;
+	world->metalShapeInputPackCount += 1;
 	return shapeCount;
 }
 
@@ -2314,6 +2378,7 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 		}
 		if ( finalizationContext != NULL && shapeCount > 0 )
 		{
+			b3MetalAdvanceShapeResultGeneration( finalizationContext->world );
 			context->shapeBoundsCount = shapeCount;
 			finalizationContext->world->metalShapeBoundsResidentDispatchCount +=
 				finalizationContext->metalShapeBoundsResident ? 1 : 0;
@@ -2644,6 +2709,11 @@ void b3MetalCommitPairTreeRefit( b3MetalContext* context, const b3BroadPhase* br
 	context->shapeBoundsRevision = broadPhase->treeRevision;
 }
 
+void b3MetalInvalidateShapeInputCache( b3MetalContext* context )
+{
+	if ( context != NULL ) context->shapeInputCacheValid = false;
+}
+
 static bool b3MetalApplyShapeBoundResult( b3MetalContext* context, b3World* world, int shapeId )
 {
 	if ( context == NULL || world == NULL || context->shapeReadbackBuffer == nil ||
@@ -2654,10 +2724,19 @@ static bool b3MetalApplyShapeBoundResult( b3MetalContext* context, b3World* worl
 
 	b3Shape* shape = world->shapes.data + shapeId;
 	int resultIndex = shape->metalResultIndex;
-	if ( resultIndex < 0 || resultIndex >= context->shapeBoundsCount ) return false;
+	if ( resultIndex < 0 || resultIndex >= context->shapeBoundsCount )
+	{
+		context->shapeInputCacheValid = false;
+		return false;
+	}
+	if ( shape->metalSyncGeneration == world->metalShapeResultGeneration ) return true;
 	const b3MetalShapeAABBResult* results = context->shapeReadbackBuffer.contents;
 	const b3MetalShapeAABBResult* result = results + resultIndex;
-	if ( result->shapeId != shapeId || shape->id != shapeId ) return false;
+	if ( result->shapeId != shapeId || shape->id != shapeId )
+	{
+		context->shapeInputCacheValid = false;
+		return false;
+	}
 
 	shape->aabb = (b3AABB){
 		{ result->lowerX, result->lowerY, result->lowerZ },
@@ -2667,7 +2746,7 @@ static bool b3MetalApplyShapeBoundResult( b3MetalContext* context, b3World* worl
 		{ result->fatLowerX, result->fatLowerY, result->fatLowerZ },
 		{ result->fatUpperX, result->fatUpperY, result->fatUpperZ },
 	};
-	shape->metalResultIndex = B3_NULL_INDEX;
+	shape->metalSyncGeneration = world->metalShapeResultGeneration;
 	world->metalShapeBoundsSyncCount += 1;
 	return true;
 }
@@ -2678,9 +2757,18 @@ bool b3MetalSyncShapeBounds( b3MetalContext* context, b3World* world, int shapeI
 		shapeId < 0 || shapeId >= world->shapes.count ) return false;
 	b3Shape* shape = world->shapes.data + shapeId;
 	int resultIndex = shape->metalResultIndex;
-	if ( resultIndex < 0 || resultIndex >= context->shapeBoundsCount ) return false;
+	if ( resultIndex < 0 || resultIndex >= context->shapeBoundsCount )
+	{
+		context->shapeInputCacheValid = false;
+		return false;
+	}
+	if ( shape->metalSyncGeneration == world->metalShapeResultGeneration ) return true;
 	NSUInteger offset = (NSUInteger)resultIndex * sizeof( b3MetalShapeAABBResult );
-	if ( b3MetalReadbackShapeRange( context, offset, sizeof( b3MetalShapeAABBResult ) ) == false ) return false;
+	if ( b3MetalReadbackShapeRange( context, offset, sizeof( b3MetalShapeAABBResult ) ) == false )
+	{
+		context->shapeInputCacheValid = false;
+		return false;
+	}
 	return b3MetalApplyShapeBoundResult( context, world, shapeId );
 }
 
@@ -2696,7 +2784,14 @@ bool b3MetalSyncAllShapeBounds( b3MetalContext* context, b3World* world )
 	for ( int resultIndex = 0; resultIndex < resultCount; ++resultIndex )
 	{
 		int shapeId = results[resultIndex].shapeId;
-		b3MetalApplyShapeBoundResult( context, world, shapeId );
+		if ( shapeId < 0 || shapeId >= world->shapes.count )
+		{
+			context->shapeInputCacheValid = false;
+			return false;
+		}
+		b3Shape* shape = world->shapes.data + shapeId;
+		if ( shape->metalResultIndex == B3_NULL_INDEX ) continue;
+		if ( b3MetalApplyShapeBoundResult( context, world, shapeId ) == false ) return false;
 	}
 	world->metalShapeCpuBoundsStale = false;
 	return true;
@@ -3172,6 +3267,7 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		stepContext->metalFinalizeResults = finalizeBodies ? context->finalizeResultBuffer.contents : NULL;
 		if ( shapeCount > 0 )
 		{
+			b3MetalAdvanceShapeResultGeneration( stepContext->world );
 			context->shapeBoundsCount = shapeCount;
 			stepContext->world->metalShapeBoundsResidentDispatchCount += stepContext->metalShapeBoundsResident ? 1 : 0;
 			stepContext->metalShapeResults = shapeReadbackEncoded ? context->shapeReadbackBuffer.contents : NULL;

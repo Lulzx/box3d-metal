@@ -95,9 +95,18 @@ fallback.
 `shapeResultApplyCount` distinguishes compatibility-route full applies from
 the no-apply resident route, and `shapeBoundsSyncCount` reports how many shape
 records were explicitly materialized. This removes the shared full-result
-stream and traversal for the bounded route, but shape geometry/input packing
-still walks awake body shape lists every step and remains the next residency
-target.
+stream and traversal for the bounded route.
+
+The 72-byte shape-input records are also persistent across revision-stable
+steps. The CPU checks the exact awake-body id sequence while it already walks
+body simulations; a match preserves every cached body index and dispatches the
+existing geometry, filter, proxy, local-bound, and resident-fat-bound records
+without counting shapes or walking body shape lists. Sleep/wake swap-removal,
+tree revision changes, explicit transforms, and filter-only edits invalidate
+the registry. A rebuild first materializes any stale CPU mirrors, then repacks
+from the CPU oracle. `shapeInputPackCount` and `shapeInputReuseCount` expose the
+two routes. Cold/topology rebuilds are still CPU work; maintaining the registry
+directly in every topology mutator is a later refinement.
 
 Enable it with:
 
@@ -228,3 +237,5 @@ Resident leaf refit and VF64 far-world validation are recorded in
 [`benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md`](benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
+Persistent shape-input reuse is recorded in
+[`benchmarks/m4-pro-shape-input-registry-2026-09-02.md`](benchmarks/m4-pro-shape-input-registry-2026-09-02.md).

@@ -36,8 +36,12 @@ The full 64-byte shape result now lives in private Metal storage. Collision-free
 non-CCD worlds with contact masks disabled do not blit or apply that stream;
 public AABB queries stage only the requested 64-byte record, while route changes
 and Metal disable synchronize the remaining results explicitly.
+Revision-stable steps also reuse the persistent 72-byte shape-input registry:
+an exact awake-body id sequence protects each cached body index, so geometry,
+filters, proxy keys, and local bounds are not repacked or recomputed. Sleep,
+wake, topology, transform, and filter changes rebuild fail-closed.
 The stages remain off by default;
-per-step CPU shape-input packing is still a regression, while GPU tree traversal
+cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.
 See [the architecture and compatibility contract](docs/metal_architecture.md)
 for the exact supported surface and current CPU-only stages.

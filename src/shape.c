@@ -188,6 +188,7 @@ static b3Shape* b3CreateShapeInternal( b3World* world, b3Body* body, b3WorldTran
 	shape->flags |= def->enableSpeculativeContact ? b3_enableSpeculative : 0;
 	shape->proxyKey = B3_NULL_INDEX;
 	shape->metalResultIndex = B3_NULL_INDEX;
+	shape->metalSyncGeneration = 0;
 	shape->localCentroid = b3GetShapeCentroid( shape );
 	shape->aabbMargin = b3ComputeShapeMargin( shape );
 	shape->aabb = (b3AABB){ b3Vec3_zero, b3Vec3_zero };
@@ -1399,6 +1400,9 @@ void b3Shape_SetFilter( b3ShapeId shapeId, b3Filter filter, bool invokeContacts 
 	}
 
 	shape->filter = filter;
+#if defined( BOX3D_METAL )
+	b3MetalInvalidateShapeInputCache( world->metalContext );
+#endif
 
 	if ( invokeContacts )
 	{
@@ -1818,6 +1822,7 @@ b3AABB b3Shape_GetAABB( b3ShapeId shapeId )
 	b3Shape* shape = b3GetShape( world, shapeId );
 #if defined( BOX3D_METAL )
 	if ( world->locked == false && world->metalShapeCpuBoundsStale && shape->metalResultIndex != B3_NULL_INDEX &&
+		shape->metalSyncGeneration != world->metalShapeResultGeneration &&
 		b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
 	{
 		b3Body* body = world->bodies.data + shape->bodyId;
