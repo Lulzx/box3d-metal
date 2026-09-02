@@ -153,6 +153,20 @@ void b3WakeSolverSet( b3World* world, int setIndex )
 
 void b3TrySleepIsland( b3World* world, int islandId )
 {
+#if defined( BOX3D_METAL )
+	if ( b3MaterializeBodyMoveEvents( world ) == false )
+	{
+		// A failed lazy readback must not expose or mutate an uninitialized public
+		// array. Drop this step's events and their body indices fail-closed.
+		b3Array_Clear( world->bodyMoveEvents );
+		for ( int bodyIndex = 0; bodyIndex < world->bodies.count; ++bodyIndex )
+		{
+			world->bodies.data[bodyIndex].bodyMoveIndex = B3_NULL_INDEX;
+		}
+		world->metalBodyMoveEventsStale = false;
+		b3Log( "Box3D Metal body events dropped because forced-sleep readback failed\n" );
+	}
+#endif
 	b3Island* island = b3Array_Get( world->islands, islandId );
 	B3_ASSERT( island->setIndex == b3_awakeSet );
 

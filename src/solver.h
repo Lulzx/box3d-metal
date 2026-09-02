@@ -250,6 +250,9 @@ typedef struct b3StepContext
 	// resident state buffer. The CPU bookkeeping pass consumes the transform
 	// registry instead of the now-reset deltas.
 	bool metalBodyStatesFinalizedOnDevice;
+	// The same bounded finalization command authored the public move-event
+	// payload privately. The CPU bookkeeping pass must not overwrite it.
+	bool metalBodyMoveEventsOnDevice;
 	const b3MetalShapeAABBResult* metalShapeResults;
 	int metalShapeResultCount;
 	const b3MetalEnlargedShapeResult* metalEnlargedShapeResults;

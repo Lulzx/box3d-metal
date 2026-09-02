@@ -780,7 +780,7 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 		state->deltaPosition = b3Vec3_zero;
 		state->deltaRotation = b3Quat_identity;
 
-		if ( metalResult == NULL )
+		if ( metalResult == NULL && deviceStateFinalized == false )
 		{
 			sim->transform.p = b3OffsetPos( sim->center, b3Neg( b3RotateVector( sim->transform.q, sim->localCenter ) ) );
 		}
@@ -790,10 +790,13 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 		body->bodyMoveIndex = simIndex;
 		body->sleepVelocity = sleepVelocity;
 
-		moveEvents[simIndex].userData = body->userData;
-		moveEvents[simIndex].transform = sim->transform;
-		moveEvents[simIndex].bodyId = (b3BodyId){ sim->bodyId + 1, worldId, body->generation };
-		moveEvents[simIndex].fellAsleep = false;
+		if ( stepContext->metalBodyMoveEventsOnDevice == false )
+		{
+			moveEvents[simIndex].userData = body->userData;
+			moveEvents[simIndex].transform = sim->transform;
+			moveEvents[simIndex].bodyId = (b3BodyId){ sim->bodyId + 1, worldId, body->generation };
+			moveEvents[simIndex].fellAsleep = false;
+		}
 
 		// reset applied force and torque
 		sim->force = b3Vec3_zero;
@@ -1996,6 +1999,7 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		stepContext->metalFinalizeResults = NULL;
 		stepContext->metalFinalizationDeviceOnly = false;
 		stepContext->metalBodyStatesFinalizedOnDevice = false;
+		stepContext->metalBodyMoveEventsOnDevice = false;
 		stepContext->metalShapeResults = NULL;
 		stepContext->metalShapeResultCount = 0;
 		stepContext->metalEnlargedShapeResults = NULL;
@@ -2543,6 +2547,12 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		// Finalize bodies. Must happen after the constraint solver and after island splitting.
 #if defined( BOX3D_METAL )
 		b3ExecuteMetalFinalization( stepContext, awakeBodyCount );
+		if ( stepContext->metalBodyMoveEventsOnDevice )
+		{
+			world->metalBodyMoveEventsStale = true;
+			world->metalBodyMoveEventDispatchCount += 1;
+			world->metalBodyMoveEventCpuWriteBypassCount += 1;
+		}
 		if ( stepContext->metalShapeResultCount > 0 && world->enableContinuous == false )
 		{
 			world->metalFinalizationShapeTraversalBypassCount += 1;

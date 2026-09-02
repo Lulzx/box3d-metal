@@ -166,6 +166,10 @@ bool b3MetalCanReuseConvexManifoldInputs( const b3MetalContext* context, const b
 // authoritative for the world's current step and revision.
 bool b3MetalReadResidentBodyTransform( const b3MetalContext* context, const b3World* world, int bodyId,
 									   b3WorldTransform* transform, int* bodySimIndex, uint32_t* stateFlags );
+// Materialize the private, awake-sim-ordered move-event stream at the public
+// API boundary. Double-precision positions are decoded from VF64-authored
+// binary64 bits rather than from the narrowed float compatibility fields.
+bool b3MetalSyncBodyMoveEvents( b3MetalContext* context, b3World* world, b3BodyMoveEvent* events, int eventCount );
 bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices, int contactCount,
 									const b3MetalConvexManifoldResult** results, int* resultCount, int* residentBypassCount,
 									b3MetalDispatchStats* stats );

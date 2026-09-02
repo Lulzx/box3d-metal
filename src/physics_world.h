@@ -311,6 +311,11 @@ typedef struct b3World
 	uint64_t metalLastFinalizationReadbackBytes;
 	uint64_t metalFinalizationReadbackBypassCount;
 	uint64_t metalFinalizationShapeTraversalBypassCount;
+	uint64_t metalBodyMoveEventDispatchCount;
+	uint64_t metalBodyMoveEventCpuWriteBypassCount;
+	uint64_t metalBodyMoveEventSyncCount;
+	uint64_t metalLastBodyMoveEventReadbackBytes;
+	bool metalBodyMoveEventsStale;
 	uint64_t metalShapeDispatchCount;
 	uint64_t metalShapeFallbackCount;
 	uint64_t metalShapeCompactDispatchCount;
@@ -382,6 +387,10 @@ typedef struct b3World
 	bool enableSpeculative;
 	bool inUse;
 } b3World;
+
+// Ensure the current public body-move array is populated before an engine
+// transition mutates an event (for example, a forced sleep after Step).
+bool b3MaterializeBodyMoveEvents( b3World* world );
 
 static inline void b3BumpMetalContactInputRevision( b3World* world )
 {

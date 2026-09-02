@@ -2321,6 +2321,7 @@ static int MetalWorldIntegrationTest( void )
 										   b3MetalRandomFloat( -40.0f, 40.0f ) };
 		bodyDef.angularVelocity = (b3Vec3){ b3MetalRandomFloat( -20.0f, 20.0f ), b3MetalRandomFloat( -20.0f, 20.0f ),
 											b3MetalRandomFloat( -20.0f, 20.0f ) };
+		bodyDef.userData = (void*)(uintptr_t)( i + 1 );
 		cpuBodies[i] = b3CreateBody( cpuWorld, &bodyDef );
 		gpuBodies[i] = b3CreateBody( gpuWorld, &bodyDef );
 		if ( i % 3 == 0 )
@@ -2348,6 +2349,22 @@ static int MetalWorldIntegrationTest( void )
 	b3AABB staleCpuAABB = firstGpuShape->aabb;
 	b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
+	b3MetalProfile preEventProfile = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( preEventProfile.bodyMoveEventDispatchCount == 1 );
+	ENSURE( preEventProfile.bodyMoveEventCpuWriteBypassCount == 1 );
+	ENSURE( preEventProfile.bodyMoveEventSyncCount == 0 );
+	ENSURE( preEventProfile.lastBodyMoveEventReadbackBytes == 0 );
+	ENSURE( gpuWorldInternal->metalBodyMoveEventsStale );
+	// Lazy materialization must retain step-time metadata rather than observing
+	// a user-data mutation made after the step.
+	b3Body_SetUserData( gpuBodies[0], (void*)(uintptr_t)0xdeadbeef );
+	b3BodyEvents cpuEvents = b3World_GetBodyEvents( cpuWorld );
+	b3BodyEvents gpuEvents = b3World_GetBodyEvents( gpuWorld );
+	ENSURE( cpuEvents.moveCount == count );
+	ENSURE( gpuEvents.moveCount == count );
+	ENSURE( gpuWorldInternal->metalBodyMoveEventsStale == false );
+	(void)b3World_GetBodyEvents( gpuWorld );
+	ENSURE( b3World_GetMetalProfile( gpuWorld ).bodyMoveEventSyncCount == 1 );
 	ENSURE( VerifyResidentPairTraversal( gpuWorldInternal ) == 0 );
 	ENSURE( gpuWorldInternal->metalShapeCpuBoundsStale );
 	firstGpuShape = b3Array_Get( gpuWorldInternal->shapes, gpuShapes[0].index1 - 1 );
@@ -2357,14 +2374,29 @@ static int MetalWorldIntegrationTest( void )
 
 	float maxPositionError = 0.0f;
 	float maxRotationError = 0.0f;
+	float maxMoveEventError = 0.0f;
 	float maxAABBError = 0.0f;
 #if defined( BOX3D_DOUBLE_PRECISION )
 	float maxOracleUnderflow = 0.0f;
 #endif
 	for ( int i = 0; i < count; ++i )
 	{
+		const b3BodyMoveEvent* cpuEvent = cpuEvents.moveEvents + i;
+		const b3BodyMoveEvent* gpuEvent = gpuEvents.moveEvents + i;
+		ENSURE( cpuEvent->userData == (void*)(uintptr_t)( i + 1 ) );
+		ENSURE( gpuEvent->userData == (void*)(uintptr_t)( i + 1 ) );
+		ENSURE( cpuEvent->bodyId.index1 == cpuBodies[i].index1 );
+		ENSURE( gpuEvent->bodyId.index1 == gpuBodies[i].index1 );
+		ENSURE( cpuEvent->fellAsleep == false && gpuEvent->fellAsleep == false );
+		maxMoveEventError = b3MaxFloat( maxMoveEventError,
+			(float)fabs( (double)cpuEvent->transform.p.x - (double)gpuEvent->transform.p.x ) );
+		maxMoveEventError = b3MaxFloat( maxMoveEventError,
+			(float)fabs( (double)cpuEvent->transform.p.y - (double)gpuEvent->transform.p.y ) );
+		maxMoveEventError = b3MaxFloat( maxMoveEventError,
+			(float)fabs( (double)cpuEvent->transform.p.z - (double)gpuEvent->transform.p.z ) );
 		b3WorldTransform a = b3Body_GetTransform( cpuBodies[i] );
 		b3WorldTransform b = b3Body_GetTransform( gpuBodies[i] );
+		ENSURE( memcmp( &gpuEvent->transform.p, &b.p, sizeof( b.p ) ) == 0 );
 		maxPositionError = b3MaxFloat( maxPositionError, (float)fabs( (double)a.p.x - (double)b.p.x ) );
 		maxPositionError = b3MaxFloat( maxPositionError, (float)fabs( (double)a.p.y - (double)b.p.y ) );
 		maxPositionError = b3MaxFloat( maxPositionError, (float)fabs( (double)a.p.z - (double)b.p.z ) );
@@ -2396,7 +2428,8 @@ static int MetalWorldIntegrationTest( void )
 
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    integrated world device=%s fusedDispatches=%llu shapeDispatches=%llu compact=%d/%d finalizeBytes=%llu/%llu "
-			"shapeWalkBypasses=%llu transformRegistry=%llu/%llu/%llu state=%llu/%llu/%llu fullApplies=%llu syncShapes=%llu "
+			"shapeWalkBypasses=%llu transformRegistry=%llu/%llu/%llu state=%llu/%llu/%llu events=%llu/%llu/%llu "
+			"fullApplies=%llu syncShapes=%llu "
 			"maxPositionError=%.3g maxRotationError=%.3g "
 			"maxAABBError=%.3g\n",
 			profile.deviceName, (unsigned long long)profile.unconstrainedDispatchCount,
@@ -2409,6 +2442,9 @@ static int MetalWorldIntegrationTest( void )
 			(unsigned long long)profile.narrowPhaseTransformDeviceRefreshCount,
 			(unsigned long long)profile.bodyStateUploadCount, (unsigned long long)profile.bodyStateReuseCount,
 			(unsigned long long)profile.lastBodyStateUploadBytes,
+			(unsigned long long)profile.bodyMoveEventDispatchCount,
+			(unsigned long long)profile.bodyMoveEventSyncCount,
+			(unsigned long long)profile.lastBodyMoveEventReadbackBytes,
 			(unsigned long long)profile.shapeResultApplyCount, (unsigned long long)profile.shapeBoundsSyncCount, maxPositionError,
 			maxRotationError, maxAABBError );
 	ENSURE( profile.enabled );
@@ -2419,6 +2455,10 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.finalizationReadbackBypassCount == 1 );
 	ENSURE( profile.lastFinalizationReadbackBytes == 0 );
 	ENSURE( profile.finalizationShapeTraversalBypassCount == 1 );
+	ENSURE( profile.bodyMoveEventDispatchCount == 1 );
+	ENSURE( profile.bodyMoveEventCpuWriteBypassCount == 1 );
+	ENSURE( profile.bodyMoveEventSyncCount == 1 );
+	ENSURE( profile.lastBodyMoveEventReadbackBytes == (uint64_t)count * 72u );
 	ENSURE( profile.narrowPhaseTransformUploadCount == 1 );
 	ENSURE( profile.narrowPhaseTransformDeviceRefreshCount == 1 );
 	ENSURE( profile.bodyStateUploadCount == 1 );
@@ -2436,6 +2476,7 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.positionFallbackCount == 0 );
 	ENSURE( maxPositionError <= 3.0e-5f );
 	ENSURE( maxRotationError <= 3.0e-5f );
+	ENSURE( maxMoveEventError <= 3.0e-5f );
 	ENSURE( maxAABBError <= 5.0e-5f );
 #if defined( BOX3D_DOUBLE_PRECISION )
 	printf( "    VF64 far-world oracle underflow=%.9g\n", maxOracleUnderflow );
@@ -2689,6 +2730,10 @@ static int MetalConvexFrictionContactTest( void )
 	ENSURE( profile.finalizationReadbackBypassCount == 10 );
 	ENSURE( profile.lastFinalizationReadbackBytes == 0 );
 	ENSURE( profile.finalizationShapeTraversalBypassCount == 10 );
+	ENSURE( profile.bodyMoveEventDispatchCount == 10 );
+	ENSURE( profile.bodyMoveEventCpuWriteBypassCount == 10 );
+	ENSURE( profile.bodyMoveEventSyncCount == 0 );
+	ENSURE( profile.lastBodyMoveEventReadbackBytes == 0 );
 	ENSURE( profile.narrowPhaseTransformUploadCount == 1 );
 	ENSURE( profile.narrowPhaseTransformDeviceRefreshCount == 10 );
 	ENSURE( profile.bodyStateUploadCount == 1 );
@@ -2728,6 +2773,25 @@ static int MetalConvexFrictionContactTest( void )
 	// Disabling the resident broad-phase must restore the CPU tree invariant.
 	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, false ) );
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
+	b3MetalProfile forcedSleepBefore = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( gpuWorldInternal->metalBodyMoveEventsStale );
+	b3Body_SetAwake( gpuBodies[0], false );
+	b3MetalProfile forcedSleepAfter = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( forcedSleepAfter.bodyMoveEventSyncCount == forcedSleepBefore.bodyMoveEventSyncCount + 1 );
+	ENSURE( gpuWorldInternal->metalBodyMoveEventsStale == false );
+	b3BodyEvents forcedSleepEvents = b3World_GetBodyEvents( gpuWorld );
+	bool foundSleepEvent = false;
+	for ( int eventIndex = 0; eventIndex < forcedSleepEvents.moveCount; ++eventIndex )
+	{
+		const b3BodyMoveEvent* event = forcedSleepEvents.moveEvents + eventIndex;
+		if ( B3_ID_EQUALS( event->bodyId, gpuBodies[0] ) )
+		{
+			ENSURE( event->fellAsleep );
+			foundSleepEvent = true;
+			break;
+		}
+	}
+	ENSURE( foundSleepEvent );
 
 	b3DestroyWorld( gpuWorld );
 	b3DestroyWorld( cpuWorld );

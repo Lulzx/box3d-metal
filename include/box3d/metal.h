@@ -110,6 +110,17 @@ typedef struct b3MetalProfile
 	/// Finalization phases that skipped the per-body CPU shape-list traversal
 	/// because Metal shape results covered every awake shape.
 	uint64_t finalizationShapeTraversalBypassCount;
+	/// Finalization phases that authored a deterministic private move-event
+	/// stream in awake-sim order.
+	uint64_t bodyMoveEventDispatchCount;
+	/// CPU per-body public event writes omitted because the private stream is
+	/// authoritative until the application requests it.
+	uint64_t bodyMoveEventCpuWriteBypassCount;
+	/// Public event queries that materialized the latest private stream.
+	uint64_t bodyMoveEventSyncCount;
+	/// Bytes copied by the latest public move-event query. Zero while the
+	/// application leaves the private stream unobserved.
+	uint64_t lastBodyMoveEventReadbackBytes;
 	uint64_t shapeDispatchCount;
 	uint64_t shapeFallbackCount;
 	uint64_t shapeCompactDispatchCount;

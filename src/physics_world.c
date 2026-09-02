@@ -619,11 +619,33 @@ bool b3World_SetMetalBroadPhase( b3WorldId worldId, bool enabled )
 	return true;
 }
 
+bool b3MaterializeBodyMoveEvents( b3World* world )
+{
+	if ( world == NULL ) return false;
+#if defined( BOX3D_METAL )
+	if ( world->metalBodyMoveEventsStale )
+	{
+		if ( b3MetalSyncBodyMoveEvents( world->metalContext, world, world->bodyMoveEvents.data,
+				 world->bodyMoveEvents.count ) == false )
+		{
+			return false;
+		}
+		world->metalBodyMoveEventsStale = false;
+	}
+#endif
+	return true;
+}
+
 void b3World_DisableMetal( b3WorldId worldId )
 {
 	b3World* world = b3GetUnlockedWorldFromId( worldId );
 	if ( world == NULL )
 	{
+		return;
+	}
+	if ( b3MaterializeBodyMoveEvents( world ) == false )
+	{
+		b3Log( "Box3D Metal disable kept the context because body-move event readback failed\n" );
 		return;
 	}
 	if ( b3MetalSyncAllContactManifolds( world->metalContext, world ) == false )
@@ -707,6 +729,10 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.lastFinalizationReadbackBytes = world->metalLastFinalizationReadbackBytes;
 	profile.finalizationReadbackBypassCount = world->metalFinalizationReadbackBypassCount;
 	profile.finalizationShapeTraversalBypassCount = world->metalFinalizationShapeTraversalBypassCount;
+	profile.bodyMoveEventDispatchCount = world->metalBodyMoveEventDispatchCount;
+	profile.bodyMoveEventCpuWriteBypassCount = world->metalBodyMoveEventCpuWriteBypassCount;
+	profile.bodyMoveEventSyncCount = world->metalBodyMoveEventSyncCount;
+	profile.lastBodyMoveEventReadbackBytes = world->metalLastBodyMoveEventReadbackBytes;
 	profile.shapeDispatchCount = world->metalShapeDispatchCount;
 	profile.shapeFallbackCount = world->metalShapeFallbackCount;
 	profile.shapeCompactDispatchCount = world->metalShapeCompactDispatchCount;
@@ -1539,6 +1565,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	// Prepare to capture events
 	// Ensure user does not access stale data if there is an early return
 	b3Array_Clear( world->bodyMoveEvents );
+#if defined( BOX3D_METAL )
+	world->metalBodyMoveEventsStale = false;
+	world->metalLastBodyMoveEventReadbackBytes = 0;
+#endif
 	b3Array_Clear( world->sensorBeginEvents );
 	b3Array_Clear( world->contactBeginEvents );
 	b3Array_Clear( world->contactHitEvents );
@@ -2241,6 +2271,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
 	{
 		return (b3BodyEvents){ 0 };
 	}
+
+#if defined( BOX3D_METAL )
+	if ( b3MaterializeBodyMoveEvents( world ) == false )
+	{
+		b3Log( "Box3D Metal body events unavailable because move-event readback failed\n" );
+		return (b3BodyEvents){ 0 };
+	}
+#endif
 
 	int count = world->bodyMoveEvents.count;
 	b3BodyEvents events = { world->bodyMoveEvents.data, count };

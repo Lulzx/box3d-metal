@@ -47,7 +47,7 @@ enough for a trustworthy comparison.
 
 The state upload is gone on unchanged steps, but the exact comparison still
 reads the full CPU array and solved states are still copied back for the CPU
-body-finalization walk. Body properties are also repacked each step. The next
-boundary is revisioned state/property invalidation plus device-authored move
-events and lazy CPU body mirrors; only then can the final body traversal and
-state readback disappear.
+body-finalization walk. Body properties are also repacked each step. Move
+events are now device-authored and lazily materialized, so the remaining
+boundary is revisioned state/property invalidation plus lazy CPU body mirrors;
+only then can the final body traversal and state readback disappear.

@@ -147,9 +147,22 @@ continues directly into shape AABB generation and tree refit.
 `lastFinalizationReadbackBytes` reports the retained transfer and
 `finalizationReadbackBypassCount` reports successful zero-readback steps. This
 removes the 100-byte-per-body finalization stream on the bounded route, but not
-the CPU body traversal, solver-state readback, move-event bookkeeping, force
-reset, or public transform mirror. Device-authoritative body transforms and
-compact move events are the next residency boundary.
+the CPU body traversal, solver-state readback, force reset, or public transform
+mirror.
+
+The same kernel now writes a 72-byte private move-event record in deterministic
+awake-sim order. It snapshots user data and body identity and carries both the
+float compatibility position and VF64-authored exact binary64 position bits.
+The remaining CPU body pass deliberately leaves the public event array
+untouched. `b3World_GetBodyEvents` is the materialization boundary: only that
+query blits the private records and decodes them into Box3D's public ABI. A
+world step that overwrites an unobserved prior event stream performs no event
+readback. `bodyMoveEventDispatchCount`, `bodyMoveEventCpuWriteBypassCount`,
+`bodyMoveEventSyncCount`, and `lastBodyMoveEventReadbackBytes` expose the
+boundary. Sleep and CCD retain Erin's original CPU event path because their
+event count and `fellAsleep` bookkeeping are not dense. A forced sleep between
+the step and the public query first materializes the private stream so Erin's
+existing transition can mark the matching event without changing semantics.
 
 On that bounded route, finalization also scatters each awake body's completed
 rotation and origin position into the body-id-indexed narrow-phase transform

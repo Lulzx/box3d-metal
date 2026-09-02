@@ -43,6 +43,11 @@ Revision-stable steps also reuse the persistent 72-byte shape-input registry:
 an exact awake-body id sequence protects each cached body index, so geometry,
 filters, proxy keys, and local bounds are not repacked or recomputed. Sleep,
 wake, topology, transform, and filter changes rebuild fail-closed.
+On the sleep-disabled, non-CCD route, finalization also authors deterministic
+move events into private Metal storage. Public event queries lazily materialize
+only that 72-byte-per-body stream; unqueried steps perform no move-event
+readback. VF64 builds preserve the exact device-authored binary64 translation
+through this public boundary.
 The shape-specialized narrow-phase route batches sphere-sphere, capsule-sphere,
 capsule-capsule, and bounded compact hull-sphere manifold geometry in one Metal
 dispatch. Supported spheres, capsules, and compact hulls live in a revisioned
@@ -59,7 +64,7 @@ center-of-mass-relative anchors with VF64 translation subtraction, mixes default
 friction/restitution/rolling parameters and tangent velocity, and feature-matches
 warm starts against the prior GPU result. CPU workers consume this finalized
 state while retaining manifold allocation, custom material callbacks,
-pre-solve callbacks, events, and island mutation. Other shape pairs stay on the
+pre-solve callbacks, event exceptions, and island mutation. Other shape pairs stay on the
 unchanged CPU path. High-aspect and speculative hull-sphere contacts explicitly
 retain CPU GJK. Double worlds use VF64 exact subtraction before narrowing
 relative translations to the float convex-collision boundary.

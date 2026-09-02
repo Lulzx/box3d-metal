@@ -76,7 +76,8 @@ int main( void )
 		"metal_broad_phase=%s shapes=%s\n", workerCount, enableFinalization ? "on" : "off",
 		enableBroadPhase ? "on" : "off", createShapes ? "sphere_per_body" : "none" );
 	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,finalization_readback_bytes,finalization_readback_bypasses,"
-		"finalization_shape_traversal_bypasses,transform_device_refreshes,pair_kernel_ms,pair_dispatches,"
+		"finalization_shape_traversal_bypasses,move_event_dispatches,move_event_syncs,last_move_event_readback_bytes,"
+		"transform_device_refreshes,pair_kernel_ms,pair_dispatches,"
 		"body_state_uploads,body_state_reuses,last_body_state_upload_bytes,pair_fallbacks,speedup\n" );
 	const int counts[] = { 512, 2048, 8192, 32768, 131072, 524288 };
 	int testCount = selectedBodyCount > 0 ? 1 : (int)( sizeof( counts ) / sizeof( counts[0] ) );
@@ -108,11 +109,15 @@ int main( void )
 		}
 		double gpuMs = TimeWorld( gpuWorld, repeats );
 		b3MetalProfile metal = b3World_GetMetalProfile( gpuWorld );
-		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%.3f\n", bodyCount,
+		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%.3f\n",
+			bodyCount,
 			repeats, cpuMs, gpuMs,
 			metal.lastUnconstrainedGpuMilliseconds, (unsigned long long)metal.lastFinalizationReadbackBytes,
 			(unsigned long long)metal.finalizationReadbackBypassCount,
 			(unsigned long long)metal.finalizationShapeTraversalBypassCount,
+			(unsigned long long)metal.bodyMoveEventDispatchCount,
+			(unsigned long long)metal.bodyMoveEventSyncCount,
+			(unsigned long long)metal.lastBodyMoveEventReadbackBytes,
 			(unsigned long long)metal.narrowPhaseTransformDeviceRefreshCount,
 			metal.lastPairGpuMilliseconds,
 			(unsigned long long)metal.pairDispatchCount, (unsigned long long)metal.bodyStateUploadCount,
