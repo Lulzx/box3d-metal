@@ -13,8 +13,10 @@ rotation, origin offset, sleep-motion metrics, world-space inverse inertia, and
 awake-shape AABBs. A second experimental opt-in traverses Box3D's existing
 dynamic trees and performs deterministic candidate compaction on Metal,
 preserving upstream candidate order before the unchanged CPU filtering/contact
-callback. Both remain off by default while the CPU still owns tree mutation and
-consumes shared result streams.
+callback. Unchanged tree snapshots remain in persistent Metal storage, while
+any CPU bounds or topology mutation invalidates them. Both stages remain off by
+default while the CPU still owns tree mutation and consumes shared result
+streams.
 
 ## Quick start
 

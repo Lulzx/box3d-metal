@@ -22,10 +22,10 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..80bbf14 100644
+index cfe16e4..03774c7 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,60 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,62 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -43,8 +43,10 @@ index cfe16e4..80bbf14 100644
 +other joint types fall back safely. Experimental, separately opt-in stages port
 +body/shape finalization and traverse Erin's existing broad-phase trees on Metal
 +with deterministic on-device candidate compaction, while retaining CPU filtering
-+and contact creation. They remain off by default; shape readback is still a
-+regression, while GPU tree traversal crosses over only in large measured worlds.
++and contact creation. Unchanged tree snapshots remain in persistent Metal
++storage; any CPU topology or bounds mutation invalidates them. The stages remain
++off by default; shape readback is still a regression, while GPU tree traversal
++crosses over only in large measured worlds.
 +See [the architecture and compatibility contract](docs/metal_architecture.md)
 +for the exact supported surface and current CPU-only stages.
 +
@@ -1414,10 +1416,10 @@ index 0000000..697777c
 +```
 diff --git a/docs/benchmarks/m4-pro-pair-prefix-2026-09-02.md b/docs/benchmarks/m4-pro-pair-prefix-2026-09-02.md
 new file mode 100644
-index 0000000..8edba0b
+index 0000000..09c1fa0
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-pair-prefix-2026-09-02.md
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,69 @@
 +# M4 Pro on-device pair compaction — 2026-09-02
 +
 +## Scope
@@ -1444,7 +1446,11 @@ index 0000000..8edba0b
 +
 +The deliberately undersized first call required two command buffers: scan plus
 +one capacity-growth retry. The second call required one command buffer. The
-+existing fully overlapping 80-body guard case still rejects the Metal route and
++first call uploaded the three tree node arrays; the unchanged second call
++uploaded none. An explicit broad-phase bounds invalidation then forced exactly
++one fresh tree upload. This proves reuse cannot silently traverse a stale
++snapshot. The existing fully overlapping 80-body guard case still rejects the
++Metal route and
 +runs one complete CPU traversal before exposing any candidates. The full Box3D
 +test suite, focused AddressSanitizer and UndefinedBehaviorSanitizer builds, and
 +the double-precision Metal test all passed during development.
@@ -1463,7 +1469,9 @@ index 0000000..8edba0b
 +by the CPU, CPU broad-phase trees are updated and copied to Metal each step, and
 +raw candidates return to CPU filtering and contact creation. The next useful
 +boundary is a versioned GPU-resident tree whose leaves consume resident shape
-+bounds and whose internal bounds are refitted on-device.
++bounds and whose internal bounds are refitted on-device. Revision caching now
++removes copies for unchanged trees, but moving worlds still invalidate the
++snapshot until those leaf updates move onto the GPU.
 +
 +## Reproduction
 +
@@ -1649,10 +1657,10 @@ index 0000000..a1d1c04
 +```
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..21fdac1
+index 0000000..e5ed2e6
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,180 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -1735,7 +1743,10 @@ index 0000000..21fdac1
 +coverage establishes stable defaults across Apple GPU families.
 +
 +An independently opt-in pair stage copies Erin's existing static, kinematic,
-+and dynamic tree topology into persistent shared Metal buffers. A count pass
++and dynamic tree topology into persistent shared Metal buffers. A monotonic
++broad-phase revision lets unchanged node snapshots remain resident across pair
++queries; create, destroy, move, enlarge, and rebuild operations invalidate the
++snapshot before it can be reused. A count pass
 +traverses leaves in upstream stack order. A deterministic 256-lane hierarchical
 +scan computes stable per-move offsets: SIMD subgroups scan each block, a short
 +serial kernel prefixes block totals, and a parallel add applies block offsets.
@@ -1827,7 +1838,8 @@ index 0000000..21fdac1
 +[`benchmarks/m4-pro-shape-finalization-2026-09-02.md`](benchmarks/m4-pro-shape-finalization-2026-09-02.md).
 +Experimental dynamic-tree traversal results are in
 +[`benchmarks/m4-pro-pair-generation-2026-09-02.md`](benchmarks/m4-pro-pair-generation-2026-09-02.md).
-+The follow-on on-device stable scan and compaction correctness checkpoint is in
++The follow-on on-device stable scan, compaction, and unchanged-tree residency
++correctness checkpoint is in
 +[`benchmarks/m4-pro-pair-prefix-2026-09-02.md`](benchmarks/m4-pro-pair-prefix-2026-09-02.md).
 diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
 index 2e82590..cd49acf 100644
@@ -1953,10 +1965,10 @@ index 941c6fb..17d7911 100644
  	message(STATUS "Box3D on Emscripten")
  	# SSE2/wasm SIMD flags are set directory-wide in the top-level CMakeLists so the
 diff --git a/src/broad_phase.c b/src/broad_phase.c
-index a369ca6..d92c30b 100644
+index a369ca6..cec90d0 100644
 --- a/src/broad_phase.c
 +++ b/src/broad_phase.c
-@@ -12,6 +12,9 @@
+@@ -12,9 +12,21 @@
  #include "physics_world.h"
  #include "platform.h"
  #include "shape.h"
@@ -1966,7 +1978,59 @@ index a369ca6..d92c30b 100644
  
  #include <string.h>
  
-@@ -384,6 +387,55 @@ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void
++static void b3IncrementTreeRevision( b3BroadPhase* bp )
++{
++	bp->treeRevision += 1;
++	if ( bp->treeRevision == 0 )
++	{
++		bp->treeRevision = 1;
++	}
++}
++
+ void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity )
+ {
+ 	_Static_assert( b3_bodyTypeCount == 3, "must be three body types" );
+@@ -28,6 +40,7 @@ void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity )
+ 	bp->movePairCapacity = 0;
+ 	b3AtomicStoreInt( &bp->movePairIndex, 0 );
+ 	bp->pairSet = b3CreateSet( 2 * capacity->contactCount );
++	bp->treeRevision = 1;
+ 
+ 	int staticCapacity = b3MaxInt( 16, capacity->staticShapeCount );
+ 	bp->trees[b3_staticBody] = b3DynamicTree_Create( staticCapacity );
+@@ -87,6 +100,7 @@ int b3BroadPhase_CreateProxy( b3BroadPhase* bp, b3BodyType proxyType, b3AABB aab
+ {
+ 	B3_ASSERT( 0 <= proxyType && proxyType < b3_bodyTypeCount );
+ 	int proxyId = b3DynamicTree_CreateProxy( bp->trees + proxyType, aabb, categoryBits, shapeIndex );
++	b3IncrementTreeRevision( bp );
+ 	int proxyKey = B3_PROXY_KEY( proxyId, proxyType );
+ 	if ( proxyType != b3_staticBody || forcePairCreation )
+ 	{
+@@ -104,6 +118,7 @@ void b3BroadPhase_DestroyProxy( b3BroadPhase* bp, int proxyKey )
+ 
+ 	B3_ASSERT( 0 <= proxyType && proxyType <= b3_bodyTypeCount );
+ 	b3DynamicTree_DestroyProxy( bp->trees + proxyType, proxyId );
++	b3IncrementTreeRevision( bp );
+ }
+ 
+ void b3BroadPhase_MoveProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb )
+@@ -112,6 +127,7 @@ void b3BroadPhase_MoveProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb )
+ 	int proxyId = B3_PROXY_ID( proxyKey );
+ 
+ 	b3DynamicTree_MoveProxy( bp->trees + proxyType, proxyId, aabb );
++	b3IncrementTreeRevision( bp );
+ 	b3BufferMove( bp, proxyKey );
+ }
+ 
+@@ -124,6 +140,7 @@ void b3BroadPhase_EnlargeProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb )
+ 	B3_ASSERT( typeIndex != b3_staticBody );
+ 
+ 	b3DynamicTree_EnlargeProxy( bp->trees + typeIndex, proxyId, aabb );
++	b3IncrementTreeRevision( bp );
+ 	b3BufferMove( bp, proxyKey );
+ }
+ 
+@@ -384,13 +401,66 @@ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void
  	b3TracyCZoneEnd( pair_task );
  }
  
@@ -2022,7 +2086,20 @@ index a369ca6..d92c30b 100644
  static void b3UpdateTreesTask( void* context )
  {
  	b3TracyCZoneNC( tree_task, "Rebuild Trees", b3_colorFireBrick, true );
-@@ -423,7 +475,34 @@ void b3UpdateBroadPhasePairs( b3World* world )
+ 
+ 	b3World* world = (b3World*)context;
+-	b3DynamicTree_Rebuild( world->broadPhase.trees + b3_dynamicBody, false );
+-	b3DynamicTree_Rebuild( world->broadPhase.trees + b3_kinematicBody, false );
++	int dynamicLeafCount = b3DynamicTree_Rebuild( world->broadPhase.trees + b3_dynamicBody, false );
++	int kinematicLeafCount = b3DynamicTree_Rebuild( world->broadPhase.trees + b3_kinematicBody, false );
++	if ( dynamicLeafCount > 1 || kinematicLeafCount > 1 )
++	{
++		b3IncrementTreeRevision( &world->broadPhase );
++	}
+ 
+ 	b3TracyCZoneEnd( tree_task );
+ }
+@@ -423,7 +493,34 @@ void b3UpdateBroadPhasePairs( b3World* world )
  #endif
  
  	int minRange = 64;
@@ -2058,6 +2135,20 @@ index a369ca6..d92c30b 100644
  
  	b3TracyCZoneNC( create_contacts, "Create Contacts", b3_colorCoral, true );
  
+diff --git a/src/broad_phase.h b/src/broad_phase.h
+index dcd626b..c1e6ddb 100644
+--- a/src/broad_phase.h
++++ b/src/broad_phase.h
+@@ -27,6 +27,9 @@ typedef struct b3World b3World;
+ typedef struct b3BroadPhase
+ {
+ 	b3DynamicTree trees[b3_bodyTypeCount];
++	// Changes whenever node topology or traversal-visible bounds change. Metal
++	// uses this to retain an unchanged tree snapshot across pair queries.
++	uint64_t treeRevision;
+ 
+ 	// Per body-type bit sets indexed by proxyId, marking proxies moved this step.
+ 	// Paired with moveArray which preserves deterministic insertion order for pair queries.
 diff --git a/src/contact_solver.c b/src/contact_solver.c
 index 48de409..ce69ae1 100644
 --- a/src/contact_solver.c
@@ -2274,10 +2365,10 @@ index d85f233..ffa6859 100644
  int b3GetWideContactConstraintByteCount( void );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000..ade94bb
+index 0000000..9bb49a8
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,99 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2317,6 +2408,7 @@ index 0000000..ade94bb
 +	double gpuMilliseconds;
 +	int bodyCount;
 +	int commandBufferCount;
++	int treeUploadCount;
 +} b3MetalDispatchStats;
 +
 +// Returns false when there is no usable Metal device or the shader pipeline
@@ -2378,10 +2470,10 @@ index 0000000..ade94bb
 +	const b3MetalPairCandidate** candidates, int* candidateCount, b3MetalDispatchStats* stats );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..e10616e
+index 0000000..42ac438
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,2792 @@
+@@ -0,0 +1,2799 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2454,6 +2546,7 @@ index 0000000..e10616e
 +	NSUInteger pairMoveCapacity;
 +	id<MTLBuffer> pairTreeBuffer;
 +	NSUInteger pairTreeCapacity;
++	uint64_t pairTreeRevision;
 +	id<MTLBuffer> pairRecordBuffer;
 +	NSUInteger pairRecordCapacity;
 +	id<MTLBuffer> pairCandidateBuffer;
@@ -3724,6 +3817,7 @@ index 0000000..e10616e
 +		[context->pairTreeBuffer release];
 +		context->pairTreeBuffer = buffer;
 +		context->pairTreeCapacity = capacity;
++		context->pairTreeRevision = 0;
 +	}
 +	if ( context->pairRecordCapacity < recordBytes )
 +	{
@@ -4523,12 +4617,17 @@ index 0000000..e10616e
 +		}
 +
 +		memcpy( context->pairMoveBuffer.contents, moveArray, moveBytes );
-+		b3TreeNode* nodeDestination = context->pairTreeBuffer.contents;
-+		for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
++		if ( context->pairTreeRevision != broadPhase->treeRevision )
 +		{
-+			const b3DynamicTree* tree = broadPhase->trees + treeIndex;
-+			memcpy( nodeDestination + nodeOffsets[treeIndex], tree->nodes,
-+				(NSUInteger)tree->nodeCapacity * sizeof( b3TreeNode ) );
++			b3TreeNode* nodeDestination = context->pairTreeBuffer.contents;
++			for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
++			{
++				const b3DynamicTree* tree = broadPhase->trees + treeIndex;
++				memcpy( nodeDestination + nodeOffsets[treeIndex], tree->nodes,
++					(NSUInteger)tree->nodeCapacity * sizeof( b3TreeNode ) );
++			}
++			context->pairTreeRevision = broadPhase->treeRevision;
++			if ( stats != NULL ) stats->treeUploadCount = 1;
 +		}
 +		memset( context->pairRecordBuffer.contents, 0, recordBytes );
 +		memset( context->pairSummaryBuffer.contents, 0, sizeof( b3MetalPairSummary ) );
@@ -5175,7 +5274,7 @@ index 0000000..e10616e
 +	}
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..8571932 100644
+index 29c13c7..d75d1d3 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -5311,6 +5410,18 @@ index 29c13c7..8571932 100644
  int b3GetMaxWorldCount( void )
  {
  	return b3_maxWorldCount;
+@@ -3473,6 +3585,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+ 
+ 	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
+ 	b3DynamicTree_Rebuild( staticTree, true );
++	world->broadPhase.treeRevision += 1;
++	if ( world->broadPhase.treeRevision == 0 )
++	{
++		world->broadPhase.treeRevision = 1;
++	}
+ }
+ 
+ void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
 diff --git a/src/physics_world.h b/src/physics_world.h
 index 8bd3df8..6a4d275 100644
 --- a/src/physics_world.h
@@ -6145,10 +6256,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..14069cc
+index 0000000..4c5a033
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,1505 @@
+@@ -0,0 +1,1526 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -6541,10 +6652,14 @@ index 0000000..14069cc
 +	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
 +		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
 +	ENSURE( stats.commandBufferCount == 2 );
++	ENSURE( stats.treeUploadCount == 1 );
 +	double growthGpuMilliseconds = stats.gpuMilliseconds;
++	stats = (b3MetalDispatchStats){ 0 };
 +	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
 +		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
 +	ENSURE( stats.commandBufferCount == 1 );
++	ENSURE( stats.treeUploadCount == 0 );
++	double steadyGpuMilliseconds = stats.gpuMilliseconds;
 +
 +	int cpuCapacity = bodyCount * bodyCount;
 +	b3MetalPairCandidate* cpuCandidates = malloc( (size_t)cpuCapacity * sizeof( b3MetalPairCandidate ) );
@@ -6584,8 +6699,25 @@ index 0000000..14069cc
 +		totalCpuCount += capture.count;
 +	}
 +	ENSURE( totalCpuCount == gpuCandidateCount );
++	int dynamicProxyKey = B3_NULL_INDEX;
++	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
++	{
++		if ( B3_PROXY_TYPE( broadPhase->moveArray.data[moveIndex] ) == b3_dynamicBody )
++		{
++			dynamicProxyKey = broadPhase->moveArray.data[moveIndex];
++			break;
++		}
++	}
++	ENSURE( dynamicProxyKey != B3_NULL_INDEX );
++	int dynamicProxyId = B3_PROXY_ID( dynamicProxyKey );
++	b3AABB unchangedAABB = b3DynamicTree_GetAABB( broadPhase->trees + b3_dynamicBody, dynamicProxyId );
++	b3BroadPhase_EnlargeProxy( broadPhase, dynamicProxyKey, unchangedAABB );
++	stats = (b3MetalDispatchStats){ 0 };
++	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
++		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
++	ENSURE( stats.treeUploadCount == 1 );
 +	printf( "    pair traversal moves=%d candidates=%d growth=%.3f ms steady=%.3f ms exactOrder=yes\n", moveCount,
-+		gpuCandidateCount, growthGpuMilliseconds, stats.gpuMilliseconds );
++		gpuCandidateCount, growthGpuMilliseconds, steadyGpuMilliseconds );
 +
 +	free( cpuCandidates );
 +	b3DestroyWorld( worldId );

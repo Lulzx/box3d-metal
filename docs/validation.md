@@ -18,6 +18,8 @@ Direct primitive tests separately cover packed state and integration kernels.
   tree type, and shape id.
 - Capacity growth requires one safe write retry; the same steady route then
   completes in one command buffer.
+- Unchanged tree snapshots produce zero repeat uploads; a bounds mutation
+  invalidates the snapshot and forces exactly one fresh upload.
 - Dense pair candidate overflow with zero GPU dispatches and one CPU fallback.
 - Convex friction, tangent velocity, twist friction, and rolling resistance.
 - Convex restitution.

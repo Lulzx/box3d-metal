@@ -24,7 +24,11 @@ tree type, shape id, and candidate position exactly.
 
 The deliberately undersized first call required two command buffers: scan plus
 one capacity-growth retry. The second call required one command buffer. The
-existing fully overlapping 80-body guard case still rejects the Metal route and
+first call uploaded the three tree node arrays; the unchanged second call
+uploaded none. An explicit broad-phase bounds invalidation then forced exactly
+one fresh tree upload. This proves reuse cannot silently traverse a stale
+snapshot. The existing fully overlapping 80-body guard case still rejects the
+Metal route and
 runs one complete CPU traversal before exposing any candidates. The full Box3D
 test suite, focused AddressSanitizer and UndefinedBehaviorSanitizer builds, and
 the double-precision Metal test all passed during development.
@@ -43,7 +47,9 @@ The remaining residency costs are structural. Shape results are still consumed
 by the CPU, CPU broad-phase trees are updated and copied to Metal each step, and
 raw candidates return to CPU filtering and contact creation. The next useful
 boundary is a versioned GPU-resident tree whose leaves consume resident shape
-bounds and whose internal bounds are refitted on-device.
+bounds and whose internal bounds are refitted on-device. Revision caching now
+removes copies for unchanged trees, but moving worlds still invalidate the
+snapshot until those leaf updates move onto the GPU.
 
 ## Reproduction
 

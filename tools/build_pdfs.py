@@ -283,7 +283,7 @@ def architecture_story():
         p("Deterministic overflow", "h2"),
         p("Overflow constraints may share bodies. A single Metal thread walks them in upstream order. Mixed distance/parallel overflow uses an eight-byte type/index descriptor, preserving order with one launch per phase."),
         p("Experimental pair traversal", "h2"),
-        p("A separate Metal path traverses copies of Box3D's dynamic trees. A deterministic hierarchical SIMD scan assigns stable per-move offsets, then candidates are compacted in exact upstream tree and DFS order in one steady-state command buffer. CPU filters and contact creation remain unchanged. Bounded stack or capacity failures rerun the complete CPU traversal."),
+        p("Metal traverses cached copies of Box3D's dynamic trees. A hierarchical SIMD scan compacts candidates in exact upstream order in one steady-state command buffer. Snapshots remain resident until CPU bounds or topology changes; CPU filters and contact creation remain unchanged."),
         p("Apple GPU implementation choices", "h1"),
         *bullets([
             "One command buffer per solver step amortizes submission and synchronization.",

@@ -25,7 +25,9 @@ copies the existing three dynamic-tree node arrays, counts candidates per moved
 proxy, computes a stable hierarchical exclusive scan, and writes candidates in
 exact upstream tree and depth-first visitation order. SIMD subgroups scan fixed
 256-lane blocks, a short serial kernel prefixes block totals, and a parallel
-pass adds block offsets. The unchanged CPU callback performs pair-set
+pass adds block offsets. A monotonic broad-phase revision retains unchanged
+node snapshots across calls; create, destroy, move, enlarge, and rebuild
+operations invalidate them. The unchanged CPU callback performs pair-set
 deduplication, body/shape/joint/custom filters, compound handling, and contact
 creation.
 
@@ -108,5 +110,6 @@ candidate volume, allocation, or dispatch failure reruns the complete CPU
 traversal. The steady path counts, scans, and writes in one command buffer. If
 the exact total exceeds the geometrically retained candidate capacity, the
 first call grows the buffer and submits one write-only retry. The path still
-copies CPU tree nodes and reads raw candidates back. It is a measured step
-toward residency, not yet a device-resident broad phase.
+copies changed CPU tree nodes and reads raw candidates back. Moving worlds still
+invalidate the snapshot each step until resident leaf update/refit exists. It is
+a measured step toward residency, not yet a device-resident broad phase.
