@@ -659,6 +659,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.unconstrainedFallbackCount = world->metalUnconstrainedFallbackCount;
 	profile.contactDispatchCount = world->metalContactDispatchCount;
 	profile.contactFallbackCount = world->metalContactFallbackCount;
+	profile.contactPrepareDispatchCount = world->metalContactPrepareDispatchCount;
+	profile.contactPrepareFallbackCount = world->metalContactPrepareFallbackCount;
 	profile.jointDispatchCount = world->metalJointDispatchCount;
 	profile.jointFallbackCount = world->metalJointFallbackCount;
 	profile.finalizationDispatchCount = world->metalFinalizationDispatchCount;
@@ -980,7 +982,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 										 precomputedConvexManifold != NULL,
 										 taskContext->arena );
 #if defined( BOX3D_METAL )
-		if ( precomputedConvexManifold != NULL )
+		if ( precomputedConvexManifold != NULL && ( contact->flags & b3_simEnablePreSolveEvents ) == 0 )
 		{
 			contact->flags |= b3_simMetalManifold;
 		}

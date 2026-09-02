@@ -1060,9 +1060,73 @@ static int MetalResidentSolverOwnershipTest( void )
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.gravity = b3Vec3_zero;
 	worldDef.enableSleep = false;
+	b3WorldId cpuWorldId = b3CreateWorld( &worldDef );
 	b3WorldId worldId = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( worldId, 1 ) );
 	b3World_SetContactRecycleDistance( worldId, 0.0f );
+
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	b3BodyId cpuBodyA = b3CreateBody( cpuWorldId, &bodyDef );
+	b3CreateSphereShape( cpuBodyA, &shapeDef, &sphere );
+	b3BodyId bodyA = b3CreateBody( worldId, &bodyDef );
+	b3CreateSphereShape( bodyA, &shapeDef, &sphere );
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.enableSleep = false;
+	bodyDef.position = (b3Pos){ 0.99, 0.0, 0.0 };
+	b3BodyId cpuBodyB = b3CreateBody( cpuWorldId, &bodyDef );
+	b3CreateSphereShape( cpuBodyB, &shapeDef, &sphere );
+	b3BodyId bodyB = b3CreateBody( worldId, &bodyDef );
+	b3CreateSphereShape( bodyB, &shapeDef, &sphere );
+
+	b3World_Step( cpuWorldId, 1.0f / 60.0f, 1 );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
+	ENSURE( profile.lastResidentConvexContactCount == 1 );
+	ENSURE( profile.lastResidentConvexConstraintCount == 1 );
+	ENSURE( profile.contactPrepareDispatchCount == 1 );
+	ENSURE( profile.contactPrepareFallbackCount == 0 );
+	b3Vec3 cpuVelocity = b3Body_GetLinearVelocity( cpuBodyB );
+	b3Vec3 gpuVelocity = b3Body_GetLinearVelocity( bodyB );
+	ENSURE( b3Length( b3Sub( cpuVelocity, gpuVelocity ) ) <= 3.0e-5f );
+
+	// The next unchanged step deliberately takes the CPU recycling exception.
+	// A table slot still exists, but it must no longer authorize GPU preparation.
+	b3World_SetContactRecycleDistance( worldId, 0.1f );
+	b3World_SetContactRecycleDistance( cpuWorldId, 0.1f );
+	b3World_Step( cpuWorldId, 1.0f / 60.0f, 1 );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
+	ENSURE( profile.lastResidentConvexContactCount == 0 );
+	ENSURE( profile.lastResidentConvexConstraintCount == 0 );
+	ENSURE( profile.contactPrepareDispatchCount == 1 );
+	ENSURE( profile.contactPrepareFallbackCount == 0 );
+
+	b3DestroyWorld( worldId );
+	b3DestroyWorld( cpuWorldId );
+	return 0;
+}
+
+static bool MetalPreparePreSolveCallback( b3ShapeId shapeIdA, b3ShapeId shapeIdB, b3Pos point, b3Vec3 normal, void* context )
+{
+	B3_UNUSED( shapeIdA, shapeIdB, point, normal );
+	*(int*)context += 1;
+	return true;
+}
+
+static int MetalContactPreparePreSolveExceptionTest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	b3World_SetContactRecycleDistance( worldId, 0.0f );
+	int callbackCount = 0;
+	b3World_SetPreSolveCallback( worldId, MetalPreparePreSolveCallback, &callbackCount );
 
 	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
@@ -1073,22 +1137,17 @@ static int MetalResidentSolverOwnershipTest( void )
 	bodyDef.enableSleep = false;
 	bodyDef.position = (b3Pos){ 0.99, 0.0, 0.0 };
 	b3BodyId bodyB = b3CreateBody( worldId, &bodyDef );
+	shapeDef.enablePreSolveEvents = true;
 	b3CreateSphereShape( bodyB, &shapeDef, &sphere );
 
 	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
-	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
-	ENSURE( profile.lastResidentConvexContactCount == 1 );
-	ENSURE( profile.lastResidentConvexConstraintCount == 1 );
-
-	// The next unchanged step deliberately takes the CPU recycling exception.
-	// A table slot still exists, but it must no longer authorize GPU preparation.
-	b3World_SetContactRecycleDistance( worldId, 0.1f );
-	b3World_Step( worldId, 1.0f / 60.0f, 1 );
-	profile = b3World_GetMetalProfile( worldId );
+	ENSURE( callbackCount == 1 );
 	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
 	ENSURE( profile.lastResidentConvexContactCount == 0 );
 	ENSURE( profile.lastResidentConvexConstraintCount == 0 );
+	ENSURE( profile.contactPrepareDispatchCount == 0 );
+	ENSURE( profile.contactPrepareFallbackCount == 0 );
 
 	b3DestroyWorld( worldId );
 	return 0;
@@ -1153,6 +1212,151 @@ static int MetalExistingPairFilterTest( void )
 	printf( "    existing pair filter contacts=1 suppressed=1 restored=%d uploads=stable\n", candidateCount );
 
 	b3DestroyWorld( worldId );
+	return 0;
+}
+
+static int MetalContactPrepareFallbackTest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
+	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
+	b3World_SetContactRecycleDistance( cpuWorld, 0.0f );
+	b3World_SetContactRecycleDistance( gpuWorld, 0.0f );
+
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	b3BodyId cpuStatic = b3CreateBody( cpuWorld, &bodyDef );
+	b3BodyId gpuStatic = b3CreateBody( gpuWorld, &bodyDef );
+	b3CreateSphereShape( cpuStatic, &shapeDef, &sphere );
+	b3CreateSphereShape( gpuStatic, &shapeDef, &sphere );
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.enableSleep = false;
+	bodyDef.position = (b3Pos){ 0.99, 0.0, 0.0 };
+	b3BodyId cpuContactBody = b3CreateBody( cpuWorld, &bodyDef );
+	b3BodyId gpuContactBody = b3CreateBody( gpuWorld, &bodyDef );
+	b3CreateSphereShape( cpuContactBody, &shapeDef, &sphere );
+	b3CreateSphereShape( gpuContactBody, &shapeDef, &sphere );
+
+	bodyDef.position = (b3Pos){ -0.5, 5.0, 0.0 };
+	b3BodyId cpuJointA = b3CreateBody( cpuWorld, &bodyDef );
+	b3BodyId gpuJointA = b3CreateBody( gpuWorld, &bodyDef );
+	bodyDef.position = (b3Pos){ 0.5, 5.0, 0.0 };
+	bodyDef.linearVelocity = (b3Vec3){ 0.0f, 0.2f, 0.0f };
+	b3BodyId cpuJointB = b3CreateBody( cpuWorld, &bodyDef );
+	b3BodyId gpuJointB = b3CreateBody( gpuWorld, &bodyDef );
+	b3RevoluteJointDef cpuJointDef = b3DefaultRevoluteJointDef();
+	cpuJointDef.base.bodyIdA = cpuJointA;
+	cpuJointDef.base.bodyIdB = cpuJointB;
+	b3CreateRevoluteJoint( cpuWorld, &cpuJointDef );
+	b3RevoluteJointDef gpuJointDef = cpuJointDef;
+	gpuJointDef.base.bodyIdA = gpuJointA;
+	gpuJointDef.base.bodyIdB = gpuJointB;
+	b3CreateRevoluteJoint( gpuWorld, &gpuJointDef );
+
+	b3World_Step( cpuWorld, 1.0f / 60.0f, 1 );
+	b3World_Step( gpuWorld, 1.0f / 60.0f, 1 );
+	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( profile.lastResidentConvexConstraintCount == 1 );
+	ENSURE( profile.contactPrepareDispatchCount == 0 );
+	ENSURE( profile.contactPrepareFallbackCount == 1 );
+	ENSURE( profile.jointFallbackCount == 1 );
+	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuContactBody ),
+		b3Body_GetLinearVelocity( gpuContactBody ) ) ) <= 3.0e-5f );
+	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuJointB ),
+		b3Body_GetLinearVelocity( gpuJointB ) ) ) <= 3.0e-5f );
+
+	b3DestroyWorld( gpuWorld );
+	b3DestroyWorld( cpuWorld );
+	return 0;
+}
+
+static int MetalResidentContactPrepareDifferentialTest( void )
+{
+	const int sphereCount = 64;
+	const int capsuleCount = 17;
+	const int count = sphereCount + capsuleCount;
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
+	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
+	b3World_SetContactRecycleDistance( cpuWorld, 0.0f );
+	b3World_SetContactRecycleDistance( gpuWorld, 0.0f );
+	b3ShapeDef staticShapeDef = b3DefaultShapeDef();
+	staticShapeDef.baseMaterial.friction = 0.65f;
+	staticShapeDef.baseMaterial.restitution = 0.35f;
+	staticShapeDef.baseMaterial.rollingResistance = 0.08f;
+	staticShapeDef.baseMaterial.tangentVelocity = (b3Vec3){ 0.0f, 0.12f, -0.07f };
+	b3ShapeDef dynamicShapeDef = staticShapeDef;
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3Capsule capsule = { .center1 = { 0.0f, -0.4f, 0.0f }, .center2 = { 0.0f, 0.4f, 0.0f }, .radius = 0.3f };
+	b3BodyId cpuBodies[count];
+	b3BodyId gpuBodies[count];
+	for ( int i = 0; i < count; ++i )
+	{
+		b3BodyDef staticDef = b3DefaultBodyDef();
+		staticDef.position = (b3Pos){ 0.0, 0.0, 3.0 * (double)i };
+		b3BodyId cpuStatic = b3CreateBody( cpuWorld, &staticDef );
+		b3BodyId gpuStatic = b3CreateBody( gpuWorld, &staticDef );
+		b3BodyDef dynamicDef = b3DefaultBodyDef();
+		dynamicDef.type = b3_dynamicBody;
+		dynamicDef.enableSleep = false;
+		dynamicDef.position = (b3Pos){ i < sphereCount ? 0.96 : 0.56, 0.0, 3.0 * (double)i };
+		dynamicDef.linearVelocity = (b3Vec3){ -0.4f - 0.002f * (float)i, 0.03f * (float)( i % 3 - 1 ), 0.0f };
+		dynamicDef.angularVelocity = (b3Vec3){ 0.02f * (float)( i % 5 ), -0.03f, 0.04f };
+		cpuBodies[i] = b3CreateBody( cpuWorld, &dynamicDef );
+		gpuBodies[i] = b3CreateBody( gpuWorld, &dynamicDef );
+		if ( i < sphereCount )
+		{
+			b3CreateSphereShape( cpuStatic, &staticShapeDef, &sphere );
+			b3CreateSphereShape( gpuStatic, &staticShapeDef, &sphere );
+			b3CreateSphereShape( cpuBodies[i], &dynamicShapeDef, &sphere );
+			b3CreateSphereShape( gpuBodies[i], &dynamicShapeDef, &sphere );
+		}
+		else
+		{
+			b3CreateCapsuleShape( cpuStatic, &staticShapeDef, &capsule );
+			b3CreateCapsuleShape( gpuStatic, &staticShapeDef, &capsule );
+			b3CreateCapsuleShape( cpuBodies[i], &dynamicShapeDef, &capsule );
+			b3CreateCapsuleShape( gpuBodies[i], &dynamicShapeDef, &capsule );
+		}
+	}
+
+	for ( int step = 0; step < 4; ++step )
+	{
+		b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
+		b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
+	}
+	float maxTransformError = 0.0f;
+	float maxVelocityError = 0.0f;
+	for ( int i = 0; i < count; ++i )
+	{
+		b3WorldTransform a = b3Body_GetTransform( cpuBodies[i] );
+		b3WorldTransform b = b3Body_GetTransform( gpuBodies[i] );
+		maxTransformError = b3MaxFloat( maxTransformError, b3Length( b3SubPos( a.p, b.p ) ) );
+		maxTransformError = b3MaxFloat( maxTransformError, b3Length( b3Sub( a.q.v, b.q.v ) ) );
+		maxTransformError = b3MaxFloat( maxTransformError, fabsf( a.q.s - b.q.s ) );
+		maxVelocityError = b3MaxFloat( maxVelocityError,
+			b3Length( b3Sub( b3Body_GetLinearVelocity( cpuBodies[i] ), b3Body_GetLinearVelocity( gpuBodies[i] ) ) ) );
+		maxVelocityError = b3MaxFloat( maxVelocityError,
+			b3Length( b3Sub( b3Body_GetAngularVelocity( cpuBodies[i] ), b3Body_GetAngularVelocity( gpuBodies[i] ) ) ) );
+	}
+	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
+	printf( "    resident contact prepare contacts=%d dispatches=%llu transformError=%.3g velocityError=%.3g\n",
+		count, (unsigned long long)profile.contactPrepareDispatchCount, maxTransformError, maxVelocityError );
+	ENSURE( profile.contactPrepareDispatchCount == 4 );
+	ENSURE( profile.contactPrepareFallbackCount == 0 );
+	ENSURE( profile.lastResidentConvexContactCount == count );
+	ENSURE( profile.lastResidentConvexConstraintCount == ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH );
+	ENSURE( maxTransformError <= 3.0e-4f );
+	ENSURE( maxVelocityError <= 3.0e-4f );
+	b3DestroyWorld( gpuWorld );
+	b3DestroyWorld( cpuWorld );
 	return 0;
 }
 
@@ -2410,6 +2614,9 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalFinalizationTest );
 	RUN_SUBTEST( MetalConvexManifoldTest );
 	RUN_SUBTEST( MetalResidentSolverOwnershipTest );
+	RUN_SUBTEST( MetalContactPreparePreSolveExceptionTest );
+	RUN_SUBTEST( MetalContactPrepareFallbackTest );
+	RUN_SUBTEST( MetalResidentContactPrepareDifferentialTest );
 	RUN_SUBTEST( MetalPairTraversalTest );
 	RUN_SUBTEST( MetalExistingPairFilterTest );
 	RUN_SUBTEST( MetalPairTraversalFallbackTest );

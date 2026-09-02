@@ -268,6 +268,7 @@ typedef struct b3StepContext
 	int metalResidentConvexContactCount;
 	int metalResidentConvexConstraintCount;
 	bool metalResidentConvexComplete;
+	bool metalPrepareConvexOnGpu;
 
 	// Flat view of the wide contact constraint array used by prepare and store.
 	// prepareSpans has activeColorCount + 1 entries, the last being a sentinel

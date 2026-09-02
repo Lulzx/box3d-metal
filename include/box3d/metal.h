@@ -26,6 +26,12 @@ typedef struct b3MetalProfile
 	uint64_t unconstrainedFallbackCount;
 	uint64_t contactDispatchCount;
 	uint64_t contactFallbackCount;
+	/// World steps whose colored convex constraints were prepared on Metal from
+	/// the resident contact-id table.
+	uint64_t contactPrepareDispatchCount;
+	/// Optimistic Metal preparation steps recovered by running CPU preparation
+	/// before the CPU solver fallback.
+	uint64_t contactPrepareFallbackCount;
 	uint64_t jointDispatchCount;
 	uint64_t jointFallbackCount;
 	uint64_t finalizationDispatchCount;

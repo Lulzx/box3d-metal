@@ -66,6 +66,13 @@ The same scatter writes each active finalized record into a private table
 indexed by Box3D contact id. The existing 16-byte input uses its former padding
 word for that id. This adds no steady-path readback or dispatch; explicit table
 staging exists only for validation and fallback diagnostics.
+When every colored convex contact remains authoritative after persistence and
+callback processing, a Metal preparation kernel now builds Erin's SIMD-wide
+contact constraints from that table in the solver command buffer. The CPU still
+packs a 144-byte persistence/material record per contact lane; normal and
+contact identity remain private on-device. Mixed, recycled, callback, overflow,
+or unsupported solver worlds fail closed to CPU preparation, including explicit
+prepare-on-fallback recovery when a later constraint rejects the Metal route.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.

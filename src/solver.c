@@ -1041,7 +1041,10 @@ static void b3ExecuteBlock( b3SolverStage* stage, b3StepContext* context, b3Solv
 			break;
 
 		case b3_stagePrepareWideContacts:
-			b3PrepareContacts_Convex( block, context );
+			if ( context->metalPrepareConvexOnGpu == false )
+			{
+				b3PrepareContacts_Convex( block, context );
+			}
 			break;
 
 		case b3_stagePrepareContacts:
@@ -1362,6 +1365,10 @@ static bool b3ExecuteMetalConstraintSubsteps( b3StepContext* context )
 		world->metalContactDispatchCount += (uint64_t)context->subStepCount;
 		world->metalLastContactGpuMilliseconds = stats.gpuMilliseconds;
 	}
+	if ( context->metalPrepareConvexOnGpu )
+	{
+		world->metalContactPrepareDispatchCount += 1;
+	}
 	if ( hasJoints )
 	{
 		world->metalJointDispatchCount += (uint64_t)context->subStepCount;
@@ -1405,6 +1412,25 @@ static void b3ExecuteMetalFinalization( b3StepContext* context, int bodyCount )
 	context->metalFinalizeResults = results;
 	world->metalFinalizationDispatchCount += 1;
 	world->metalLastFinalizationGpuMilliseconds = stats.gpuMilliseconds;
+}
+#endif
+
+#if defined( BOX3D_METAL )
+static void b3PrepareConvexContactsAfterMetalFallback( b3StepContext* context )
+{
+	int startIndex = 0;
+	while ( startIndex < context->wideContactCount )
+	{
+		int count = b3MinInt( context->wideContactCount - startIndex, UINT16_MAX );
+		b3SolverBlock block = {
+			.startIndex = startIndex,
+			.count = (uint16_t)count,
+			.blockType = b3_wideContactBlock,
+			.colorIndex = UINT8_MAX,
+		};
+		b3PrepareContacts_Convex( block, context );
+		startIndex += count;
+	}
 }
 #endif
 
@@ -1497,6 +1523,12 @@ static void b3SolverTask( void* taskContext )
 		solvedAllConstraintsOnMetal = b3ExecuteMetalConstraintSubsteps( context );
 		if ( solvedAllConstraintsOnMetal == false )
 		{
+			if ( context->metalPrepareConvexOnGpu )
+			{
+				b3PrepareConvexContactsAfterMetalFallback( context );
+				context->metalPrepareConvexOnGpu = false;
+				context->world->metalContactPrepareFallbackCount += 1;
+			}
 			integratedAllUnconstrainedOnMetal = b3ExecuteMetalUnconstrainedSubsteps( context, subStepCount );
 		}
 #endif
@@ -1948,6 +1980,12 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 				(b3ContactConstraintWide*)b3StackAlloc( &world->stack, wideContactCount * wideContactByteCount, "wide contacts" );
 		}
 		b3GraphColor* overflow = colors + B3_OVERFLOW_INDEX;
+		stepContext->metalPrepareConvexOnGpu = false;
+#if defined( BOX3D_METAL )
+		stepContext->metalPrepareConvexOnGpu = world->metalContext != NULL &&
+			awakeBodyCount >= world->metalMinimumBodyCount && stepContext->metalResidentConvexComplete &&
+			overflow->convexContacts.count == 0;
+#endif
 		int overflowCount = overflow->contacts.count;
 		int overflowManifoldCount = 0;
 		for ( int i = 0; i < overflowCount; ++i )
