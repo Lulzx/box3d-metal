@@ -22,10 +22,10 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..0d65b65 100644
+index cfe16e4..31d1570 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,185 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,187 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -84,8 +84,10 @@ index cfe16e4..0d65b65 100644
 +box-box subset in one Metal dispatch. The box path ports Erin's face SAT,
 +incident-face walk, feature-preserving clipping, deterministic four-point
 +reduction, Gauss-valid edge SAT, and edge-edge contact. It currently admits
-+equal canonical `b3MakeBoxHull` pairs with exactly one static body; unequal or
-+dynamic-dynamic box pairs remain CPU-owned. Supported spheres, capsules, and compact hulls live in a revisioned
++canonical `b3MakeBoxHull` pairs, including dynamic-dynamic and unequal boxes,
++when each hull's largest extent is at most 16 times its smallest extent;
++high-aspect box pairs remain CPU-owned.
++Supported spheres, capsules, and compact hulls live in a revisioned
 +Metal geometry registry: unchanged dispatches reuse primitive endpoints, radii,
 +hull points, planes, triangles, and shape descriptors, while geometry and
 +topology mutation rebuild fail-closed. Identical hull streams remain
@@ -1686,16 +1688,16 @@ index 0000000..96b681a
 +was a structural run on a host not established as quiet.
 diff --git a/docs/benchmarks/m4-pro-canonical-box-residency-2026-09-03.md b/docs/benchmarks/m4-pro-canonical-box-residency-2026-09-03.md
 new file mode 100644
-index 0000000..562d6cc
+index 0000000..7173160
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-canonical-box-residency-2026-09-03.md
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,65 @@
 +# M4 Pro canonical box contact residency — 2026-09-03
 +
 +## Scope
 +
-+This checkpoint adds a fail-closed hull-hull slice for equal canonical
-+`b3MakeBoxHull` pairs with exactly one static body. Metal now owns Erin's face
++This checkpoint adds a fail-closed hull-hull slice for canonical
++`b3MakeBoxHull` pairs. Metal now owns Erin's face
 +SAT, incident-face selection, feature-preserving clipping, deterministic
 +four-point reduction, Gauss-valid edge SAT, and edge-edge contact construction
 +for that slice. Half-edge and face-start topology is content-deduplicated in the
@@ -1704,16 +1706,25 @@ index 0000000..562d6cc
 +The four-point transport is end to end: the private manifold record is 240
 +bytes, the generation-tagged preparation record is 224 bytes, and the compact
 +post-solve impulse record is 112 bytes. Persistence validation and accounting
-+cover all four point bits. Unequal boxes, dynamic-dynamic pairs, arbitrary
++cover all four point bits. A follow-up widens the same path to unequal boxes
++when each hull's largest extent is no more than 16 times its smallest extent.
++Dynamic-dynamic pairs use the same bounded path. High-aspect boxes, arbitrary
 +hulls, meshes, callbacks, sleep, and CCD remain explicit CPU boundaries.
 +
 +## Differential evidence
 +
 +The direct narrow-phase differential includes axis-aligned and rotated boxes,
-+one four-point face manifold, and one Gauss-valid edge manifold. Point order,
++one unequal-box manifold, one four-point face manifold, and one Gauss-valid edge manifold. Point order,
 +features, normals, anchors, and separations are checked against
 +`b3CollideHulls`; the maximum error remained `1.79e-07` in the full float Metal
 +suite.
++
++The mixed joint/contact regression contains 14 dynamic-dynamic box candidates
++and 16 high-aspect ground exceptions in one compact stream. It verifies all 30
++contact IDs retain input order and matches the CPU world to `4.66e-10`. The
++eight-layer friction stack additionally exercises dynamic-dynamic box contacts
++for ten steps while its 80:1 ground remains CPU-owned; transform and velocity
++errors remained `4.77e-07` and `3.95e-06`.
 +
 +A separate 17-contact world exercises four consecutive complete steps. The
 +first step seeds Box3D's CPU topology; all following steps keep collision,
@@ -4525,7 +4536,7 @@ index 0000000..bf16de3
 +before that traversal and state readback can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..2722cbd
+index 0000000..2c0b8df
 --- /dev/null
 +++ b/docs/metal_architecture.md
 @@ -0,0 +1,584 @@
@@ -4960,7 +4971,7 @@ index 0000000..2722cbd
 +| Parallel joints | GPU-resident across all substeps |
 +| Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 +| Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
-+| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and equal canonical box pairs with exactly one static body are finalized on Metal. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Ordered callback/topology/first-touch exceptions retain the CPU path. Lazy CPU mirrors synchronize only at explicit boundaries. CPU retains cold/revision packing, manifold allocation, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, unequal or dynamic-dynamic boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
++| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Ordered callback/topology/first-touch exceptions retain the CPU path. Lazy CPU mirrors synchronize only at explicit boundaries. CPU retains cold/revision packing, manifold allocation, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
 +| Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts a 112-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 +| Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 +| CCD, sleeping/island mutation, events, recording, queries | CPU |
@@ -7300,10 +7311,10 @@ index 0000000..46c8a77
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..e41e79d
+index 0000000..46a02d8
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,5911 @@
+@@ -0,0 +1,5919 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -8490,11 +8501,12 @@ index 0000000..e41e79d
 +	"  if(geometryA.type==3u&&geometryB.type==3u){\n"
 +	"    if(geometryA.pointCount!=8u||geometryA.planeCount!=6u||geometryA.edgeCount!=24u||\n"
 +	"       geometryB.pointCount!=8u||geometryB.planeCount!=6u||geometryB.edgeCount!=24u){out.eligible=0u;results[i]=out;return;}\n"
-+	"    if(transformA.index>=0&&transformB.index>=0){out.eligible=0u;results[i]=out;return;}\n"
 +	"    float3 lowerA=float3(3.40282347e+38f),upperA=float3(-3.40282347e+38f),lowerB=lowerA,upperB=upperA;\n"
 +	"    for(uint pointIndex=0u;pointIndex<8u;++pointIndex){float3 pointA=hullPoints[geometryA.pointOffset+pointIndex].xyz;float3 pointB=hullPoints[geometryB.pointOffset+pointIndex].xyz;\n"
 +	"      lowerA=min(lowerA,pointA);upperA=max(upperA,pointA);lowerB=min(lowerB,pointB);upperB=max(upperB,pointB);}\n"
-+	"    if(any(fabs((upperA-lowerA)-(upperB-lowerB))>float3(p.linearSlop))){out.eligible=0u;results[i]=out;return;}\n"
++	"    float3 extentA=upperA-lowerA,extentB=upperB-lowerB;float minA=min(extentA.x,min(extentA.y,extentA.z)),maxA=max(extentA.x,max(extentA.y,extentA.z));\n"
++	"    float minB=min(extentB.x,min(extentB.y,extentB.z)),maxB=max(extentB.x,max(extentB.y,extentB.z));\n"
++	"    if(minA<=p.linearSlop||minB<=p.linearSlop||maxA>16.0f*minA||maxB>16.0f*minB){out.eligible=0u;results[i]=out;return;}\n"
 +	"    float faceASeparation=-3.40282347e+38f,faceBSeparation=-3.40282347e+38f;uint faceA=0u,vertexB=0u,faceB=0u,vertexA=0u;\n"
 +	"    for(uint face=0u;face<geometryA.planeCount;++face){float4 plane=hullPlanes[geometryA.planeOffset+face];\n"
 +	"      float separation=3.40282347e+38f;uint support=0u;for(uint pointIndex=0u;pointIndex<geometryB.pointCount;++pointIndex){\n"
@@ -11490,12 +11502,19 @@ index 0000000..e41e79d
 +	{
 +		return false;
 +	}
-+	const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
-+	const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
-+	if ( ( bodyA->type == b3_staticBody ) == ( bodyB->type == b3_staticBody ) ) return false;
 +	b3Vec3 extentA = b3Sub( shapeA->hull->aabb.upperBound, shapeA->hull->aabb.lowerBound );
 +	b3Vec3 extentB = b3Sub( shapeB->hull->aabb.upperBound, shapeB->hull->aabb.lowerBound );
-+	return b3LengthSquared( b3Sub( extentA, extentB ) ) <= B3_LINEAR_SLOP * B3_LINEAR_SLOP;
++	// High-aspect reference faces amplify float projection error through stacked
++	// four-point solves. Keep those on Erin's CPU SAT path until the Metal
++	// projection/cache path has an equivalent high-precision implementation.
++	float minExtentA = b3MinFloat( extentA.x, b3MinFloat( extentA.y, extentA.z ) );
++	float maxExtentA = b3MaxFloat( extentA.x, b3MaxFloat( extentA.y, extentA.z ) );
++	float minExtentB = b3MinFloat( extentB.x, b3MinFloat( extentB.y, extentB.z ) );
++	float maxExtentB = b3MaxFloat( extentB.x, b3MaxFloat( extentB.y, extentB.z ) );
++	const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
++	const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
++	return ( bodyA->type != b3_staticBody || bodyB->type != b3_staticBody ) && minExtentA > B3_LINEAR_SLOP &&
++		minExtentB > B3_LINEAR_SLOP && maxExtentA <= 16.0f * minExtentA && maxExtentB <= 16.0f * minExtentB;
 +}
 +
 +static bool b3MetalSupportsHullSphere( const b3Shape* shapeA, const b3Shape* shapeB )
@@ -12084,6 +12103,9 @@ index 0000000..e41e79d
 +				}
 +				const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
 +				const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
++				b3MetalConvexManifoldInput* input = inputs + i;
++				input->contactId = (uint32_t)contactIndex;
++				input->contactGeneration = contact->generation;
 +				bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
 +					( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
 +					( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
@@ -12093,12 +12115,9 @@ index 0000000..e41e79d
 +				{
 +					hitEventContactIds[context->contactHitEventIdCount++] = contactIndex;
 +				}
-+				b3MetalConvexManifoldInput* input = inputs + i;
 +				input->eligible = 1;
 +				input->shapeIdA = (uint32_t)contact->shapeIdA;
 +				input->shapeIdB = (uint32_t)contact->shapeIdB;
-+				input->contactId = (uint32_t)contactIndex;
-+				input->contactGeneration = contact->generation;
 +				bool prepareEligible = world->contactRecycleDistance == 0.0f &&
 +					( contact->flags & b3_simEnablePreSolveEvents ) == 0 && world->metalDefaultFrictionCallback &&
 +					world->metalDefaultRestitutionCallback;
@@ -17530,10 +17549,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..9ca2913
+index 0000000..e815659
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,3777 @@
+@@ -0,0 +1,3805 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -18247,6 +18266,26 @@ index 0000000..9ca2913
 +		b3BodyId boxB = b3CreateBody( worldId, &bodyDef );
 +		b3CreateHullShape( boxB, &shapeDef, &box.base );
 +	}
++	b3BoxHull unequalGround = b3MakeBoxHull( 4.0f, 1.0f, 1.0f );
++	b3BoxHull unequalBox = b3MakeBoxHull( 0.4f, 0.5f, 0.4f );
++	b3BodyDef unequalDef = b3DefaultBodyDef();
++	unequalDef.type = b3_staticBody;
++	unequalDef.position = (b3Pos){ base, 0.0, 4.0 * ( pairOffset + boxPairCount ) };
++	b3BodyId unequalA = b3CreateBody( worldId, &unequalDef );
++	b3CreateHullShape( unequalA, &shapeDef, &unequalGround.base );
++	unequalDef.type = b3_dynamicBody;
++	unequalDef.position.y = 1.47;
++	unequalDef.rotation = b3MakeQuatFromAxisAngle( b3Normalize( (b3Vec3){ 0.1f, 0.3f, 0.2f } ), 0.03f );
++	b3BodyId unequalB = b3CreateBody( worldId, &unequalDef );
++	b3CreateHullShape( unequalB, &shapeDef, &unequalBox.base );
++	unequalDef.position = (b3Pos){ base, 0.0, 4.0 * ( pairOffset + boxPairCount + 1 ) };
++	unequalDef.rotation = b3Quat_identity;
++	b3BodyId unequalDynamicA = b3CreateBody( worldId, &unequalDef );
++	b3CreateHullShape( unequalDynamicA, &shapeDef, &unequalGround.base );
++	unequalDef.position.y = 1.47;
++	unequalDef.rotation = b3MakeQuatFromAxisAngle( b3Normalize( (b3Vec3){ 0.1f, 0.3f, 0.2f } ), 0.03f );
++	b3BodyId unequalDynamicB = b3CreateBody( worldId, &unequalDef );
++	b3CreateHullShape( unequalDynamicB, &shapeDef, &unequalBox.base );
 +
 +	// Build contacts with the CPU oracle first, then exercise the batch API.
 +	b3World_Step( worldId, 0.0f, 1 );
@@ -18255,7 +18294,7 @@ index 0000000..9ca2913
 +	int contactCount = b3GetIdCount( &world->contactIdPool );
 +	int expectedEligibleCount = pairCount + capsuleSphereCount + separatedCapsuleSphereCount + crossedCapsuleCount +
 +								parallelCapsuleCount + hullSphereCount;
-+	ENSURE( contactCount == expectedEligibleCount + boxPairCount + 1 );
++	ENSURE( contactCount == expectedEligibleCount + boxPairCount + 3 );
 +	int* contactIndices = malloc( (size_t)contactCount * sizeof( int ) );
 +	ENSURE( contactIndices != NULL );
 +	int cursor = 0;
@@ -18289,7 +18328,7 @@ index 0000000..9ca2913
 +	b3MetalDispatchStats stats = { 0 };
 +	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &gpu, &eligibleCount, NULL,
 +										   &stats ) );
-+	ENSURE( eligibleCount == expectedEligibleCount + boxPairCount - 1 );
++	ENSURE( eligibleCount == expectedEligibleCount + boxPairCount + 1 );
 +	ENSURE( stats.commandBufferCount == 1 );
 +	float maxError = 0.0f;
 +	int ineligibleCount = 0;
@@ -18520,8 +18559,8 @@ index 0000000..9ca2913
 +	ENSURE( profile.narrowPhaseGeometryReuseCount >= 2 );
 +	ENSURE( profile.narrowPhaseTransformUploadCount == 1 );
 +	ENSURE( profile.narrowPhaseTransformReuseCount >= 2 );
-+	ENSURE( profile.lastNarrowPhaseHullShapeCount == 15 );
-+	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 2 );
++	ENSURE( profile.lastNarrowPhaseHullShapeCount == 19 );
++	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 4 );
 +	// The first world-owned dispatch has no prior resident authority, so its
 +	// deterministic CPU-exception stream contains supported and unsupported
 +	// contacts.
@@ -18546,8 +18585,8 @@ index 0000000..9ca2913
 +	b3World_Step( worldId, 0.0f, 1 );
 +	profile = b3World_GetMetalProfile( worldId );
 +	ENSURE( profile.narrowPhaseGeometryUploadCount == 2 );
-+	ENSURE( profile.lastNarrowPhaseHullShapeCount == 15 );
-+	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 3 );
++	ENSURE( profile.lastNarrowPhaseHullShapeCount == 19 );
++	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 5 );
 +	printf( "    resident hull mutation uploads=%llu shapes=%d unique=%d rebuild=yes\n",
 +			(unsigned long long)profile.narrowPhaseGeometryUploadCount, profile.lastNarrowPhaseHullShapeCount,
 +			profile.lastNarrowPhaseUniqueHullCount );
@@ -20221,6 +20260,11 @@ index 0000000..9ca2913
 +	ENSURE( profile.unconstrainedFallbackCount == 0 );
 +	ENSURE( profile.contactDispatchCount == 4 );
 +	ENSURE( profile.contactFallbackCount == 0 );
++	// Fourteen adjacent dynamic box pairs are Metal candidates while the
++	// high-aspect ground contacts are CPU exceptions. This locks the exception
++	// stream's contact-id mapping for mixed eligibility batches.
++	ENSURE( profile.narrowPhaseDispatchCount == 1 );
++	ENSURE( profile.lastNarrowPhaseResultCount == 30 );
 +	ENSURE( profile.jointDispatchCount == 4 );
 +	ENSURE( profile.jointFallbackCount == 0 );
 +	ENSURE( profile.positionDispatchCount == 0 );
@@ -20416,6 +20460,9 @@ index 0000000..9ca2913
 +			(unsigned long long)profile.lastBodyPropertyUploadBytes, profile.lastContactGpuMilliseconds,
 +			maxTransformError, maxResidentTransformError, maxVelocityError );
 +	ENSURE( profile.contactDispatchCount == 40 );
++	// Dynamic box-box stack contacts use Metal while the 80:1 ground remains a
++	// deliberate CPU exception until high-aspect projections are ported.
++	ENSURE( profile.narrowPhaseDispatchCount == 10 );
 +	ENSURE( profile.pairDispatchCount >= 1 );
 +	ENSURE( profile.pairFallbackCount == 0 );
 +	ENSURE( profile.finalizationDispatchCount == 10 );
