@@ -816,6 +816,7 @@ static int MetalConvexManifoldTest( void )
 			b3InvMulWorldTransforms( b3GetBodyTransformQuick( world, body1 ), b3GetBodyTransformQuick( world, body2 ) );
 		b3LocalManifoldPoint points[B3_MAX_MANIFOLD_POINTS] = { 0 };
 		b3LocalManifold reference = { .points = points };
+		bool boxEdgeAxis = false;
 		if ( shape1->type == b3_sphereShape )
 		{
 			b3CollideSpheres( &reference, 2, &shape1->sphere, &shape2->sphere, relative );
@@ -837,6 +838,7 @@ static int MetalConvexManifoldTest( void )
 		{
 			b3SATCache cache = { 0 };
 			b3CollideHulls( &reference, B3_MAX_MANIFOLD_POINTS, shape1->hull, shape2->hull, relative, &cache );
+			boxEdgeAxis = cache.type == b3_edgePairAxis;
 		}
 		if ( shape1->type == b3_hullShape && reference.pointCount == 1 && points[0].separation > 0.0f )
 		{
@@ -865,7 +867,7 @@ static int MetalConvexManifoldTest( void )
 			twoPointCount += 1;
 		if ( reference.pointCount == 4 )
 			fourPointCount += 1;
-		if ( shape1->type == b3_hullShape && shape2->type == b3_hullShape && reference.pointCount == 1 )
+		if ( boxEdgeAxis && reference.pointCount == 1 )
 			boxEdgeCount += 1;
 		if ( reference.pointCount > 0 )
 		{
@@ -3701,6 +3703,21 @@ static int MetalResidentBoxContactTest( void )
 		maxVelocityError = b3MaxFloat( maxVelocityError, b3Length( b3Sub( b3Body_GetAngularVelocity( cpuDynamic[i] ),
 			b3Body_GetAngularVelocity( gpuDynamic[i] ) ) ) );
 	}
+	b3World* gpuInternal = b3GetWorldFromId( gpuWorld );
+	b3MetalConvexManifoldResult residentManifolds[count];
+	ENSURE( b3MetalCopyResidentConvexManifoldTable( gpuInternal->metalContext, residentManifolds, count ) );
+	int fourPointResidentCount = 0;
+	int fourthPointPersistedCount = 0;
+	for ( int contactId = 0; contactId < count; ++contactId )
+	{
+		ENSURE( residentManifolds[contactId].contactId == (uint32_t)contactId );
+		ENSURE( residentManifolds[contactId].touching == 1 );
+		ENSURE( residentManifolds[contactId].pointCount == 4 );
+		fourPointResidentCount += 1;
+		fourthPointPersistedCount += ( residentManifolds[contactId].persistedBits & 8u ) != 0;
+	}
+	ENSURE( fourPointResidentCount == count );
+	ENSURE( fourthPointPersistedCount > 0 );
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    resident box contacts=%d fourPoint=yes bypasses=%llu cpu=%llu exceptions=%llu persistence=%llu "
 			"transformError=%.3g velocityError=%.3g\n",
