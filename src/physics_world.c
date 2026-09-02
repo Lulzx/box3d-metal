@@ -663,6 +663,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.contactPrepareFallbackCount = world->metalContactPrepareFallbackCount;
 	profile.lastContactPrepareIndexBytes = world->metalLastContactPrepareIndexBytes;
 	profile.lastContactImpulseResultBytes = world->metalLastContactImpulseResultBytes;
+	profile.contactSchedulePackCount = world->metalContactSchedulePackCount;
+	profile.contactScheduleReuseCount = world->metalContactScheduleReuseCount;
 	profile.jointDispatchCount = world->metalJointDispatchCount;
 	profile.jointFallbackCount = world->metalJointFallbackCount;
 	profile.finalizationDispatchCount = world->metalFinalizationDispatchCount;

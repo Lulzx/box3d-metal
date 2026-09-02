@@ -62,6 +62,10 @@ typedef struct b3GraphColor
 
 typedef struct b3ConstraintGraph
 {
+	// Monotonic topology/order revision for resident solver schedules. Any
+	// contact or joint insertion/removal advances this value.
+	uint64_t revision;
+
 	// including overflow at the end
 	b3GraphColor colors[B3_GRAPH_COLOR_COUNT];
 } b3ConstraintGraph;

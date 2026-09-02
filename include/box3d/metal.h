@@ -39,6 +39,10 @@ typedef struct b3MetalProfile
 	/// Bytes Metal authored for active contact-id-indexed impulse results in the
 	/// latest successful resident convex solve.
 	uint64_t lastContactImpulseResultBytes;
+	/// Contact-ID schedule uploads after a topology/order change.
+	uint64_t contactSchedulePackCount;
+	/// Successful solver steps that reused the resident contact-ID schedule.
+	uint64_t contactScheduleReuseCount;
 	uint64_t jointDispatchCount;
 	uint64_t jointFallbackCount;
 	uint64_t finalizationDispatchCount;

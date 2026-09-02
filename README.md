@@ -81,6 +81,10 @@ per active contact into a generation-tagged contact-ID table. The CPU still
 synchronizes public manifolds and constructs hit events in upstream order, but
 reads these compact records instead of traversing the full 1,696-byte SIMD-wide
 solver constraints. Invalid or unsupported routes retain the original store path.
+The constraint graph carries a monotonic topology/order revision. The four-byte
+contact-ID lane schedule remains in its Metal buffer while that revision and its
+exact wide/contact counts are unchanged; contact or joint insertion/removal
+invalidates it before the next solver submission.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.

@@ -161,6 +161,9 @@ struct b3MetalContext
 	NSUInteger contactPrepareTableCapacity;
 	id<MTLBuffer> contactPrepareIndexBuffer;
 	NSUInteger contactPrepareIndexCapacity;
+	uint64_t contactPrepareScheduleRevision;
+	int contactPrepareScheduleWideCount;
+	int contactPrepareScheduleContactCount;
 	id<MTLBuffer> contactPrepareStatusBuffer;
 	uint32_t contactPrepareGeneration;
 	id<MTLBuffer> contactImpulseResultBuffer;
@@ -2608,6 +2611,16 @@ static bool b3MetalPackContactPrepareIndices( b3MetalContext* context, const b3S
 	NSUInteger indexCount = (NSUInteger)stepContext->wideContactCount * B3_SIMD_WIDTH;
 	if ( indexCount > NSUIntegerMax / sizeof( uint32_t ) ) return false;
 	NSUInteger indexBytes = indexCount * sizeof( uint32_t );
+	uint64_t graphRevision = stepContext->graph->revision;
+	if ( context->contactPrepareIndexBuffer != nil && context->contactPrepareScheduleRevision == graphRevision &&
+		context->contactPrepareScheduleWideCount == stepContext->wideContactCount &&
+		context->contactPrepareScheduleContactCount == stepContext->metalResidentConvexContactCount )
+	{
+		stepContext->world->metalLastContactPrepareIndexBytes = indexBytes;
+		stepContext->world->metalContactScheduleReuseCount += 1;
+		if ( hasRestitution != NULL ) *hasRestitution = stepContext->metalResidentConvexHasRestitution;
+		return true;
+	}
 	if ( b3MetalEnsureContactPrepareIndexCapacity( context, indexBytes ) == false ) return false;
 	uint32_t* indices = context->contactPrepareIndexBuffer.contents;
 	memset( indices, 0xff, indexBytes );
@@ -2628,7 +2641,11 @@ static bool b3MetalPackContactPrepareIndices( b3MetalContext* context, const b3S
 		packedCount += span->count;
 	}
 	if ( packedCount != stepContext->metalResidentConvexContactCount ) return false;
+	context->contactPrepareScheduleRevision = graphRevision;
+	context->contactPrepareScheduleWideCount = stepContext->wideContactCount;
+	context->contactPrepareScheduleContactCount = stepContext->metalResidentConvexContactCount;
 	stepContext->world->metalLastContactPrepareIndexBytes = indexBytes;
+	stepContext->world->metalContactSchedulePackCount += 1;
 	if ( hasRestitution != NULL ) *hasRestitution = stepContext->metalResidentConvexHasRestitution;
 	return true;
 }

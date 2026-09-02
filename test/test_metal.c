@@ -1091,6 +1091,8 @@ static int MetalResidentSolverOwnershipTest( void )
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
 	ENSURE( profile.lastContactPrepareIndexBytes == 4 * sizeof( uint32_t ) );
 	ENSURE( profile.lastContactImpulseResultBytes == sizeof( b3MetalContactImpulseResult ) );
+	ENSURE( profile.contactSchedulePackCount == 1 );
+	ENSURE( profile.contactScheduleReuseCount == 0 );
 	b3Vec3 cpuVelocity = b3Body_GetLinearVelocity( cpuBodyB );
 	b3Vec3 gpuVelocity = b3Body_GetLinearVelocity( bodyB );
 	ENSURE( b3Length( b3Sub( cpuVelocity, gpuVelocity ) ) <= 3.0e-5f );
@@ -1109,6 +1111,8 @@ static int MetalResidentSolverOwnershipTest( void )
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
 	ENSURE( profile.lastContactPrepareIndexBytes == 0 );
 	ENSURE( profile.lastContactImpulseResultBytes == 0 );
+	ENSURE( profile.contactSchedulePackCount == 1 );
+	ENSURE( profile.contactScheduleReuseCount == 0 );
 
 	b3DestroyWorld( worldId );
 	b3DestroyWorld( cpuWorldId );
@@ -1354,9 +1358,11 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 			b3Length( b3Sub( b3Body_GetAngularVelocity( cpuBodies[i] ), b3Body_GetAngularVelocity( gpuBodies[i] ) ) ) );
 	}
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
-	printf( "    resident contact prepare contacts=%d dispatches=%llu indexBytes=%llu legacyBytes=%zu "
+	printf( "    resident contact prepare contacts=%d dispatches=%llu schedule=%llu/%llu indexBytes=%llu legacyBytes=%zu "
 		"impulseBytes=%llu legacyImpulseBytes=%zu transformError=%.3g velocityError=%.3g\n",
 		count, (unsigned long long)profile.contactPrepareDispatchCount,
+		(unsigned long long)profile.contactSchedulePackCount,
+		(unsigned long long)profile.contactScheduleReuseCount,
 		(unsigned long long)profile.lastContactPrepareIndexBytes,
 		(size_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * 144,
 		(unsigned long long)profile.lastContactImpulseResultBytes,
@@ -1364,6 +1370,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 		maxTransformError, maxVelocityError );
 	ENSURE( profile.contactPrepareDispatchCount == 4 );
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
+	ENSURE( profile.contactSchedulePackCount == 1 );
+	ENSURE( profile.contactScheduleReuseCount == 3 );
 	ENSURE( profile.lastResidentConvexContactCount == count );
 	ENSURE( profile.lastResidentConvexConstraintCount == ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH );
 	ENSURE( profile.lastContactPrepareIndexBytes ==
@@ -1371,6 +1379,31 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.lastContactImpulseResultBytes == (uint64_t)count * sizeof( b3MetalContactImpulseResult ) );
 	ENSURE( maxTransformError <= 3.0e-4f );
 	ENSURE( maxVelocityError <= 3.0e-4f );
+
+	// A graph insertion changes color-array topology/order and must force one
+	// deterministic schedule rebuild before reuse can resume.
+	b3BodyDef addedStaticDef = b3DefaultBodyDef();
+	addedStaticDef.position = (b3Pos){ 0.0, 0.0, 3.0 * (double)count };
+	b3BodyId cpuAddedStatic = b3CreateBody( cpuWorld, &addedStaticDef );
+	b3BodyId gpuAddedStatic = b3CreateBody( gpuWorld, &addedStaticDef );
+	b3CreateSphereShape( cpuAddedStatic, &staticShapeDef, &sphere );
+	b3CreateSphereShape( gpuAddedStatic, &staticShapeDef, &sphere );
+	b3BodyDef addedDynamicDef = b3DefaultBodyDef();
+	addedDynamicDef.type = b3_dynamicBody;
+	addedDynamicDef.enableSleep = false;
+	addedDynamicDef.position = (b3Pos){ 0.96, 0.0, 3.0 * (double)count };
+	b3BodyId cpuAddedDynamic = b3CreateBody( cpuWorld, &addedDynamicDef );
+	b3BodyId gpuAddedDynamic = b3CreateBody( gpuWorld, &addedDynamicDef );
+	b3CreateSphereShape( cpuAddedDynamic, &dynamicShapeDef, &sphere );
+	b3CreateSphereShape( gpuAddedDynamic, &dynamicShapeDef, &sphere );
+	b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
+	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
+	profile = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( profile.contactSchedulePackCount == 2 );
+	ENSURE( profile.contactScheduleReuseCount == 3 );
+	ENSURE( profile.lastResidentConvexContactCount == count + 1 );
+	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuAddedDynamic ),
+		b3Body_GetLinearVelocity( gpuAddedDynamic ) ) ) <= 3.0e-5f );
 	b3DestroyWorld( gpuWorld );
 	b3DestroyWorld( cpuWorld );
 	return 0;

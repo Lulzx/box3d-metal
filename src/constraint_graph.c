@@ -43,6 +43,7 @@ void b3CreateGraph( b3ConstraintGraph* graph, int bodyCapacity )
 	_Static_assert( B3_OVERFLOW_INDEX == B3_GRAPH_COLOR_COUNT - 1, "bad over flow index" );
 
 	*graph = (b3ConstraintGraph){ 0 };
+	graph->revision = 1;
 
 	bodyCapacity = b3MaxInt( bodyCapacity, 8 );
 
@@ -166,6 +167,7 @@ void b3AddContactToGraph( b3World* world, b3Contact* contact )
 	{
 		b3Array_Push( color->convexContacts, contact->contactId );
 	}
+	graph->revision += 1;
 }
 
 void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int colorIndex, int localIndex, bool meshContact )
@@ -211,6 +213,7 @@ void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int col
 			movedContact->localIndex = localIndex;
 		}
 	}
+	graph->revision += 1;
 }
 
 static int b3AssignJointColor( b3ConstraintGraph* graph, int bodyIdA, int bodyIdB, b3BodyType typeA, b3BodyType typeB )
@@ -290,6 +293,7 @@ b3JointSim* b3CreateJointInGraph( b3World* world, b3Joint* joint )
 
 	joint->colorIndex = colorIndex;
 	joint->localIndex = graph->colors[colorIndex].jointSims.count - 1;
+	graph->revision += 1;
 	return jointSim;
 }
 
@@ -325,4 +329,5 @@ void b3RemoveJointFromGraph( b3World* world, int bodyIdA, int bodyIdB, int color
 		B3_ASSERT( movedJoint->localIndex == movedIndex );
 		movedJoint->localIndex = localIndex;
 	}
+	graph->revision += 1;
 }

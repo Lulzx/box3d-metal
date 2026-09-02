@@ -42,5 +42,7 @@ No quiet-host whole-world timing is claimed here. The
 equivalent former wide-record traversal, alongside its contact-ID preparation
 schedule. A future measurement must determine whether the smaller CPU cache
 stream changes end-to-end time. The next ownership reduction is to retain the
-graph schedule and make public-manifold/event synchronization lazy or exception
-only; topology and event ordering remain CPU responsibilities at this checkpoint.
+make public-manifold/event synchronization lazy or exception only; topology and
+event ordering remain CPU responsibilities at this checkpoint. The follow-on
+schedule checkpoint retains the contact-ID lanes across unchanged graph
+revisions, so repeated steps no longer recopy them.
