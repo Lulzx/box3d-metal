@@ -10,10 +10,10 @@
   hull-sphere local manifold geometry has a batched Metal path. Speculative and
   high-aspect hull-sphere, other hull pairs, meshes, height fields, compounds,
   manifold state application, and constraint preparation remain CPU-side.
-- Compact supported hull geometry is content-deduplicated and retained across
-  revision-stable dispatches. Body transforms and primitive/contact records are
-  still packed on the CPU, and manifold results still return through a shared
-  ordered stream.
+- Supported sphere/capsule records and content-deduplicated compact hull geometry
+  are retained across revision-stable dispatches. Body transforms are still
+  packed on the CPU, and manifold results still return through a shared ordered
+  stream.
 - Body and awake-shape finalization have an experimental Metal path, but the CPU
   still owns topology mutation, sleeping/island
   mutation, events, and CCD. Successful resident refits now use a stable
@@ -33,7 +33,7 @@
 
 ## Evidence-led next stages
 
-1. Retain body transforms and primitive/contact records across steps, then write
+1. Retain body transforms across steps, then write
    manifolds into resident storage while preserving explicit CPU
    exception paths for compounds, callbacks, and unsupported GJK/SAT cases.
 2. Retain body and supported joint state across world steps, reading back only

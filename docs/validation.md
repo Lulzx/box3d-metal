@@ -26,6 +26,9 @@ Direct primitive tests separately cover packed state and integration kernels.
   geometry upload, at least two stable reuses, and one unique hull. Replacing
   one shape with `b3Shape_SetHull` produces exactly the second upload and two
   unique hulls, proving fail-closed mutation rebuilding.
+- Replacing the first sphere with `b3Shape_SetSphere` produces exactly the third
+  geometry upload, proving the generalized primitive registry rebuilds before
+  the next 120-byte-input dispatch.
 - Integrated unconstrained worlds with 2,048 moving sphere, capsule, and hull AABBs.
 - Exact filtered pair traversal over 607 mixed bodies and 620 proxies, including
   same-body overlaps, sensors, zero masks, and equal positive/negative groups.
@@ -141,6 +144,11 @@ passes through CPU GJK fallback.
 The resident hull-geometry checkpoint reran that same complete matrix after
 replacing per-contact geometry descriptors with a shader-visible persistent
 registry. Float and VF64 oracle errors and byte-identical replay stayed
+unchanged.
+
+The resident shape-geometry checkpoint again passed the complete matrix after
+moving sphere/capsule endpoints and radii out of the contact stream. Primitive
+mutation forces exactly one rebuild; float and VF64 oracle errors remain
 unchanged.
 
 ## What the tests do not prove

@@ -82,7 +82,7 @@ printf("device=%s contacts=%llu joints=%llu contact_fallbacks=%llu\n",
        (unsigned long long)profile.contactDispatchCount,
        (unsigned long long)profile.jointDispatchCount,
        (unsigned long long)profile.contactFallbackCount);
-printf("hull_geometry_uploads=%llu reuses=%llu shapes=%d unique=%d\n",
+printf("shape_geometry_uploads=%llu reuses=%llu hull_shapes=%d unique_hulls=%d\n",
        (unsigned long long)profile.narrowPhaseGeometryUploadCount,
        (unsigned long long)profile.narrowPhaseGeometryReuseCount,
        profile.lastNarrowPhaseHullShapeCount,
@@ -95,8 +95,8 @@ broad-phase tree mutation, contact creation, every narrow-phase pair, CCD, or
 sleeping ran on the GPU. The separately enabled finalization path has body and shape
 dispatch/fallback counters. Pair traversal has independent pair dispatch,
 fallback, and GPU-time fields.
-The narrow-phase geometry counters distinguish a cold/rebuilt hull registry
-from stable reuse and report supported shape versus unique hull counts.
+The narrow-phase geometry counters distinguish a cold/rebuilt shape registry
+from stable reuse and report supported hull-shape versus unique-hull counts.
 
 ## Disable and release
 

@@ -22,10 +22,10 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..870739c 100644
+index cfe16e4..e1bd267 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,93 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,94 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -65,11 +65,12 @@ index cfe16e4..870739c 100644
 +wake, topology, transform, and filter changes rebuild fail-closed.
 +The shape-specialized narrow-phase route batches sphere-sphere, capsule-sphere,
 +capsule-capsule, and bounded compact hull-sphere manifold geometry in one Metal
-+dispatch. Supported hulls live in a revisioned, content-deduplicated Metal
-+geometry registry: unchanged dispatches reuse the same point, plane, triangle,
-+and shape-descriptor buffers, while geometry and topology mutation rebuild
-+fail-closed. Each 184-byte contact record now references hull geometry by shape
-+id instead of duplicating it. CPU workers consume the ordered local geometry
++dispatch. Supported spheres, capsules, and compact hulls live in a revisioned
++Metal geometry registry: unchanged dispatches reuse primitive endpoints, radii,
++hull points, planes, triangles, and shape descriptors, while geometry and
++topology mutation rebuild fail-closed. Identical hull streams remain
++content-deduplicated. Each 120-byte contact record references both shapes by id
++instead of duplicating their geometry. CPU workers consume the ordered local geometry
 +while retaining manifold allocation, warm-start feature matching, materials,
 +pre-solve callbacks, events, and island mutation. Other shape pairs stay on the
 +unchanged CPU path. High-aspect and speculative hull-sphere contacts explicitly
@@ -1852,10 +1853,10 @@ index 0000000..5217950
 +explicit CPU exception paths.
 diff --git a/docs/benchmarks/m4-pro-resident-hull-geometry-2026-09-02.md b/docs/benchmarks/m4-pro-resident-hull-geometry-2026-09-02.md
 new file mode 100644
-index 0000000..41649af
+index 0000000..4559b37
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-hull-geometry-2026-09-02.md
-@@ -0,0 +1,62 @@
+@@ -0,0 +1,68 @@
 +# M4 Pro resident hull-geometry checkpoint — 2026-09-02
 +
 +This checkpoint removes per-contact hull geometry packing from the bounded
@@ -1918,6 +1919,12 @@ index 0000000..41649af
 +next narrow-phase residency cut is a persistent transform/primitive table and
 +direct manifold storage; broader hull coverage still requires the general GJK
 +simplex and SAT/clipping paths.
++
++The follow-on
++[`resident shape-geometry checkpoint`](m4-pro-resident-shape-geometry-2026-09-02.md)
++moves sphere/capsule endpoints and radii into the same shape-indexed registry
++and reduces the contact input to 120 bytes. Body transforms and manifold
++results remain the next ownership boundaries.
 diff --git a/docs/benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md b/docs/benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md
 new file mode 100644
 index 0000000..582587a
@@ -2043,6 +2050,62 @@ index 0000000..3d8a686
 +queries, CCD bookkeeping, and CPU fallback still do. Eliminating it requires a
 +resident authoritative shape-bound store plus selective CPU synchronization,
 +not simply deleting the readback.
+diff --git a/docs/benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md b/docs/benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md
+new file mode 100644
+index 0000000..25f1d8f
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md
+@@ -0,0 +1,50 @@
++# M4 Pro resident shape-geometry checkpoint — 2026-09-02
++
++This checkpoint generalizes the persistent hull registry to the full supported
++narrow-phase shape surface. It is residency and differential correctness
++evidence, not a loaded-host performance claim.
++
++## Ownership cut
++
++Each live sphere, capsule, or supported compact hull has a 64-byte record indexed
++by Box3D shape id. Sphere and capsule records retain both local endpoints and
++their radius. Hull records retain offsets into the content-deduplicated point,
++plane, and triangulated-boundary streams. The MSL kernel loads both shape
++records directly.
++
++Removing four per-contact primitive `float4` groups shrinks the ordered input
++from 184 to 120 bytes. The CPU no longer writes shape types, endpoints, radii,
++or hull descriptors for each contact. It still writes two body rotations and
++world translations, including exact binary64 position bits for VF64 builds.
++
++## Reuse and invalidation evidence
++
++The prior cold/reuse evidence remains: one upload, at least two stable reuses,
++and eight hull shapes deduplicated to one unique hull. Replacing one hull causes
++exactly the second upload and two unique hulls. Replacing the first sphere with
++`b3Shape_SetSphere` causes exactly the third upload, proving that primitive
++geometry mutation also rebuilds before the next dispatch.
++
++## Differential evidence
++
++The float batch remains 65 contacts with 62 applied GPU records, two
++authoritative separated records, and eight ordered two-point manifolds. Direct
++CPU-oracle error remains `1.79e-7`, applied error remains `2.34e-7`, and repeated
++records remain byte-identical.
++
++The double/VF64 batch remains 13 contacts with ten applied GPU records at a
++`1e12` origin. Direct error remains `1.79e-7`, applied error remains `2.19e-7`,
++and exact VF64 subtraction remains the world-translation boundary.
++
++Float and double warning-as-error focused Metal suites pass. The full CPU suite,
++full AddressSanitizer suite with Metal-runtime leak detection disabled, full
++float UndefinedBehaviorSanitizer suite, and focused double/VF64
++UndefinedBehaviorSanitizer Metal suite also pass.
++
++## Remaining ownership boundary
++
++The 120-byte stream still repeats body rotations and translations for every
++contact, and the CPU still consumes an ordered 80-byte result. A body-id-indexed
++transform registry must cover awake and static bodies without relying on the
++solver state buffer, which is populated after collision. Direct manifold
++storage remains the following cut.
 diff --git a/docs/benchmarks/m4-pro-shape-compaction-2026-09-02.md b/docs/benchmarks/m4-pro-shape-compaction-2026-09-02.md
 new file mode 100644
 index 0000000..f10988c
@@ -2266,10 +2329,10 @@ index 0000000..1e74458
 +needed before the shared narrow-phase streams can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..c0f5e67
+index 0000000..25a178e
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,280 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -2432,18 +2495,19 @@ index 0000000..c0f5e67
 +than 64 raw candidates per moved proxy on average fall back to the full CPU
 +traversal before any partial result is consumed.
 +
-+The bounded hull-sphere narrow-phase route owns a separate persistent geometry
-+registry indexed by Box3D shape id. On its first dispatch after shape revision,
-+the CPU validates compact supported hulls, deduplicates identical `b3HullData`
-+content, and writes one point, plane, and triangle stream plus a 32-byte
-+descriptor for each shape slot. Stable dispatches skip world-shape traversal
-+and packing. Shape creation, destruction, or geometry mutation invalidates both
++The narrow-phase route owns a separate persistent geometry registry indexed by
++Box3D shape id. On its first dispatch after shape revision, the CPU packs sphere
++and capsule endpoints/radii, validates compact supported hulls, deduplicates
++identical `b3HullData` content, and writes one point, plane, and triangle stream
++plus a 64-byte descriptor for each shape slot. Stable dispatches skip
++world-shape traversal and packing. Shape creation, destruction, or geometry mutation invalidates both
 +this registry and the existing pair metadata revision; filter mutation currently
 +over-invalidates the geometry registry as a conservative consequence of sharing
 +that revision. Allocation, count, or hull validation failure rejects the Metal
-+narrow-phase dispatch before any result is consumed. The 184-byte contact input
-+contains a shape id rather than per-contact hull stream offsets; the MSL kernel
-+loads the descriptor and geometry directly from the persistent Metal buffers.
++narrow-phase dispatch before any result is consumed. The 120-byte contact input
++contains two shape ids rather than per-contact primitive data or hull stream
++offsets; the MSL kernel loads both descriptors and geometry directly from the
++persistent Metal buffers.
 +
 +Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 +unsupported joint solution, continuous collision, events, and sleeping/island
@@ -2542,6 +2606,9 @@ index 0000000..c0f5e67
 +The persistent deduplicated hull-geometry registry and invalidation evidence are
 +recorded in
 +[`benchmarks/m4-pro-resident-hull-geometry-2026-09-02.md`](benchmarks/m4-pro-resident-hull-geometry-2026-09-02.md).
++The follow-on sphere/capsule residency and 120-byte input checkpoint is recorded
++in
++[`benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md`](benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md).
 +Private shape results and selective synchronization are recorded in
 +[`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 +Persistent shape-input reuse is recorded in
@@ -3692,10 +3759,10 @@ index 0000000..da2b0a2
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..ebf2108
+index 0000000..fa98ef4
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,4103 @@
+@@ -0,0 +1,4099 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -3829,10 +3896,10 @@ index 0000000..ebf2108
 +	NSUInteger convexHullPlaneCapacity;
 +	id<MTLBuffer> convexHullTriangleBuffer;
 +	NSUInteger convexHullTriangleCapacity;
-+	id<MTLBuffer> convexHullRecordBuffer;
-+	NSUInteger convexHullRecordCapacity;
-+	int convexHullRecordCount;
-+	uint64_t convexHullGeometryRevision;
++	id<MTLBuffer> convexShapeGeometryBuffer;
++	NSUInteger convexShapeGeometryCapacity;
++	int convexShapeGeometryCount;
++	uint64_t convexShapeGeometryRevision;
 +	id<MTLBuffer> contactConstraintBuffer;
 +	NSUInteger contactConstraintCapacity;
 +	id<MTLBuffer> meshContactBuffer;
@@ -3918,11 +3985,7 @@ index 0000000..ebf2108
 +typedef struct b3MetalConvexManifoldInput
 +{
 +	uint32_t eligible;
-+	uint32_t typeA, typeB, shapeIdA;
-+	float centerA1X, centerA1Y, centerA1Z, radiusA;
-+	float centerA2X, centerA2Y, centerA2Z, paddingA;
-+	float centerB1X, centerB1Y, centerB1Z, radiusB;
-+	float centerB2X, centerB2Y, centerB2Z, paddingB;
++	uint32_t shapeIdA, shapeIdB, padding;
 +	float qAX, qAY, qAZ, qAW;
 +	float qBX, qBY, qBZ, qBW;
 +	float positionAX, positionAY, positionAZ;
@@ -3941,13 +4004,15 @@ index 0000000..ebf2108
 +	float x, y, z, w;
 +} b3MetalFloat4;
 +
-+typedef struct b3MetalHullGeometryRecord
++typedef struct b3MetalShapeGeometry
 +{
++	float point1X, point1Y, point1Z, radius;
++	float point2X, point2Y, point2Z, padding1;
 +	uint32_t pointOffset, pointCount;
 +	uint32_t planeOffset, planeCount;
 +	uint32_t triangleOffset, triangleCount;
-+	uint32_t supported, padding;
-+} b3MetalHullGeometryRecord;
++	uint32_t type, supported;
++} b3MetalShapeGeometry;
 +
 +_Static_assert( sizeof( b3MetalBodyProperties ) == 128, "Metal body property ABI changed" );
 +_Static_assert( sizeof( b3MetalFinalizeProperties ) == 64, "Metal finalization-property ABI changed" );
@@ -3965,11 +4030,11 @@ index 0000000..ebf2108
 +_Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
 +_Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
 +_Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed" );
-+_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 184, "Metal convex-manifold input ABI changed" );
++_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 120, "Metal convex-manifold input ABI changed" );
 +_Static_assert( sizeof( b3MetalConvexManifoldResult ) == 80, "Metal convex-manifold result ABI changed" );
 +_Static_assert( sizeof( b3MetalHullTriangle ) == 16, "Metal hull-triangle ABI changed" );
 +_Static_assert( sizeof( b3MetalFloat4 ) == 16, "Metal float4 ABI changed" );
-+_Static_assert( sizeof( b3MetalHullGeometryRecord ) == 32, "Metal hull-geometry record ABI changed" );
++_Static_assert( sizeof( b3MetalShapeGeometry ) == 64, "Metal shape-geometry record ABI changed" );
 +_Static_assert( sizeof( b3SetItem ) == 16, "Metal pair-set item ABI changed" );
 +_Static_assert( sizeof( b3ContactConstraintPointWide ) == 192, "Metal wide contact point ABI changed" );
 +_Static_assert( sizeof( b3ContactConstraintWide ) == 1696, "Metal wide contact ABI changed" );
@@ -4110,15 +4175,13 @@ index 0000000..ebf2108
 +	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates,shapeCount,pairCapacity,p1,p2; };\n"
 +	"struct PairPrefixParams { uint moveCount,candidateCapacity,candidateLimit,padding; };\n"
 +	"struct ConvexManifoldInput {\n"
-+	"  uint eligible,typeA,typeB,shapeIdA; float centerA1X,centerA1Y,centerA1Z,radiusA;\n"
-+	"  float centerA2X,centerA2Y,centerA2Z,paddingA; float centerB1X,centerB1Y,centerB1Z,radiusB;\n"
-+	"  float centerB2X,centerB2Y,centerB2Z,paddingB;\n"
++	"  uint eligible,shapeIdA,shapeIdB,padding;\n"
 +	"  float qAX,qAY,qAZ,qAW,qBX,qBY,qBZ,qBW; float positionAX,positionAY,positionAZ,positionBX,positionBY,positionBZ;\n"
 +	"  ulong positionAXBits,positionAYBits,positionAZBits,positionBXBits,positionBYBits,positionBZBits;\n"
 +	"};\n"
 +	"struct HullTriangle { uint index1,index2,index3,face; };\n"
-+	"struct HullGeometryRecord { uint pointOffset,pointCount,planeOffset,planeCount;\n"
-+	"  uint triangleOffset,triangleCount,supported,padding; };\n"
++	"struct ShapeGeometry { float point1X,point1Y,point1Z,radius; float point2X,point2Y,point2Z,padding1;\n"
++	"  uint pointOffset,pointCount,planeOffset,planeCount,triangleOffset,triangleCount,type,supported; };\n"
 +	"struct ConvexManifoldResult { uint eligible,touching,pointCount,padding1; float nx,ny,nz,padding2;\n"
 +	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,padding3,padding4; };\n"
 +	"struct ConvexManifoldParams { uint contactCount; float linearSlop,speculativeDistance,padding; };\n"
@@ -4560,7 +4623,7 @@ index 0000000..ebf2108
 +	"                                const device float4* hullPoints [[buffer(3)]],\n"
 +	"                                const device float4* hullPlanes [[buffer(4)]],\n"
 +	"                                const device HullTriangle* hullTriangles [[buffer(5)]],\n"
-+	"                                const device HullGeometryRecord* hullRecords [[buffer(6)]],\n"
++	"                                const device ShapeGeometry* shapeGeometry [[buffer(6)]],\n"
 +	"                                uint i [[thread_position_in_grid]]) {\n"
 +	"  if(i>=p.contactCount)return; ConvexManifoldInput in=inputs[i]; ConvexManifoldResult out={};\n"
 +	"  if(in.eligible==0u){results[i]=out;return;} out.eligible=1u;\n"
@@ -4572,12 +4635,14 @@ index 0000000..ebf2108
 +	"#else\n"
 +	"  d=float3(in.positionBX-in.positionAX,in.positionBY-in.positionAY,in.positionBZ-in.positionAZ);\n"
 +	"#endif\n"
++	"  ShapeGeometry geometryA=shapeGeometry[in.shapeIdA],geometryB=shapeGeometry[in.shapeIdB];\n"
++	"  if(geometryA.supported==0u||geometryB.supported==0u){out.eligible=0u;results[i]=out;return;}\n"
 +	"  float4 qA=float4(in.qAX,in.qAY,in.qAZ,in.qAW),qB=float4(in.qBX,in.qBY,in.qBZ,in.qBW);\n"
 +	"  float3 relativePosition=inv_rotate(qA,d); float4 relativeRotation=quat_mul(float4(-qA.xyz,qA.w),qB);\n"
-+	"  float3 a1=float3(in.centerA1X,in.centerA1Y,in.centerA1Z),a2=float3(in.centerA2X,in.centerA2Y,in.centerA2Z);\n"
-+	"  float3 b1=rotate(relativeRotation,float3(in.centerB1X,in.centerB1Y,in.centerB1Z))+relativePosition;\n"
-+	"  float3 b2=rotate(relativeRotation,float3(in.centerB2X,in.centerB2Y,in.centerB2Z))+relativePosition;\n"
-+	"  if(in.typeA==3u){HullGeometryRecord hull=hullRecords[in.shapeIdA];if(hull.supported==0u){out.eligible=0u;results[i]=out;return;}\n"
++	"  float3 a1=float3(geometryA.point1X,geometryA.point1Y,geometryA.point1Z),a2=float3(geometryA.point2X,geometryA.point2Y,geometryA.point2Z);\n"
++	"  float3 b1=rotate(relativeRotation,float3(geometryB.point1X,geometryB.point1Y,geometryB.point1Z))+relativePosition;\n"
++	"  float3 b2=rotate(relativeRotation,float3(geometryB.point2X,geometryB.point2Y,geometryB.point2Z))+relativePosition;\n"
++	"  if(geometryA.type==3u){ShapeGeometry hull=geometryA;\n"
 +	"    float bestPlane=-3.40282347e+38f;float3 bestNormal=float3(0.0f,1.0f,0.0f);uint bestFace=0u;\n"
 +	"    for(uint j=0u;j<hull.planeCount;++j){float4 plane=hullPlanes[hull.planeOffset+j];float separation=dot(plane.xyz,b1)-plane.w;\n"
 +	"      if(separation>bestPlane){bestPlane=separation;bestNormal=plane.xyz;bestFace=j;}}\n"
@@ -4590,15 +4655,15 @@ index 0000000..ebf2108
 +	"      for(uint j=0u;j<hull.triangleCount;++j){HullTriangle tri=hullTriangles[hull.triangleOffset+j];\n"
 +	"        float3 q=closest_triangle(b1,hullPoints[hull.pointOffset+tri.index1].xyz,hullPoints[hull.pointOffset+tri.index2].xyz,hullPoints[hull.pointOffset+tri.index3].xyz);\n"
 +	"        float distanceSquared=dot(b1-q,b1-q);if(distanceSquared<bestDistanceSquared){bestDistanceSquared=distanceSquared;closest=q;}}\n"
-+	"      distance=sqrt(bestDistanceSquared);if(distance>in.radiusB+p.speculativeDistance){results[i]=out;return;}\n"
-+	"      if(distance>in.radiusB){out.eligible=0u;results[i]=out;return;}\n"
++	"      distance=sqrt(bestDistanceSquared);if(distance>geometryB.radius+p.speculativeDistance){results[i]=out;return;}\n"
++	"      if(distance>geometryB.radius){out.eligible=0u;results[i]=out;return;}\n"
 +	"      if(distance*distance>1000.0f*1.17549435e-38f)normal=(b1-closest)/distance;\n"
 +	"    }else{distance=0.0f;closest=b1;}\n"
-+	"    float separation=bestPlane<=0.0f?bestPlane-in.radiusB:distance-in.radiusB;float3 point=0.5f*(closest+b1-in.radiusB*normal);\n"
++	"    float separation=bestPlane<=0.0f?bestPlane-geometryB.radius:distance-geometryB.radius;float3 point=0.5f*(closest+b1-geometryB.radius*normal);\n"
 +	"    out.touching=1u;out.pointCount=1u;out.nx=normal.x;out.ny=normal.y;out.nz=normal.z;out.p1x=point.x;out.p1y=point.y;out.p1z=point.z;\n"
 +	"    out.separation1=separation;out.feature1=0u;results[i]=out;return;}\n"
-+	"  float radius=in.radiusA+in.radiusB;float3 cpA,cpB;\n"
-+	"  if(in.typeA==5u){cpA=a1;cpB=b1;}else if(in.typeB==5u){cpB=b1;cpA=point_segment(a1,a2,cpB);}\n"
++	"  float radius=geometryA.radius+geometryB.radius;float3 cpA,cpB;\n"
++	"  if(geometryA.type==5u){cpA=a1;cpB=b1;}else if(geometryB.type==5u){cpB=b1;cpA=point_segment(a1,a2,cpB);}\n"
 +	"  else{SegmentResult sr=segment_distance(a1,a2,b1,b2);cpA=sr.point1;cpB=sr.point2;float3 initialOffset=cpB-cpA;\n"
 +	"    float distanceSquared=dot(initialOffset,initialOffset),maxDistance=radius+p.speculativeDistance,minDistance=0.01f*p.linearSlop;\n"
 +	"    if(distanceSquared>maxDistance*maxDistance||distanceSquared<minDistance*minDistance){results[i]=out;return;}\n"
@@ -4608,13 +4673,13 @@ index 0000000..ebf2108
 +	"      uint count=clip_segment(v1,f1,v2,f2,-edgeA,-dot(edgeA,a1));if(count==2u)count=clip_segment(v1,f1,v2,f2,edgeA,dot(edgeA,a2));\n"
 +	"      if(count==2u){float3 c1=point_segment(a1,a2,v1),c2=point_segment(a1,a2,v2);float d1=distance(c1,v1),d2=distance(c2,v2);\n"
 +	"        if(d1<=radius&&d2<=radius){if(d1<minDistance||d2<minDistance){results[i]=out;return;}float3 n1=(v1-c1)/d1,n2=(v2-c2)/d2;\n"
-+	"          float3 normal=normalize(n1+n2);float3 point1=0.5f*((v1+in.radiusA*n1+c1)-in.radiusB*normal);\n"
-+	"          float3 point2=0.5f*((v2+in.radiusA*n2+c2)-in.radiusB*normal);out.touching=1u;out.pointCount=2u;\n"
++	"          float3 normal=normalize(n1+n2);float3 point1=0.5f*((v1+geometryA.radius*n1+c1)-geometryB.radius*normal);\n"
++	"          float3 point2=0.5f*((v2+geometryA.radius*n2+c2)-geometryB.radius*normal);out.touching=1u;out.pointCount=2u;\n"
 +	"          out.nx=normal.x;out.ny=normal.y;out.nz=normal.z;out.p1x=point1.x;out.p1y=point1.y;out.p1z=point1.z;out.separation1=d1-radius;\n"
 +	"          out.p2x=point2.x;out.p2y=point2.y;out.p2z=point2.z;out.separation2=d2-radius;out.feature1=f1;out.feature2=f2;results[i]=out;return;}}}}\n"
-+	"  float3 offset=cpB-cpA;float distanceSq=dot(offset,offset);if(in.typeB==5u&&distanceSq>radius*radius){results[i]=out;return;}\n"
++	"  float3 offset=cpB-cpA;float distanceSq=dot(offset,offset);if(geometryB.type==5u&&distanceSq>radius*radius){results[i]=out;return;}\n"
 +	"  float distance=sqrt(distanceSq);float3 normal=float3(0.0f,1.0f,0.0f);if(distance*distance>1000.0f*1.17549435e-38f)normal=offset/distance;\n"
-+	"  float3 point=0.5f*((cpA+in.radiusA*normal+cpB)-in.radiusB*normal);out.touching=1u;out.pointCount=1u;\n"
++	"  float3 point=0.5f*((cpA+geometryA.radius*normal+cpB)-geometryB.radius*normal);out.touching=1u;out.pointCount=1u;\n"
 +	"  out.nx=normal.x;out.ny=normal.y;out.nz=normal.z;out.p1x=point.x;out.p1y=point.y;out.p1z=point.z;\n"
 +	"  out.separation1=distance-radius;out.feature1=0u;results[i]=out;\n"
 +	"}\n";
@@ -5190,7 +5255,7 @@ index 0000000..ebf2108
 +		context->pairUpdateLeavesPipeline = pairUpdateLeavesPipeline;
 +		context->pairRefitPipeline = pairRefitPipeline;
 +		context->convexManifoldPipeline = convexManifoldPipeline;
-+		context->convexHullGeometryRevision = UINT64_MAX;
++		context->convexShapeGeometryRevision = UINT64_MAX;
 +		context->warmStartContactsPipeline = warmStartPipeline;
 +		context->solveContactsPipeline = solvePipeline;
 +		context->restitutionContactsPipeline = restitutionPipeline;
@@ -5243,7 +5308,7 @@ index 0000000..ebf2108
 +	[context->convexHullPointBuffer release];
 +	[context->convexHullPlaneBuffer release];
 +	[context->convexHullTriangleBuffer release];
-+	[context->convexHullRecordBuffer release];
++	[context->convexShapeGeometryBuffer release];
 +	[context->contactConstraintBuffer release];
 +	[context->meshContactBuffer release];
 +	[context->meshManifoldBuffer release];
@@ -5417,21 +5482,21 @@ index 0000000..ebf2108
 +	return true;
 +}
 +
-+static bool b3MetalEnsureHullGeometryCapacity( b3MetalContext* context, int recordCount, NSUInteger hullPointBytes,
++static bool b3MetalEnsureShapeGeometryCapacity( b3MetalContext* context, int recordCount, NSUInteger hullPointBytes,
 +	NSUInteger hullPlaneBytes, NSUInteger hullTriangleBytes )
 +{
-+	if ( recordCount < 0 || (NSUInteger)recordCount > NSUIntegerMax / sizeof( b3MetalHullGeometryRecord ) ) return false;
-+	NSUInteger recordBytes = (NSUInteger)recordCount * sizeof( b3MetalHullGeometryRecord );
-+	recordBytes = recordBytes > sizeof( b3MetalHullGeometryRecord ) ? recordBytes : sizeof( b3MetalHullGeometryRecord );
-+	if ( context->convexHullRecordCapacity < recordBytes )
++	if ( recordCount < 0 || (NSUInteger)recordCount > NSUIntegerMax / sizeof( b3MetalShapeGeometry ) ) return false;
++	NSUInteger recordBytes = (NSUInteger)recordCount * sizeof( b3MetalShapeGeometry );
++	recordBytes = recordBytes > sizeof( b3MetalShapeGeometry ) ? recordBytes : sizeof( b3MetalShapeGeometry );
++	if ( context->convexShapeGeometryCapacity < recordBytes )
 +	{
-+		NSUInteger capacity = context->convexHullRecordCapacity > 0 ? context->convexHullRecordCapacity : 4096;
++		NSUInteger capacity = context->convexShapeGeometryCapacity > 0 ? context->convexShapeGeometryCapacity : 4096;
 +		while ( capacity < recordBytes ) capacity *= 2;
 +		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
 +		if ( buffer == nil ) return false;
-+		[context->convexHullRecordBuffer release];
-+		context->convexHullRecordBuffer = buffer;
-+		context->convexHullRecordCapacity = capacity;
++		[context->convexShapeGeometryBuffer release];
++		context->convexShapeGeometryBuffer = buffer;
++		context->convexShapeGeometryCapacity = capacity;
 +	}
 +	hullPointBytes = hullPointBytes > sizeof( b3MetalFloat4 ) ? hullPointBytes : sizeof( b3MetalFloat4 );
 +	hullPlaneBytes = hullPlaneBytes > sizeof( b3MetalFloat4 ) ? hullPlaneBytes : sizeof( b3MetalFloat4 );
@@ -6830,11 +6895,11 @@ index 0000000..ebf2108
 +	return shapeB->type == b3_sphereShape && b3MetalSupportsHull( shapeA );
 +}
 +
-+static bool b3MetalEnsureHullGeometryRegistry( b3MetalContext* context, const b3World* world )
++static bool b3MetalEnsureShapeGeometryRegistry( b3MetalContext* context, const b3World* world )
 +{
 +	int shapeCount = world->shapes.count;
-+	if ( context->convexHullGeometryRevision == world->metalPairShapeRevision &&
-+		 context->convexHullRecordCount == shapeCount )
++	if ( context->convexShapeGeometryRevision == world->metalPairShapeRevision &&
++		 context->convexShapeGeometryCount == shapeCount )
 +	{
 +		( (b3World*)world )->metalNarrowPhaseGeometryReuseCount += 1;
 +		return true;
@@ -6843,7 +6908,7 @@ index 0000000..ebf2108
 +	size_t temporaryCount = shapeCount > 0 ? (size_t)shapeCount : 1;
 +	int* shapeUniqueIndices = malloc( temporaryCount * sizeof( int ) );
 +	const b3HullData** uniqueHulls = malloc( temporaryCount * sizeof( const b3HullData* ) );
-+	b3MetalHullGeometryRecord* uniqueRecords = calloc( temporaryCount, sizeof( b3MetalHullGeometryRecord ) );
++	b3MetalShapeGeometry* uniqueRecords = calloc( temporaryCount, sizeof( b3MetalShapeGeometry ) );
 +	if ( shapeUniqueIndices == NULL || uniqueHulls == NULL || uniqueRecords == NULL )
 +	{
 +		free( shapeUniqueIndices );
@@ -6899,14 +6964,14 @@ index 0000000..ebf2108
 +	NSUInteger hullPointBytes = (NSUInteger)hullPointCount * sizeof( b3MetalFloat4 );
 +	NSUInteger hullPlaneBytes = (NSUInteger)hullPlaneCount * sizeof( b3MetalFloat4 );
 +	NSUInteger hullTriangleBytes = (NSUInteger)hullTriangleCount * sizeof( b3MetalHullTriangle );
-+	if ( valid == false || b3MetalEnsureHullGeometryCapacity( context, shapeCount, hullPointBytes, hullPlaneBytes,
++	if ( valid == false || b3MetalEnsureShapeGeometryCapacity( context, shapeCount, hullPointBytes, hullPlaneBytes,
 +			hullTriangleBytes ) == false )
 +	{
 +		free( shapeUniqueIndices );
 +		free( uniqueHulls );
 +		free( uniqueRecords );
-+		context->convexHullGeometryRevision = UINT64_MAX;
-+		context->convexHullRecordCount = 0;
++		context->convexShapeGeometryRevision = UINT64_MAX;
++		context->convexShapeGeometryCount = 0;
 +		return false;
 +	}
 +
@@ -6923,7 +6988,8 @@ index 0000000..ebf2108
 +		const b3Plane* planes = b3GetHullPlanes( hull );
 +		const b3HullFace* faces = b3GetHullFaces( hull );
 +		const b3HullHalfEdge* edges = b3GetHullEdges( hull );
-+		b3MetalHullGeometryRecord* record = uniqueRecords + uniqueIndex;
++		b3MetalShapeGeometry* record = uniqueRecords + uniqueIndex;
++		record->type = b3_hullShape;
 +		record->pointOffset = hullPointCursor;
 +		record->pointCount = (uint32_t)hull->vertexCount;
 +		for ( int pointIndex = 0; pointIndex < hull->vertexCount; ++pointIndex )
@@ -6959,18 +7025,50 @@ index 0000000..ebf2108
 +		record->supported = 1;
 +	}
 +
-+	b3MetalHullGeometryRecord* records = context->convexHullRecordBuffer.contents;
-+	memset( records, 0, (size_t)shapeCount * sizeof( b3MetalHullGeometryRecord ) );
++	b3MetalShapeGeometry* records = context->convexShapeGeometryBuffer.contents;
++	memset( records, 0, (size_t)shapeCount * sizeof( b3MetalShapeGeometry ) );
 +	for ( int shapeIndex = 0; shapeIndex < shapeCount; ++shapeIndex )
 +	{
++		const b3Shape* shape = world->shapes.data + shapeIndex;
++		if ( shape->id != shapeIndex ) continue;
++		if ( shape->type == b3_sphereShape )
++		{
++			records[shapeIndex] = (b3MetalShapeGeometry){
++				.point1X = shape->sphere.center.x,
++				.point1Y = shape->sphere.center.y,
++				.point1Z = shape->sphere.center.z,
++				.radius = shape->sphere.radius,
++				.point2X = shape->sphere.center.x,
++				.point2Y = shape->sphere.center.y,
++				.point2Z = shape->sphere.center.z,
++				.type = b3_sphereShape,
++				.supported = 1,
++			};
++			continue;
++		}
++		if ( shape->type == b3_capsuleShape )
++		{
++			records[shapeIndex] = (b3MetalShapeGeometry){
++				.point1X = shape->capsule.center1.x,
++				.point1Y = shape->capsule.center1.y,
++				.point1Z = shape->capsule.center1.z,
++				.radius = shape->capsule.radius,
++				.point2X = shape->capsule.center2.x,
++				.point2Y = shape->capsule.center2.y,
++				.point2Z = shape->capsule.center2.z,
++				.type = b3_capsuleShape,
++				.supported = 1,
++			};
++			continue;
++		}
 +		int uniqueIndex = shapeUniqueIndices[shapeIndex];
 +		if ( uniqueIndex != B3_NULL_INDEX ) records[shapeIndex] = uniqueRecords[uniqueIndex];
 +	}
 +	B3_ASSERT( hullPointCursor == hullPointCount );
 +	B3_ASSERT( hullPlaneCursor == hullPlaneCount );
 +	B3_ASSERT( hullTriangleCursor == hullTriangleCount );
-+	context->convexHullRecordCount = shapeCount;
-+	context->convexHullGeometryRevision = world->metalPairShapeRevision;
++	context->convexShapeGeometryCount = shapeCount;
++	context->convexShapeGeometryRevision = world->metalPairShapeRevision;
 +	( (b3World*)world )->metalNarrowPhaseGeometryUploadCount += 1;
 +	( (b3World*)world )->metalLastNarrowPhaseHullShapeCount = supportedShapeCount;
 +	( (b3World*)world )->metalLastNarrowPhaseUniqueHullCount = uniqueCount;
@@ -7002,7 +7100,7 @@ index 0000000..ebf2108
 +	{
 +		NSUInteger inputBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldInput );
 +		NSUInteger resultBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldResult );
-+		if ( b3MetalEnsureHullGeometryRegistry( context, world ) == false ||
++		if ( b3MetalEnsureShapeGeometryRegistry( context, world ) == false ||
 +			 b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes ) == false )
 +		{
 +			return false;
@@ -7033,50 +7131,15 @@ index 0000000..ebf2108
 +			b3WorldTransform transformB = b3GetBodyTransformQuick( (b3World*)world, (b3Body*)bodyB );
 +			b3MetalConvexManifoldInput* input = inputs + i;
 +			input->eligible = 1;
-+			input->typeA = (uint32_t)shapeA->type;
-+			input->typeB = (uint32_t)shapeB->type;
 +			input->shapeIdA = (uint32_t)contact->shapeIdA;
-+			if ( shapeA->type == b3_sphereShape )
++			input->shapeIdB = (uint32_t)contact->shapeIdB;
++			if ( contact->shapeIdA >= context->convexShapeGeometryCount ||
++				 contact->shapeIdB >= context->convexShapeGeometryCount )
 +			{
-+				input->centerA1X = input->centerA2X = shapeA->sphere.center.x;
-+				input->centerA1Y = input->centerA2Y = shapeA->sphere.center.y;
-+				input->centerA1Z = input->centerA2Z = shapeA->sphere.center.z;
-+				input->radiusA = shapeA->sphere.radius;
++				return false;
 +			}
-+			else if ( shapeA->type == b3_capsuleShape )
-+			{
-+				input->centerA1X = shapeA->capsule.center1.x;
-+				input->centerA1Y = shapeA->capsule.center1.y;
-+				input->centerA1Z = shapeA->capsule.center1.z;
-+				input->centerA2X = shapeA->capsule.center2.x;
-+				input->centerA2Y = shapeA->capsule.center2.y;
-+				input->centerA2Z = shapeA->capsule.center2.z;
-+				input->radiusA = shapeA->capsule.radius;
-+			}
-+			else
-+			{
-+				if ( contact->shapeIdA >= context->convexHullRecordCount ) return false;
-+				const b3MetalHullGeometryRecord* records = context->convexHullRecordBuffer.contents;
-+				const b3MetalHullGeometryRecord* geometry = records + contact->shapeIdA;
-+				if ( geometry->supported == 0 ) return false;
-+			}
-+			if ( shapeB->type == b3_sphereShape )
-+			{
-+				input->centerB1X = input->centerB2X = shapeB->sphere.center.x;
-+				input->centerB1Y = input->centerB2Y = shapeB->sphere.center.y;
-+				input->centerB1Z = input->centerB2Z = shapeB->sphere.center.z;
-+				input->radiusB = shapeB->sphere.radius;
-+			}
-+			else
-+			{
-+				input->centerB1X = shapeB->capsule.center1.x;
-+				input->centerB1Y = shapeB->capsule.center1.y;
-+				input->centerB1Z = shapeB->capsule.center1.z;
-+				input->centerB2X = shapeB->capsule.center2.x;
-+				input->centerB2Y = shapeB->capsule.center2.y;
-+				input->centerB2Z = shapeB->capsule.center2.z;
-+				input->radiusB = shapeB->capsule.radius;
-+			}
++			const b3MetalShapeGeometry* geometry = context->convexShapeGeometryBuffer.contents;
++			if ( geometry[contact->shapeIdA].supported == 0 || geometry[contact->shapeIdB].supported == 0 ) return false;
 +			input->qAX = transformA.q.v.x;
 +			input->qAY = transformA.q.v.y;
 +			input->qAZ = transformA.q.v.z;
@@ -7117,7 +7180,7 @@ index 0000000..ebf2108
 +		[encoder setBuffer:context->convexHullPointBuffer offset:0 atIndex:3];
 +		[encoder setBuffer:context->convexHullPlaneBuffer offset:0 atIndex:4];
 +		[encoder setBuffer:context->convexHullTriangleBuffer offset:0 atIndex:5];
-+		[encoder setBuffer:context->convexHullRecordBuffer offset:0 atIndex:6];
++		[encoder setBuffer:context->convexShapeGeometryBuffer offset:0 atIndex:6];
 +		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
 +			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
 +		[encoder endEncoding];
@@ -10433,10 +10496,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..ef2b9b1
+index 0000000..4f7acd8
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,2288 @@
+@@ -0,0 +1,2298 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -10932,13 +10995,15 @@ index 0000000..ef2b9b1
 +#else
 +	const float base = 0.0f;
 +#endif
++	b3ShapeId firstSphereShape = b3_nullShapeId;
 +	for ( int i = 0; i < pairCount; ++i )
 +	{
 +		b3BodyDef bodyDef = b3DefaultBodyDef();
 +		bodyDef.type = b3_staticBody;
 +		bodyDef.position = (b3Pos){ base, 0.0, 4.0 * i };
 +		b3BodyId bodyA = b3CreateBody( worldId, &bodyDef );
-+		b3CreateSphereShape( bodyA, &shapeDef, &sphereA );
++		b3ShapeId sphereShape = b3CreateSphereShape( bodyA, &shapeDef, &sphereA );
++		if ( i == 0 ) firstSphereShape = sphereShape;
 +		bodyDef.type = b3_dynamicBody;
 +		bodyDef.position = (b3Pos){ base + 0.72, 0.08, 4.0 * i - 0.04 };
 +		bodyDef.rotation = b3MakeQuatFromAxisAngle( b3Normalize( (b3Vec3){ 0.3f, 0.8f, -0.2f } ), 0.15f * (float)( i % 3 ) );
@@ -11228,7 +11293,7 @@ index 0000000..ef2b9b1
 +	ENSURE( profile.narrowPhaseGeometryReuseCount >= 2 );
 +	ENSURE( profile.lastNarrowPhaseHullShapeCount == 8 );
 +	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 1 );
-+	printf( "    resident hull geometry uploads=%llu reuses=%llu shapes=%d unique=%d inputBytes=184\n",
++	printf( "    resident shape geometry uploads=%llu reuses=%llu hullShapes=%d uniqueHulls=%d inputBytes=120\n",
 +		(unsigned long long)profile.narrowPhaseGeometryUploadCount,
 +		(unsigned long long)profile.narrowPhaseGeometryReuseCount, profile.lastNarrowPhaseHullShapeCount,
 +		profile.lastNarrowPhaseUniqueHullCount );
@@ -11247,6 +11312,14 @@ index 0000000..ef2b9b1
 +	printf( "    resident hull mutation uploads=%llu shapes=%d unique=%d rebuild=yes\n",
 +		(unsigned long long)profile.narrowPhaseGeometryUploadCount, profile.lastNarrowPhaseHullShapeCount,
 +		profile.lastNarrowPhaseUniqueHullCount );
++	b3Sphere replacementSphere = sphereA;
++	replacementSphere.center.x += 0.01f;
++	b3Shape_SetSphere( firstSphereShape, &replacementSphere );
++	b3World_Step( worldId, 0.0f, 1 );
++	profile = b3World_GetMetalProfile( worldId );
++	ENSURE( profile.narrowPhaseGeometryUploadCount == 3 );
++	printf( "    resident primitive mutation uploads=%llu rebuild=yes\n",
++		(unsigned long long)profile.narrowPhaseGeometryUploadCount );
 +	b3DestroyWorld( worldId );
 +	return 0;
 +}

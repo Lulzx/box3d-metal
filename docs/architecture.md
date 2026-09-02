@@ -172,16 +172,16 @@ callbacks, events, recycling, and graph/island transitions.
 
 Double builds carry both absolute position bit patterns and use the vendored
 VF64 exact subtraction before narrowing the relative displacement to float at
-the same boundary as Box3D's CPU convex collision. Compact hull geometry lives
-in a persistent registry indexed by Box3D shape id. The cold path validates
-supported hulls and content-deduplicates points, planes, triangulated boundaries,
-and 32-byte descriptors; revision-stable dispatches skip shape traversal and
+the same boundary as Box3D's CPU convex collision. Supported sphere, capsule,
+and compact hull geometry lives in a persistent registry indexed by Box3D shape
+id. The cold path packs primitive endpoints/radii, validates hulls, and
+content-deduplicates hull points, planes, and triangulated boundaries into
+64-byte shape descriptors; revision-stable dispatches skip shape traversal and
 packing. Creation, destruction, and geometry mutation rebuild fail-closed.
 Filter mutation conservatively over-invalidates because the geometry and pair
 metadata registries currently share a revision.
 
 Input packing and a shared geometry result array remain; this is not yet
-resident manifold ownership. The current input and result records are 184 and
-80 bytes per contact respectively. The input references persistent hull
-geometry by shape id but still carries CPU-packed primitive and body-transform
-state.
+resident manifold ownership. The current input and result records are 120 and
+80 bytes per contact respectively. The input references two persistent shape
+records by id but still carries CPU-packed body-transform state.
