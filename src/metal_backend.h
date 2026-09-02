@@ -47,6 +47,17 @@ typedef struct b3MetalPairContactSeed
 	int shapeIndexB;
 } b3MetalPairContactSeed;
 
+// Compact CPU-authored identity for a newly allocated contact. Shapes are in
+// b3CreateContact's normalized primary order. Metal expands this into the full
+// private manifold input record from resident geometry and body transforms.
+typedef struct b3MetalContactInputSeed
+{
+	uint32_t contactId;
+	uint32_t generation;
+	uint32_t shapeIdA;
+	uint32_t shapeIdB;
+} b3MetalContactInputSeed;
+
 // Finalized sphere/capsule/compact-hull geometry in world axes, with point
 // anchors relative to each body's center of mass. The record also carries GPU-authored point
 // persistence and warm-start impulses matched against the prior resident solve.
@@ -125,6 +136,9 @@ typedef struct b3MetalDispatchStats
 	uint64_t pairRawSharedBytes;
 	int pairCpuFilterCandidateCount;
 	int pairDirectCandidateCount;
+	int contactInputBootstrapDispatchCount;
+	uint64_t contactInputBootstrapSharedBytes;
+	uint64_t contactInputPrivateBytes;
 } b3MetalDispatchStats;
 
 // Returns false when there is no usable Metal device or the shader pipeline
@@ -207,8 +221,15 @@ int b3MetalGetResidentPairMoveCount( const b3MetalContext* context );
 // world translations before converting the relative displacement to float,
 // matching Box3D's scalar narrow-phase boundary.
 // contactIndices may be NULL only when the revisioned contact input/order
-// registry is reusable for contactCount.
+// registry is reusable or a complete cold-contact bootstrap is committed.
 bool b3MetalCanReuseConvexManifoldInputs( const b3MetalContext* context, const b3World* world, int contactCount );
+// Begin invalidates any unconsumed bootstrap and returns shared staging storage.
+// Commit snapshots the final topology/input revisions. A committed bootstrap is
+// consumed only when it still represents the complete contact input order.
+b3MetalContactInputSeed* b3MetalBeginContactInputBootstrap( b3MetalContext* context, int capacity );
+bool b3MetalCommitContactInputBootstrap( b3MetalContext* context, const b3World* world, int count );
+void b3MetalCancelContactInputBootstrap( b3MetalContext* context );
+bool b3MetalCanBootstrapConvexManifoldInputs( const b3MetalContext* context, const b3World* world, int contactCount );
 // Diagnostic access to the current device-refreshed transform registry. This
 // does not pack or synchronize CPU body sims and fails when the registry is not
 // authoritative for the world's current step and revision.

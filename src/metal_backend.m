@@ -58,6 +58,7 @@ struct b3MetalContext
 	id<MTLComputePipelineState> pairContactSeedsPipeline;
 	id<MTLComputePipelineState> pairUpdateLeavesPipeline;
 	id<MTLComputePipelineState> pairRefitPipeline;
+	id<MTLComputePipelineState> contactInputBootstrapPipeline;
 	id<MTLComputePipelineState> convexManifoldPipeline;
 	id<MTLComputePipelineState> convexManifoldScanPipeline;
 	id<MTLComputePipelineState> convexManifoldPrefixPipeline;
@@ -165,11 +166,23 @@ struct b3MetalContext
 	bool pairShapeMayRequireCpuFiltering;
 	id<MTLBuffer> convexManifoldInputBuffer;
 	NSUInteger convexManifoldInputCapacity;
+	id<MTLBuffer> convexManifoldPrivateInputBuffer;
+	NSUInteger convexManifoldPrivateInputCapacity;
+	bool convexManifoldInputsPrivate;
 	int convexManifoldInputCount;
 	int convexManifoldCandidateCount;
 	uint64_t convexManifoldInputPairRevision;
 	uint64_t convexManifoldInputGraphRevision;
 	uint64_t convexManifoldInputRevision;
+	id<MTLBuffer> contactInputSeedBuffer;
+	NSUInteger contactInputSeedCapacity;
+	int contactInputSeedBeginCapacity;
+	int contactInputBootstrapCount;
+	uint64_t contactInputBootstrapPairRevision;
+	uint64_t contactInputBootstrapGraphRevision;
+	uint64_t contactInputBootstrapRevision;
+	bool contactInputBootstrapCommitted;
+	id<MTLBuffer> contactInputBootstrapStatusBuffer;
 	id<MTLBuffer> convexManifoldResultBuffer;
 	NSUInteger convexManifoldResultCapacity;
 	id<MTLBuffer> convexManifoldCompactBuffer;
@@ -388,6 +401,7 @@ _Static_assert( offsetof( b3TreeNode, flags ) == 46, "Metal tree-node ABI change
 _Static_assert( sizeof( b3MetalPairQueryRecord ) == 52, "Metal pair-record ABI changed" );
 _Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI changed" );
 _Static_assert( sizeof( b3MetalPairContactSeed ) == 8, "Metal pair-contact-seed ABI changed" );
+_Static_assert( sizeof( b3MetalContactInputSeed ) == 16, "Metal contact-input-seed ABI changed" );
 _Static_assert( sizeof( b3MetalPairSummary ) == 32, "Metal pair-summary ABI changed" );
 _Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
 _Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed" );
@@ -595,6 +609,8 @@ static const char* b3_metalSource =
 	"struct ConvexManifoldInput {\n"
 	"  uint eligible,shapeIdA,shapeIdB,contactId,contactGeneration,prepareEligible; int indexA,indexB; float satSeparation; uint satCache;\n"
 	"};\n"
+	"struct ContactInputSeed { uint contactId,generation,shapeIdA,shapeIdB; };\n"
+	"struct ContactInputBootstrapParams { uint count,contactCapacity,shapeCount,bodyCount; uint prepareEligible,p0,p1,p2; };\n"
 	"struct BodyTransform { float qx,qy,qz,qw,px,py,pz; uint supported; ulong pxBits,pyBits,pzBits; int index; uint flags;\n"
 	"  float localCenterX,localCenterY,localCenterZ,sleepVelocity; };\n"
 	"struct HullTriangle { uint index1,index2,index3,face; };\n"
@@ -1245,6 +1261,24 @@ static const char* b3_metalSource =
 	"  manifold.normal=query.normal;manifold.pointCount=1u;manifold.minSeparation=dot(query.normal,pointB-pointA);manifold.valid=1u;\n"
 	"  manifold.points[0].position=0.5f*(pointA+pointB);manifold.points[0].separation=manifold.minSeparation;\n"
 	"  manifold.points[0].feature=box_make_feature(0u,query.indexA,1u,query.indexB);return 1u;}\n"
+	"kernel void b3_contact_input_bootstrap(const device ContactInputSeed* seeds [[buffer(0)]],\n"
+	"                                        device ConvexManifoldInput* inputs [[buffer(1)]],\n"
+	"                                        const device ShapeGeometry* geometry [[buffer(2)]],\n"
+	"                                        const device BodyTransform* transforms [[buffer(3)]],\n"
+	"                                        device atomic_uint* status [[buffer(4)]],\n"
+	"                                        constant ContactInputBootstrapParams& p [[buffer(5)]],\n"
+	"                                        uint i [[thread_position_in_grid]]) {\n"
+	"  if(i>=p.count)return;ContactInputSeed seed=seeds[i];ConvexManifoldInput out={};inputs[i]=out;\n"
+	"  if(seed.contactId>=p.contactCapacity||seed.generation==0u||seed.shapeIdA>=p.shapeCount||seed.shapeIdB>=p.shapeCount){atomic_fetch_or_explicit(status,1u,memory_order_relaxed);return;}\n"
+	"  ShapeGeometry a=geometry[seed.shapeIdA],b=geometry[seed.shapeIdB];\n"
+	"  if(a.supported==0u||b.supported==0u||a.bodyId<0||b.bodyId<0||uint(a.bodyId)>=p.bodyCount||uint(b.bodyId)>=p.bodyCount){atomic_fetch_or_explicit(status,2u,memory_order_relaxed);return;}\n"
+	"  BodyTransform ta=transforms[a.bodyId],tb=transforms[b.bodyId];if(ta.supported==0u||tb.supported==0u){atomic_fetch_or_explicit(status,4u,memory_order_relaxed);return;}\n"
+	"  bool supported=(a.type==5u&&b.type==5u)||(a.type==0u&&b.type==5u)||(a.type==0u&&b.type==0u)||(a.type==3u&&b.type==5u)||\n"
+	"    (a.type==3u&&b.type==3u&&a.pointCount==8u&&a.planeCount==6u&&a.edgeCount==24u&&b.pointCount==8u&&b.planeCount==6u&&b.edgeCount==24u);\n"
+	"  if(!supported){atomic_fetch_or_explicit(status,8u,memory_order_relaxed);return;}\n"
+	"  out.eligible=1u;out.shapeIdA=seed.shapeIdA;out.shapeIdB=seed.shapeIdB;out.contactId=seed.contactId;out.contactGeneration=seed.generation;\n"
+	"  out.prepareEligible=p.prepareEligible;out.indexA=ta.index;out.indexB=tb.index;inputs[i]=out;\n"
+	"}\n"
 	"kernel void b3_convex_manifolds(const device ConvexManifoldInput* inputs [[buffer(0)]],\n"
 	"                                device ConvexManifoldResult* results [[buffer(1)]],\n"
 	"                                constant ConvexManifoldParams& p [[buffer(2)]],\n"
@@ -1926,6 +1960,11 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			? [device newComputePipelineStateWithFunction:pairRefitFunction error:&error]
 			: nil;
 		[pairRefitFunction release];
+		id<MTLFunction> contactInputBootstrapFunction = [library newFunctionWithName:@"b3_contact_input_bootstrap"];
+		id<MTLComputePipelineState> contactInputBootstrapPipeline = contactInputBootstrapFunction != nil
+			? [device newComputePipelineStateWithFunction:contactInputBootstrapFunction error:&error]
+			: nil;
+		[contactInputBootstrapFunction release];
 		id<MTLFunction> convexManifoldFunction = [library newFunctionWithName:@"b3_convex_manifolds"];
 		id<MTLComputePipelineState> convexManifoldPipeline = convexManifoldFunction != nil
 			? [device newComputePipelineStateWithFunction:convexManifoldFunction error:&error]
@@ -2039,7 +2078,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			 pairCandidatesPipeline == nil || pairScanBlocksPipeline == nil || pairPrefixPipeline == nil ||
 			 pairAddOffsetsPipeline == nil || pairMarkMovesPipeline == nil || pairCompactCpuFilterPipeline == nil ||
 			 pairContactSeedsPipeline == nil ||
-			 pairUpdateLeavesPipeline == nil || pairRefitPipeline == nil ||
+			 pairUpdateLeavesPipeline == nil || pairRefitPipeline == nil || contactInputBootstrapPipeline == nil ||
 			 convexManifoldPipeline == nil || convexManifoldScanPipeline == nil || convexManifoldPrefixPipeline == nil ||
 			 convexManifoldScatterPipeline == nil ||
 			 prepareContactsPipeline == nil || storeContactImpulsesPipeline == nil || warmStartPipeline == nil || solvePipeline == nil ||
@@ -2065,6 +2104,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[pairContactSeedsPipeline release];
 			[pairUpdateLeavesPipeline release];
 			[pairRefitPipeline release];
+			[contactInputBootstrapPipeline release];
 			[convexManifoldPipeline release];
 			[convexManifoldScanPipeline release];
 			[convexManifoldPrefixPipeline release];
@@ -2111,6 +2151,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[pairContactSeedsPipeline release];
 			[pairUpdateLeavesPipeline release];
 			[pairRefitPipeline release];
+			[contactInputBootstrapPipeline release];
 			[convexManifoldPipeline release];
 			[convexManifoldScanPipeline release];
 			[convexManifoldPrefixPipeline release];
@@ -2156,6 +2197,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		context->pairContactSeedsPipeline = pairContactSeedsPipeline;
 		context->pairUpdateLeavesPipeline = pairUpdateLeavesPipeline;
 		context->pairRefitPipeline = pairRefitPipeline;
+		context->contactInputBootstrapPipeline = contactInputBootstrapPipeline;
 		context->convexManifoldPipeline = convexManifoldPipeline;
 		context->convexManifoldScanPipeline = convexManifoldScanPipeline;
 		context->convexManifoldPrefixPipeline = convexManifoldPrefixPipeline;
@@ -2223,6 +2265,9 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->pairCpuFilterMoveBuffer release];
 	[context->pairContactSeedBuffer release];
 	[context->convexManifoldInputBuffer release];
+	[context->convexManifoldPrivateInputBuffer release];
+	[context->contactInputSeedBuffer release];
+	[context->contactInputBootstrapStatusBuffer release];
 	[context->convexManifoldResultBuffer release];
 	[context->convexManifoldCompactBuffer release];
 	[context->convexManifoldBlockBuffer release];
@@ -2263,6 +2308,7 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->pairContactSeedsPipeline release];
 	[context->pairUpdateLeavesPipeline release];
 	[context->pairRefitPipeline release];
+	[context->contactInputBootstrapPipeline release];
 	[context->convexManifoldPipeline release];
 	[context->convexManifoldScanPipeline release];
 	[context->convexManifoldPrefixPipeline release];
@@ -2432,7 +2478,7 @@ static bool b3MetalEnsureBodyMoveCapacity( b3MetalContext* context, NSUInteger r
 }
 
 static bool b3MetalEnsureConvexManifoldCapacity( b3MetalContext* context, NSUInteger inputBytes, NSUInteger resultBytes,
-	NSUInteger compactBytes, NSUInteger blockBytes, NSUInteger tableBytes )
+	NSUInteger compactBytes, NSUInteger blockBytes, NSUInteger tableBytes, bool privateInput )
 {
 	if ( context->convexManifoldSummaryBuffer == nil )
 	{
@@ -2440,7 +2486,17 @@ static bool b3MetalEnsureConvexManifoldCapacity( b3MetalContext* context, NSUInt
 			[context->device newBufferWithLength:sizeof( b3MetalPairSummary ) options:MTLResourceStorageModeShared];
 		if ( context->convexManifoldSummaryBuffer == nil ) return false;
 	}
-	if ( context->convexManifoldInputCapacity < inputBytes )
+	if ( privateInput && context->convexManifoldPrivateInputCapacity < inputBytes )
+	{
+		NSUInteger capacity = context->convexManifoldPrivateInputCapacity > 0 ? context->convexManifoldPrivateInputCapacity : 4096;
+		while ( capacity < inputBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModePrivate];
+		if ( buffer == nil ) return false;
+		[context->convexManifoldPrivateInputBuffer release];
+		context->convexManifoldPrivateInputBuffer = buffer;
+		context->convexManifoldPrivateInputCapacity = capacity;
+	}
+	else if ( privateInput == false && context->convexManifoldInputCapacity < inputBytes )
 	{
 		NSUInteger capacity = context->convexManifoldInputCapacity > 0 ? context->convexManifoldInputCapacity : 4096;
 		while ( capacity < inputBytes ) capacity *= 2;
@@ -5158,9 +5214,142 @@ bool b3MetalSyncBodyMoveEvents( b3MetalContext* context, b3World* world, b3BodyM
 	return true;
 }
 
+b3MetalContactInputSeed* b3MetalBeginContactInputBootstrap( b3MetalContext* context, int capacity )
+{
+	if ( context == NULL || capacity <= 0 || (NSUInteger)capacity > NSUIntegerMax / sizeof( b3MetalContactInputSeed ) )
+	{
+		return NULL;
+	}
+	context->contactInputBootstrapCommitted = false;
+	context->contactInputBootstrapCount = 0;
+	context->contactInputSeedBeginCapacity = 0;
+	NSUInteger requiredBytes = (NSUInteger)capacity * sizeof( b3MetalContactInputSeed );
+	if ( context->contactInputSeedCapacity < requiredBytes )
+	{
+		NSUInteger newCapacity = context->contactInputSeedCapacity > 0 ? context->contactInputSeedCapacity : 4096;
+		while ( newCapacity < requiredBytes )
+		{
+			if ( newCapacity > NSUIntegerMax / 2 ) return NULL;
+			newCapacity *= 2;
+		}
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:newCapacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return NULL;
+		[context->contactInputSeedBuffer release];
+		context->contactInputSeedBuffer = buffer;
+		context->contactInputSeedCapacity = newCapacity;
+	}
+	if ( context->contactInputBootstrapStatusBuffer == nil )
+	{
+		context->contactInputBootstrapStatusBuffer =
+			[context->device newBufferWithLength:sizeof( uint32_t ) options:MTLResourceStorageModeShared];
+		if ( context->contactInputBootstrapStatusBuffer == nil ) return NULL;
+	}
+	context->contactInputSeedBeginCapacity = capacity;
+	return context->contactInputSeedBuffer.contents;
+}
+
+void b3MetalCancelContactInputBootstrap( b3MetalContext* context )
+{
+	if ( context == NULL ) return;
+	context->contactInputSeedBeginCapacity = 0;
+	context->contactInputBootstrapCount = 0;
+	context->contactInputBootstrapCommitted = false;
+}
+
+bool b3MetalCommitContactInputBootstrap( b3MetalContext* context, const b3World* world, int count )
+{
+	if ( context == NULL || world == NULL || count <= 0 || context->contactInputSeedBuffer == nil ||
+		count > context->contactInputSeedBeginCapacity ||
+		world->metalDefaultFrictionCallback == false || world->metalDefaultRestitutionCallback == false ||
+		world->recording != NULL )
+	{
+		b3MetalCancelContactInputBootstrap( context );
+		return false;
+	}
+	b3SolverSet* awakeSet = world->solverSets.data + b3_awakeSet;
+	if ( awakeSet->contactIndices.count != count )
+	{
+		b3MetalCancelContactInputBootstrap( context );
+		return false;
+	}
+	for ( int colorIndex = 0; colorIndex < B3_GRAPH_COLOR_COUNT; ++colorIndex )
+	{
+		const b3GraphColor* color = world->constraintGraph.colors + colorIndex;
+		if ( color->convexContacts.count != 0 || color->contacts.count != 0 )
+		{
+			b3MetalCancelContactInputBootstrap( context );
+			return false;
+		}
+	}
+	const b3MetalContactInputSeed* seeds = context->contactInputSeedBuffer.contents;
+	bool valid = true;
+	for ( int i = 0; i < count; ++i )
+	{
+		const b3MetalContactInputSeed* seed = seeds + i;
+		if ( seed->contactId >= (uint32_t)world->contacts.count ||
+			awakeSet->contactIndices.data[i] != (int)seed->contactId )
+		{
+			valid = false;
+			break;
+		}
+		const b3Contact* contact = world->contacts.data + seed->contactId;
+		if ( contact->contactId != (int)seed->contactId || contact->generation != seed->generation ||
+			contact->shapeIdA != (int)seed->shapeIdA || contact->shapeIdB != (int)seed->shapeIdB ||
+			contact->setIndex != b3_awakeSet || contact->colorIndex != B3_NULL_INDEX || contact->localIndex != i ||
+			contact->manifoldCount != 0 ||
+			( contact->flags & ( b3_simTouchingFlag | b3_simEnablePreSolveEvents ) ) != 0 ||
+			seed->shapeIdA >= (uint32_t)world->shapes.count || seed->shapeIdB >= (uint32_t)world->shapes.count )
+		{
+			valid = false;
+			break;
+		}
+		const b3Shape* shapeA = world->shapes.data + seed->shapeIdA;
+		const b3Shape* shapeB = world->shapes.data + seed->shapeIdB;
+		if ( shapeA->id != (int)seed->shapeIdA || shapeB->id != (int)seed->shapeIdB )
+		{
+			valid = false;
+			break;
+		}
+		bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
+			( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
+			( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
+			b3MetalSupportsHullSphere( shapeA, shapeB ) || b3MetalSupportsBoxPair( world, shapeA, shapeB );
+		if ( eligible == false || ( shapeA->flags & b3_enableHitEvents ) != 0 ||
+			( shapeB->flags & b3_enableHitEvents ) != 0 )
+		{
+			valid = false;
+			break;
+		}
+	}
+	if ( valid == false )
+	{
+		b3MetalCancelContactInputBootstrap( context );
+		return false;
+	}
+	context->contactInputSeedBeginCapacity = 0;
+	context->contactInputBootstrapCount = count;
+	context->contactInputBootstrapPairRevision = world->broadPhase.pairSetRevision;
+	context->contactInputBootstrapGraphRevision = world->constraintGraph.revision;
+	context->contactInputBootstrapRevision = world->metalContactInputRevision;
+	context->contactInputBootstrapCommitted = true;
+	return true;
+}
+
+bool b3MetalCanBootstrapConvexManifoldInputs( const b3MetalContext* context, const b3World* world, int contactCount )
+{
+	return context != NULL && world != NULL && context->contactInputBootstrapCommitted && contactCount > 0 &&
+		context->contactInputBootstrapCount == contactCount && context->contactInputSeedBuffer != nil &&
+		context->contactInputBootstrapStatusBuffer != nil &&
+		context->contactInputBootstrapPairRevision == world->broadPhase.pairSetRevision &&
+		context->contactInputBootstrapGraphRevision == world->constraintGraph.revision &&
+		context->contactInputBootstrapRevision == world->metalContactInputRevision;
+}
+
 bool b3MetalCanReuseConvexManifoldInputs( const b3MetalContext* context, const b3World* world, int contactCount )
 {
-	return context != NULL && world != NULL && contactCount > 0 && context->convexManifoldInputBuffer != nil &&
+	return context != NULL && world != NULL && contactCount > 0 &&
+		( context->convexManifoldInputsPrivate ? context->convexManifoldPrivateInputBuffer != nil :
+			context->convexManifoldInputBuffer != nil ) &&
 		context->convexManifoldInputCount == contactCount &&
 		context->convexManifoldInputPairRevision == world->broadPhase.pairSetRevision &&
 		context->convexManifoldInputGraphRevision == world->constraintGraph.revision &&
@@ -5180,8 +5369,23 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 	{
 		return false;
 	}
-	bool reuseInputs = contactIndices == NULL;
-	if ( reuseInputs && b3MetalCanReuseConvexManifoldInputs( context, world, contactCount ) == false ) return false;
+	bool reuseInputs = contactIndices == NULL && b3MetalCanReuseConvexManifoldInputs( context, world, contactCount );
+	bool bootstrapInputs = contactIndices == NULL && reuseInputs == false &&
+		b3MetalCanBootstrapConvexManifoldInputs( context, world, contactCount );
+	if ( contactIndices == NULL && reuseInputs == false && bootstrapInputs == false ) return false;
+	if ( contactIndices != NULL ) b3MetalCancelContactInputBootstrap( context );
+	if ( bootstrapInputs )
+	{
+		// Consume this one-shot authority before allocating or dispatching. Any
+		// failure below must force the caller onto the legacy CPU pack rather
+		// than retrying a seed set whose device side effects are uncertain.
+		b3MetalCancelContactInputBootstrap( context );
+		context->convexManifoldInputCount = 0;
+		context->convexManifoldCandidateCount = 0;
+		context->convexManifoldInputPairRevision = UINT64_MAX;
+		context->convexManifoldInputGraphRevision = UINT64_MAX;
+		context->convexManifoldInputRevision = UINT64_MAX;
+	}
 	( (b3World*)world )->metalLastNarrowPhaseResultCount = 0;
 	( (b3World*)world )->metalLastNarrowPhaseManifoldTableCount = 0;
 	if ( contactCount == 0 )
@@ -5195,12 +5399,11 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 	{
 		return false;
 	}
-
 	@autoreleasepool
 	{
-		int candidateCount = reuseInputs ? context->convexManifoldCandidateCount : 0;
+		int candidateCount = reuseInputs ? context->convexManifoldCandidateCount : bootstrapInputs ? contactCount : 0;
 		int hitEventContactCount = reuseInputs ? context->contactHitEventIdCount : 0;
-		if ( reuseInputs == false )
+		if ( reuseInputs == false && bootstrapInputs == false )
 		{
 			for ( int i = 0; i < contactCount; ++i )
 			{
@@ -5243,7 +5446,8 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		NSUInteger previousImpulseCapacity = context->contactImpulseResultCapacity;
 		if ( b3MetalEnsureShapeGeometryRegistry( context, world ) == false ||
 			 b3MetalEnsureBodyTransformRegistry( context, world ) == false ||
-			 b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes, resultBytes, blockBytes, tableBytes ) == false ||
+			 b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes, resultBytes, blockBytes, tableBytes,
+				 bootstrapInputs || ( reuseInputs && context->convexManifoldInputsPrivate ) ) == false ||
 			 b3MetalEnsureContactPrepareTableCapacity( context, prepareTableBytes ) == false ||
 			 b3MetalEnsureContactImpulseResultCapacity( context, impulseTableBytes ) == false ||
 			 b3MetalEnsureContactHitEventIdCapacity( context, (NSUInteger)hitEventContactCount * sizeof( int ) ) == false )
@@ -5261,8 +5465,11 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 			memset( context->contactPrepareTableBuffer.contents, 0, prepareTableBytes );
 			context->contactPrepareGeneration = 1;
 		}
-		b3MetalConvexManifoldInput* inputs = context->convexManifoldInputBuffer.contents;
-		if ( reuseInputs == false )
+		id<MTLBuffer> manifoldInputBuffer = bootstrapInputs || ( reuseInputs && context->convexManifoldInputsPrivate )
+			? context->convexManifoldPrivateInputBuffer : context->convexManifoldInputBuffer;
+		b3MetalConvexManifoldInput* inputs = reuseInputs == false && bootstrapInputs == false
+			? context->convexManifoldInputBuffer.contents : NULL;
+		if ( reuseInputs == false && bootstrapInputs == false )
 		{
 			int* hitEventContactIds = context->contactHitEventIdBuffer.contents;
 			memset( inputs, 0, inputBytes );
@@ -5336,12 +5543,17 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 			context->convexManifoldInputPairRevision = world->broadPhase.pairSetRevision;
 			context->convexManifoldInputGraphRevision = world->constraintGraph.revision;
 			context->convexManifoldInputRevision = world->metalContactInputRevision;
+			context->convexManifoldInputsPrivate = false;
 			( (b3World*)world )->metalContactInputPackCount += 1;
 			( (b3World*)world )->metalLastContactInputBytes = inputBytes;
 		}
-		else
+		else if ( reuseInputs )
 		{
 			( (b3World*)world )->metalContactInputReuseCount += 1;
+			( (b3World*)world )->metalLastContactInputBytes = 0;
+		}
+		else
+		{
 			( (b3World*)world )->metalLastContactInputBytes = 0;
 		}
 
@@ -5367,9 +5579,33 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
 		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
 		if ( commandBuffer == nil || encoder == nil ) return false;
+		if ( bootstrapInputs )
+		{
+			*( (uint32_t*)context->contactInputBootstrapStatusBuffer.contents ) = 0;
+			struct
+			{
+				uint32_t count, contactCapacity, shapeCount, bodyCount;
+				uint32_t prepareEligible, padding0, padding1, padding2;
+			} bootstrapParams = {
+				(uint32_t)contactCount, (uint32_t)world->contacts.count, (uint32_t)context->convexShapeGeometryCount,
+				(uint32_t)context->convexBodyTransformCount, world->contactRecycleDistance == 0.0f ? 1u : 0u,
+				0u, 0u, 0u,
+			};
+			_Static_assert( sizeof( bootstrapParams ) == 32, "Metal contact-input-bootstrap parameter ABI changed" );
+			[encoder setComputePipelineState:context->contactInputBootstrapPipeline];
+			[encoder setBuffer:context->contactInputSeedBuffer offset:0 atIndex:0];
+			[encoder setBuffer:manifoldInputBuffer offset:0 atIndex:1];
+			[encoder setBuffer:context->convexShapeGeometryBuffer offset:0 atIndex:2];
+			[encoder setBuffer:context->convexBodyTransformBuffer offset:0 atIndex:3];
+			[encoder setBuffer:context->contactInputBootstrapStatusBuffer offset:0 atIndex:4];
+			[encoder setBytes:&bootstrapParams length:sizeof( bootstrapParams ) atIndex:5];
+			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
+				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->contactInputBootstrapPipeline ), 1, 1 )];
+			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+		}
 		id<MTLComputePipelineState> pipeline = context->convexManifoldPipeline;
 		[encoder setComputePipelineState:pipeline];
-		[encoder setBuffer:context->convexManifoldInputBuffer offset:0 atIndex:0];
+		[encoder setBuffer:manifoldInputBuffer offset:0 atIndex:0];
 		[encoder setBuffer:context->convexManifoldResultBuffer offset:0 atIndex:1];
 		[encoder setBytes:&params length:sizeof( params ) atIndex:2];
 		[encoder setBuffer:context->convexHullPointBuffer offset:0 atIndex:3];
@@ -5388,7 +5624,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		[encoder setComputePipelineState:pipeline];
 		[encoder setBuffer:context->convexManifoldResultBuffer offset:0 atIndex:0];
 		[encoder setBuffer:context->convexManifoldBlockBuffer offset:0 atIndex:1];
-		[encoder setBuffer:context->convexManifoldInputBuffer offset:0 atIndex:2];
+		[encoder setBuffer:manifoldInputBuffer offset:0 atIndex:2];
 		[encoder setBuffer:context->contactImpulseResultBuffer offset:0 atIndex:3];
 		[encoder setBuffer:context->contactPrepareTableBuffer offset:0 atIndex:4];
 		[encoder setBytes:&compactParams length:sizeof( compactParams ) atIndex:5];
@@ -5408,7 +5644,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		[encoder setBuffer:context->convexManifoldResultBuffer offset:0 atIndex:0];
 		[encoder setBuffer:context->convexManifoldBlockBuffer offset:0 atIndex:1];
 		[encoder setBuffer:context->convexManifoldCompactBuffer offset:0 atIndex:2];
-		[encoder setBuffer:context->convexManifoldInputBuffer offset:0 atIndex:3];
+		[encoder setBuffer:manifoldInputBuffer offset:0 atIndex:3];
 		[encoder setBuffer:context->convexShapeGeometryBuffer offset:0 atIndex:4];
 		[encoder setBuffer:context->convexBodyTransformBuffer offset:0 atIndex:5];
 		[encoder setBuffer:context->convexManifoldTableBuffer offset:0 atIndex:6];
@@ -5420,7 +5656,17 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		[encoder endEncoding];
 		[commandBuffer commit];
 		[commandBuffer waitUntilCompleted];
-		if ( commandBuffer.status != MTLCommandBufferStatusCompleted ) return false;
+		if ( commandBuffer.status != MTLCommandBufferStatusCompleted )
+		{
+			if ( bootstrapInputs ) b3MetalCancelContactInputBootstrap( context );
+			return false;
+		}
+		if ( bootstrapInputs && *( (const uint32_t*)context->contactInputBootstrapStatusBuffer.contents ) != 0 )
+		{
+			context->convexManifoldInputCount = 0;
+			b3MetalCancelContactInputBootstrap( context );
+			return false;
+		}
 		const b3MetalPairSummary* summary = context->convexManifoldSummaryBuffer.contents;
 		uint64_t resultLimit = residentBypassCountOut != NULL ? (uint64_t)contactCount : (uint64_t)candidateCount;
 		if ( (uint64_t)summary->writeFlags > 4ull * summary->flags || summary->totalCount > resultLimit ||
@@ -5428,6 +5674,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 			 summary->flags > (uint32_t)candidateCount ||
 			 ( residentBypassCountOut != NULL && summary->totalCount + summary->flags != (uint64_t)contactCount ) )
 		{
+			if ( bootstrapInputs ) b3MetalCancelContactInputBootstrap( context );
 			return false;
 		}
 		int resultCount = (int)summary->totalCount;
@@ -5445,6 +5692,17 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		( (b3World*)world )->metalContactPersistenceMatchCount += persistenceMatchCount;
 		( (b3World*)world )->metalContactPrepareDeviceRefreshCount += prepareDeviceRefreshCount;
 		context->convexManifoldTableCount = world->contacts.count;
+		if ( bootstrapInputs )
+		{
+			context->convexManifoldInputCount = contactCount;
+			context->convexManifoldCandidateCount = contactCount;
+			context->convexManifoldInputPairRevision = world->broadPhase.pairSetRevision;
+			context->convexManifoldInputGraphRevision = world->constraintGraph.revision;
+			context->convexManifoldInputRevision = world->metalContactInputRevision;
+			context->convexManifoldInputsPrivate = true;
+			b3MetalCancelContactInputBootstrap( context );
+			( (b3World*)world )->metalLastContactInputBytes = 0;
+		}
 		( (b3World*)world )->metalLastNarrowPhaseResultCount = resultCount;
 		( (b3World*)world )->metalLastNarrowPhaseManifoldTableCount = world->contacts.count;
 		*resultsOut = completedResults;
@@ -5453,6 +5711,11 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		if ( stats != NULL )
 		{
 			stats->commandBufferCount = 1;
+			stats->contactInputBootstrapDispatchCount = bootstrapInputs ? 1 : 0;
+			stats->contactInputBootstrapSharedBytes = bootstrapInputs
+				? (uint64_t)contactCount * sizeof( b3MetalContactInputSeed ) : 0;
+			stats->contactInputPrivateBytes = context->convexManifoldInputsPrivate
+				? (uint64_t)contactCount * sizeof( b3MetalConvexManifoldInput ) : 0;
 			if ( commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime )
 			{
 				stats->gpuMilliseconds = 1000.0 * ( commandBuffer.GPUEndTime - commandBuffer.GPUStartTime );
