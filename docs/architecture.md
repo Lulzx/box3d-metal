@@ -201,14 +201,15 @@ double records retain all three exact
 binary64 position bit patterns for shader-side VF64 subtraction. Unsupported
 contact batches return before either registry is built.
 
-Input packing remains; this is not yet resident manifold ownership. The input
-is 32 bytes per contact and carries eligibility, two shape ids, contact identity,
-and contact generation. Full 160-byte results are private. A deterministic 256-lane block scan, serial block
-prefix, and parallel scatter return only active results in the same command
-buffer. Each compact record carries its original contact index and remains
-ordered. CPU workers lower-bound once per parallel range and then walk the
-compact stream linearly, without a dense lookup allocation. CPU contact
-validation and manifold application remain.
+Input packing remains. The input is 32 bytes per contact and carries
+eligibility, two shape ids, contact identity, and contact generation. Full
+160-byte results are private. A deterministic 256-lane block scan, serial block
+prefix, and parallel scatter separate stable resident contacts from ordered CPU
+exceptions in the same command buffer. Every supported contact finalizes into
+the private contact-ID table; only first-touch, callback, event, topology,
+unsupported, and other fail-closed exceptions enter the shared stream. CPU
+workers consume compact exceptions directly by contact ID. An unchanged stable
+step emits zero shared manifold bytes and does not schedule a collision task.
 The scatter rotates normals, constructs both center-of-mass-relative anchors
 with VF64 translation subtraction, computes default friction/restitution/rolling
 parameters and rotated tangent velocity, and feature-matches the prior impulse
@@ -216,12 +217,12 @@ table. CPU application skips matrix construction, origin-to-COM adjustment, and
 the old per-point persistence search.
 
 The same scatter writes an identical finalized record to a persistent private
-table indexed by Box3D contact id. Compact output remains ordered by awake-contact input index for the
-current CPU application path, while the private copy sets `inputIndex` to the
+table indexed by Box3D contact id. Compact exceptions remain ordered by
+awake-contact input index, while the private copy sets `inputIndex` to the
 contact id so its address and identity are independent of input permutation.
-The table is exposed only through an explicit diagnostic/fallback blit; normal
-steps add no shared stream, command buffer, or wait. Entries are authoritative
-only for contacts marked eligible in the current successful dispatch.
+The table is exposed only through an explicit diagnostic/fallback blit. Entries
+are authoritative only for contacts marked eligible in the current successful
+dispatch.
 
 That authority now survives into solver setup explicitly. Each collision worker
 clears a transient ownership bit before overlap and recycling decisions, then
@@ -276,3 +277,11 @@ With no hit requests, the stage touches no contacts. Public contact/body/shape
 queries sync requested records, while force debug drawing and snapshots are
 explicit boundaries. CPU routes invalidate older GPU result authority before
 fallback.
+
+Stable collision ownership is generation-based. After a successful dispatch,
+the world generation advances and unchanged resident contacts do not require a
+per-contact stale-flag write. Public and fallback consumers compare each
+contact's synchronization generation before materializing its private result.
+The CPU still gathers graph contact IDs, packs narrow-phase input records, and
+walks graph contacts for solver coverage and schedule eligibility. A revisioned
+resident contact-input/order registry is the next ownership boundary.

@@ -41,14 +41,14 @@ boundary-triangle streams are content-deduplicated. A body-id registry retains
 static and awake rotations, local centers, and VF64-capable world translations
 for collision. Revision-stable dispatches reuse both registries. Each 32-byte
 contact input contains eligibility, shape/contact identity, and contact
-generation. Full 160-byte outputs stay in private
-Metal storage; a deterministic scan/prefix/scatter pass returns only active
-results, tagged by original contact index, in the same command buffer. The
+generation. Full 160-byte outputs stay in private Metal storage; a deterministic
+scan/prefix/scatter pass returns only ordered CPU exceptions in the same command
+buffer. Stable resident contacts finalize directly into the private contact-ID
+table, emit zero shared manifold bytes, and schedule no CPU collision task. The
 scatter also produces both COM-relative anchors, feature-matches prior resident
 warm starts, and resolves default friction/restitution/rolling parameters plus
-tangent velocity. CPU workers lower-bound once per range while retaining
-manifold allocation, custom material and pre-solve callbacks, events, and
-graph/island state. High-aspect
+tangent velocity. First-touch, callback, event, topology, and unsupported
+exceptions retain CPU manifold allocation and graph/island state. High-aspect
 and speculative hull-sphere contacts explicitly retain CPU GJK; other shape
 pairs remain on the CPU. Double worlds use the vendored VF64 exact subtraction
 before narrowing relative translations to float.
@@ -66,12 +66,12 @@ finalized anchors and materials, prior contact-scope impulses, persistence, and
 normal warm starts. Recycling, pre-solve, and custom material callbacks remain
 CPU-written exceptions.
 Once a stable touching contact has a generation-current device-refreshed
-preparation record, the collision worker bypasses CPU manifold application and
-keeps the finalized private contact-ID table authoritative. Public/debug/
-snapshot consumers, sleep transitions, Metal disable, and CPU solver fallback
-materialize the lazy CPU mirror by contact ID and generation. Fast/CCD,
-hit-event, recording, callback, first-touch, and topology-changing contacts
-remain CPU exceptions.
+preparation record, no collision worker runs and the finalized private
+contact-ID table remains authoritative. A world generation makes CPU manifolds
+lazy mirrors without stable-contact flag writes. Public/debug/snapshot
+consumers, sleep transitions, Metal disable, and CPU solver fallback materialize
+them by contact ID and generation. Fast/CCD, hit-event, recording, callback,
+first-touch, and topology-changing contacts remain ordered CPU exceptions.
 Solver submission bulk-copies only a deterministic four-byte ID schedule per
 SIMD lane and no longer dereferences contacts to repack those records. Mixed,
 recycled, callback, overflow, and unsupported routes fail closed, including
@@ -196,9 +196,13 @@ result stream or CPU topology traversal; the 512-contact smoke remains a
 documented `0.118x` regression.
 The collision-bypass checkpoint then skips all 243 stable CPU manifold
 applications with zero geometry synchronizations. Explicit public, fallback,
-sleep, and disable boundaries materialize the lazy mirror safely. A five-sample
-512-contact Release median remains a documented `0.071x` regression because
-the compact 160-byte shared stream and flat CPU collision walk still exist.
+sleep, and disable boundaries materialize the lazy mirror safely. Its
+exception-compaction follow-on removes the stable shared stream and flat
+collision task: 512 and 8,192-contact runs report only their seed contacts as
+cumulative CPU collision work, then zero latest exceptions and zero shared
+manifold bytes. Timing is withheld because the host load exceeded 80; the CPU
+still gathers graph contact IDs, packs 32-byte input records, and walks solver
+coverage.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

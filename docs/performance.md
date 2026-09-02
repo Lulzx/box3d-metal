@@ -118,6 +118,15 @@ steps. Whole-world time was `0.173540 ms` CPU versus `1.472546 ms` Metal
 (`0.118x`). This is regression evidence, not acceleration: the compact
 160-byte finalized-manifold stream and CPU contact/topology traversal remain.
 
+GPU exception compaction removes that stable finalized-manifold stream and the
+flat CPU collision task. The Release harness reported 13,824 bypasses for 512
+contacts and 221,184 for 8,192 contacts; cumulative CPU collision counts were
+only the 512 and 8,192 seed contacts. Both latest unchanged steps reported zero
+exceptions and zero shared manifold bytes. These are structural counters, not
+a speedup claim: the host load exceeded 80 with `ffmpeg` consuming roughly ten
+CPU cores, and raw timings varied by several multiples. A quiet-host rerun is
+required after the remaining contact input/order registry work.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.

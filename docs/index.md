@@ -64,6 +64,8 @@ for review.
 - [Lazy contact-impulse synchronization](benchmarks/m4-pro-lazy-contact-impulse-sync-2026-09-02.md)
 - [Resident contact finalization](benchmarks/m4-pro-contact-finalization-residency-2026-09-02.md)
 - [Device contact-prepare refresh](benchmarks/m4-pro-device-contact-prepare-refresh-2026-09-02.md)
+- [Resident collision-application bypass](benchmarks/m4-pro-resident-collision-bypass-2026-09-02.md)
+- [Contact exception compaction](benchmarks/m4-pro-contact-exception-compaction-2026-09-02.md)
 
 ## Repository map
 
