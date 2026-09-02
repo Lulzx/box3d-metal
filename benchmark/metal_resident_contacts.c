@@ -74,7 +74,7 @@ int main( void )
 	printf( "# operation=whole_world_resident_sphere_contacts substeps=4 workers=%d timing=wall_clock_step\n", workerCount );
 	printf( "contacts,repeats,cpu_ms,gpu_ms,speedup,prepare_dispatches,device_prepare_refreshes,collision_bypasses,cpu_collision_"
 			"contacts,last_collision_exceptions,manifold_exception_bytes,input_packs,input_reuses,last_input_bytes,coverage_"
-			"bypasses,manifold_syncs,"
+			"bypasses,state_walk_bypasses,last_state_clear_bytes,manifold_syncs,"
 			"schedule_packs,schedule_reuses,store_bypasses,event_syncs,public_syncs,index_bytes,prior_stream_bytes,impulse_bytes,"
 			"prior_impulse_bytes\n" );
 	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
@@ -100,14 +100,17 @@ int main( void )
 		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
 		uint64_t priorImpulseBytes = (uint64_t)profile.lastResidentConvexConstraintCount * 1696;
 		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%"
-				"llu,%llu\n",
+				"llu,%llu,%llu,%llu\n",
 				contactCount, repeats, cpuMs, gpuMs, cpuMs / gpuMs, (unsigned long long)profile.contactPrepareDispatchCount,
 				(unsigned long long)profile.contactPrepareDeviceRefreshCount,
 				(unsigned long long)profile.contactCollisionBypassCount, (unsigned long long)profile.contactCollisionCpuCount,
 				(unsigned long long)profile.lastContactCollisionExceptionCount,
 				(unsigned long long)profile.lastNarrowPhaseResultBytes, (unsigned long long)profile.contactInputPackCount,
 				(unsigned long long)profile.contactInputReuseCount, (unsigned long long)profile.lastContactInputBytes,
-				(unsigned long long)profile.contactCoverageBypassCount, (unsigned long long)profile.contactManifoldSyncCount,
+				(unsigned long long)profile.contactCoverageBypassCount,
+				(unsigned long long)profile.contactStateTraversalBypassCount,
+				(unsigned long long)profile.lastContactStateBitSetBytes,
+				(unsigned long long)profile.contactManifoldSyncCount,
 				(unsigned long long)profile.contactSchedulePackCount, (unsigned long long)profile.contactScheduleReuseCount,
 				(unsigned long long)profile.contactImpulseStoreBypassCount,
 				(unsigned long long)profile.contactImpulseEventSyncCount, (unsigned long long)profile.contactImpulseSyncCount,

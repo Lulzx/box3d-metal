@@ -117,9 +117,12 @@ unchanged pair, graph, and eligibility revisions, so stable steps neither
 gather graph contact IDs nor rewrite the input buffer. Current body indices and
 fast-body flags come from the per-step body registry. The same dispatch proves
 complete convex graph ownership and skips the solver's per-contact coverage
-walk. CPU topology, callbacks, events, unsupported geometry, and cold/revision
-rebuilds remain explicit fallback boundaries, so this remains a residency
-checkpoint rather than a universal whole-world speedup.
+walk. A zero-exception dispatch also bypasses capacity-linear contact-state
+bitset clears, worker unions, and the serial state-change traversal; the next
+exception or fallback clears before any CPU worker writes. CPU topology
+mutation, callbacks, events, unsupported geometry, and cold/revision rebuilds
+remain explicit fallback boundaries, so this remains a residency checkpoint
+rather than a universal whole-world speedup.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.

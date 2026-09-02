@@ -68,6 +68,12 @@ typedef struct b3MetalProfile
 	/// Per-contact resident-ownership checks skipped because the unchanged
 	/// collision dispatch proved complete convex graph coverage.
 	uint64_t contactCoverageBypassCount;
+	/// Collision phases that emitted no CPU exceptions and therefore skipped
+	/// contact-state bitset clearing, union, and serial traversal.
+	uint64_t contactStateTraversalBypassCount;
+	/// Contact-state bitset bytes cleared on the latest collision phase.
+	/// A zero-exception resident phase reports zero.
+	uint64_t lastContactStateBitSetBytes;
 	/// Individual resident manifolds materialized into the CPU mirror on a
 	/// public, debug, snapshot, route-change, or solver-fallback boundary.
 	uint64_t contactManifoldSyncCount;

@@ -690,6 +690,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.contactInputReuseCount = world->metalContactInputReuseCount;
 	profile.lastContactInputBytes = world->metalLastContactInputBytes;
 	profile.contactCoverageBypassCount = world->metalContactCoverageBypassCount;
+	profile.contactStateTraversalBypassCount = world->metalContactStateTraversalBypassCount;
+	profile.lastContactStateBitSetBytes = world->metalLastContactStateBitSetBytes;
 	profile.contactManifoldSyncCount = world->metalContactManifoldSyncCount;
 	profile.contactImpulseStoreBypassCount = world->metalContactImpulseStoreBypassCount;
 	profile.contactImpulseEventSyncCount = world->metalContactImpulseEventSyncCount;
@@ -1239,12 +1241,9 @@ static void b3Collide( b3StepContext* context )
 	context->metalConvexManifoldCount = 0;
 	context->metalCollisionExceptionsOnly = false;
 
-	// Contact bit set on ids because contact pointers are unstable as they move between touching and not touching.
-	int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
 	for ( int i = 0; i < world->workerCount; ++i )
 	{
 		b3TaskContext* taskContext = world->taskContexts.data + i;
-		b3SetBitCountAndClear( &taskContext->contactStateBitSet, contactIdCapacity );
 		taskContext->satCallCount = 0;
 		taskContext->satCacheHitCount = 0;
 		taskContext->recycledContactCount = 0;
@@ -1300,8 +1299,29 @@ static void b3Collide( b3StepContext* context )
 	int minRange = 20;
 	if ( cpuContactCount > 0 )
 	{
+		// Contact bits are indexed by id because contact pointers may move during
+		// state transitions. Defer this capacity-linear clear until CPU collision
+		// work actually exists; stable resident phases leave the stale bits
+		// unreachable and clear them before the next exception or fallback.
+		int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
+		for ( int i = 0; i < world->workerCount; ++i )
+		{
+			b3SetBitCountAndClear( &world->taskContexts.data[i].contactStateBitSet, contactIdCapacity );
+		}
+#if defined( BOX3D_METAL )
+		uint64_t blockCount = ( (uint64_t)contactIdCapacity + 63u ) / 64u;
+		world->metalLastContactStateBitSetBytes =
+			blockCount * sizeof( uint64_t ) * (uint64_t)world->workerCount;
+#endif
 		b3ParallelFor( world, b3CollideTask, cpuContactCount, minRange, context, "collide" );
 	}
+#if defined( BOX3D_METAL )
+	else
+	{
+		world->metalContactStateTraversalBypassCount += 1;
+		world->metalLastContactStateBitSetBytes = 0;
+	}
+#endif
 
 #if defined( BOX3D_METAL )
 	world->metalContactCollisionCpuCount += (uint64_t)cpuContactCount;
@@ -1327,8 +1347,10 @@ static void b3Collide( b3StepContext* context )
 
 	int satMultiplier = context->dt > 0.0f ? 1 : 0;
 
-	// Bitwise OR all contact bits
-	b3BitSet* bitSet = &world->taskContexts.data[0].contactStateBitSet;
+	// Aggregate diagnostics independently of the state bitsets. A stable
+	// resident phase has current diagnostic counts but deliberately leaves its
+	// stale contact bits untouched.
+	b3BitSet* bitSet = cpuContactCount > 0 ? &world->taskContexts.data[0].contactStateBitSet : NULL;
 	world->satCallCount = satMultiplier * world->taskContexts.data[0].satCallCount;
 	world->satCacheHitCount = satMultiplier * world->taskContexts.data[0].satCacheHitCount;
 	memcpy( world->manifoldCounts, world->taskContexts.data[0].manifoldCounts,
@@ -1336,7 +1358,8 @@ static void b3Collide( b3StepContext* context )
 
 	for ( int i = 1; i < world->workerCount; ++i )
 	{
-		b3InPlaceUnion( bitSet, &world->taskContexts.data[i].contactStateBitSet );
+		if ( bitSet != NULL )
+			b3InPlaceUnion( bitSet, &world->taskContexts.data[i].contactStateBitSet );
 		world->satCallCount += world->taskContexts.data[i].satCallCount;
 		world->satCacheHitCount += world->taskContexts.data[i].satCacheHitCount;
 		for ( int j = 0; j < B3_CONTACT_MANIFOLD_COUNT_BUCKETS; ++j )
@@ -1359,7 +1382,8 @@ static void b3Collide( b3StepContext* context )
 	uint16_t worldId = world->worldId;
 
 	// Process contact state changes. Iterate over set bits
-	for ( uint32_t k = 0; k < bitSet->blockCount; ++k )
+	uint32_t contactStateBlockCount = bitSet != NULL ? bitSet->blockCount : 0;
+	for ( uint32_t k = 0; k < contactStateBlockCount; ++k )
 	{
 		uint64_t bits = bitSet->bits[k];
 		while ( bits != 0 )

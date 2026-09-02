@@ -223,6 +223,14 @@ the input registry because the preparation scatter reads the current index from
 the per-step body table; a newly fast body still forces a CPU exception through
 that same table.
 
+The same zero-exception proof defers each worker's contact-state bitset clear.
+No collision worker can write state bits in that phase, so worker union and the
+serial state-change traversal are skipped as well. Stale storage is never
+observed: any later callback, CCD, first-touch, separation, unsupported contact,
+or Metal fallback clears all worker bitsets to the current contact-ID capacity
+before dispatching CPU collision work. Diagnostic manifold and SAT counters are
+reset and aggregated independently of the bitsets.
+
 Public contact/body/shape queries, force debug drawing, snapshots, sleep
 transitions, Metal disable, and CPU solver fallback materialize stale geometry
 by contact ID and contact generation. CPU solver fallback first attempts one
@@ -421,6 +429,8 @@ steady collision tasks are recorded in
 [`benchmarks/m4-pro-contact-exception-compaction-2026-09-02.md`](benchmarks/m4-pro-contact-exception-compaction-2026-09-02.md).
 Revisioned contact input/order reuse and solver coverage proof are recorded in
 [`benchmarks/m4-pro-contact-input-residency-2026-09-02.md`](benchmarks/m4-pro-contact-input-residency-2026-09-02.md).
+Zero-exception contact-state traversal bypass is recorded in
+[`benchmarks/m4-pro-contact-state-traversal-bypass-2026-09-02.md`](benchmarks/m4-pro-contact-state-traversal-bypass-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in
