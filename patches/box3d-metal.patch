@@ -22,10 +22,10 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..2bd381a 100644
+index cfe16e4..54799ec 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,202 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,204 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -58,7 +58,9 @@ index cfe16e4..2bd381a 100644
 +containing compound or custom-filter shapes retain the shared residual path;
 +unusually dense direct plans preserve the prior 64-candidates-per-move capability
 +with an explicit private-to-shared materialization. Contact topology creation
-+remains CPU-owned. Tree snapshots remain in persistent Metal storage;
++remains CPU-owned. Tree snapshots now remain in device-private Metal storage;
++a CPU tree revision stages and blits a fresh snapshot before traversal, while
++unchanged and device-refit steps expose no shared authoritative tree copy.
 +ordinary awake-shape motion updates leaves and refits internal bounds on-device,
 +while topology changes and unsupported CPU mutations invalidate the snapshot.
 +Enlarged proxy bookkeeping remains in a private GPU-compacted stream rather
@@ -1086,10 +1088,10 @@ index 0000000..9f2dcfa
 +}
 diff --git a/benchmark/metal_resident_contacts.c b/benchmark/metal_resident_contacts.c
 new file mode 100644
-index 0000000..06a3edc
+index 0000000..e51aced
 --- /dev/null
 +++ b/benchmark/metal_resident_contacts.c
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,176 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -1186,7 +1188,8 @@ index 0000000..06a3edc
 +			"sim_syncs,last_sim_count,shape_syncs,"
 +			"schedule_packs,schedule_reuses,store_bypasses,event_syncs,public_syncs,index_bytes,prior_stream_bytes,impulse_bytes,"
 +			"prior_impulse_bytes,resident_pair_moves,enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,"
-+			"last_pair_move_upload_bytes,pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,"
++			"last_pair_move_upload_bytes,last_pair_tree_upload_bytes,last_pair_tree_private_bytes,"
++			"pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,"
 +			"last_pair_cpu_filter_candidates,last_pair_direct_create_candidates,pair_contact_seed_dispatches,"
 +			"pair_record_traversal_bypasses,last_pair_contact_seed_count,last_pair_contact_seed_bytes,"
 +			"pair_private_scratch_dispatches,last_pair_raw_shared_bytes\n" );
@@ -1213,46 +1216,54 @@ index 0000000..06a3edc
 +		b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 +		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
 +		uint64_t priorImpulseBytes = (uint64_t)profile.lastResidentConvexConstraintCount * 1696;
-+		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%"
-+				"llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%llu,%d,%d,%d,%llu,%llu,%d,%llu,%llu,%llu\n",
-+				contactCount, repeats, cpuMs, gpuMs, cpuMs / gpuMs, (unsigned long long)profile.contactPrepareDispatchCount,
-+				(unsigned long long)profile.contactPrepareDeviceRefreshCount,
-+				(unsigned long long)profile.contactCollisionBypassCount, (unsigned long long)profile.contactCollisionCpuCount,
-+				(unsigned long long)profile.lastContactCollisionExceptionCount,
-+				(unsigned long long)profile.lastNarrowPhaseResultBytes, (unsigned long long)profile.contactInputPackCount,
-+				(unsigned long long)profile.contactInputReuseCount, (unsigned long long)profile.lastContactInputBytes,
-+				(unsigned long long)profile.contactCoverageBypassCount,
-+				(unsigned long long)profile.contactStateTraversalBypassCount,
-+				(unsigned long long)profile.lastContactStateBitSetBytes,
-+				(unsigned long long)profile.contactHitEventBitSetClearBypassCount,
-+				(unsigned long long)profile.lastContactHitEventBitSetBytes,
-+				(unsigned long long)profile.awakeIslandBitSetClearBypassCount,
-+				(unsigned long long)profile.lastAwakeIslandBitSetBytes,
-+				(unsigned long long)profile.contactManifoldSyncCount,
-+				(unsigned long long)profile.finalizationBodyTraversalBypassCount,
-+				(unsigned long long)profile.shapeResultApplyCount,
-+				(unsigned long long)profile.bodyStateSyncCount,
-+				(unsigned long long)profile.lastBodyStateReadbackBytes,
-+				(unsigned long long)profile.bodySimSyncCount,
-+				(unsigned long long)profile.lastBodySimSyncCount,
-+				(unsigned long long)profile.shapeBoundsSyncCount,
-+				(unsigned long long)profile.contactSchedulePackCount, (unsigned long long)profile.contactScheduleReuseCount,
-+				(unsigned long long)profile.contactImpulseStoreBypassCount,
-+				(unsigned long long)profile.contactImpulseEventSyncCount, (unsigned long long)profile.contactImpulseSyncCount,
-+				(unsigned long long)profile.lastContactPrepareIndexBytes, (unsigned long long)priorBytes,
-+				(unsigned long long)profile.lastContactImpulseResultBytes, (unsigned long long)priorImpulseBytes,
-+				(unsigned long long)profile.residentPairMoveDispatchCount,
-+				(unsigned long long)profile.enlargedShapeTraversalBypassCount,
-+				profile.lastPairMoveCount, profile.lastPairCandidateCount,
-+				(unsigned long long)profile.lastPairMoveUploadBytes,
-+				(unsigned long long)profile.pairCpuCandidateTraversalBypassCount,
-+				profile.lastPairCpuFilterMoveCount, profile.lastPairCpuFilterCandidateCount,
-+				profile.lastPairDirectCreateCount,
-+				(unsigned long long)profile.pairContactSeedDispatchCount,
-+				(unsigned long long)profile.pairRecordTraversalBypassCount,
-+				profile.lastPairContactSeedCount, (unsigned long long)profile.lastPairContactSeedBytes,
-+				(unsigned long long)profile.pairPrivateScratchDispatchCount,
-+				(unsigned long long)profile.lastPairRawSharedBytes );
++		printf( "%d,%d,%.6f,%.6f,%.3f", contactCount, repeats, cpuMs, gpuMs, cpuMs / gpuMs );
++		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
++			(unsigned long long)profile.contactPrepareDispatchCount,
++			(unsigned long long)profile.contactPrepareDeviceRefreshCount,
++			(unsigned long long)profile.contactCollisionBypassCount, (unsigned long long)profile.contactCollisionCpuCount,
++			(unsigned long long)profile.lastContactCollisionExceptionCount,
++			(unsigned long long)profile.lastNarrowPhaseResultBytes, (unsigned long long)profile.contactInputPackCount,
++			(unsigned long long)profile.contactInputReuseCount, (unsigned long long)profile.lastContactInputBytes,
++			(unsigned long long)profile.contactCoverageBypassCount );
++		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
++			(unsigned long long)profile.contactStateTraversalBypassCount,
++			(unsigned long long)profile.lastContactStateBitSetBytes,
++			(unsigned long long)profile.contactHitEventBitSetClearBypassCount,
++			(unsigned long long)profile.lastContactHitEventBitSetBytes,
++			(unsigned long long)profile.awakeIslandBitSetClearBypassCount,
++			(unsigned long long)profile.lastAwakeIslandBitSetBytes,
++			(unsigned long long)profile.contactManifoldSyncCount,
++			(unsigned long long)profile.finalizationBodyTraversalBypassCount,
++			(unsigned long long)profile.shapeResultApplyCount,
++			(unsigned long long)profile.bodyStateSyncCount );
++		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
++			(unsigned long long)profile.lastBodyStateReadbackBytes,
++			(unsigned long long)profile.bodySimSyncCount,
++			(unsigned long long)profile.lastBodySimSyncCount,
++			(unsigned long long)profile.shapeBoundsSyncCount,
++			(unsigned long long)profile.contactSchedulePackCount, (unsigned long long)profile.contactScheduleReuseCount,
++			(unsigned long long)profile.contactImpulseStoreBypassCount,
++			(unsigned long long)profile.contactImpulseEventSyncCount, (unsigned long long)profile.contactImpulseSyncCount,
++			(unsigned long long)profile.lastContactPrepareIndexBytes );
++		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
++			(unsigned long long)priorBytes, (unsigned long long)profile.lastContactImpulseResultBytes,
++			(unsigned long long)priorImpulseBytes, (unsigned long long)profile.residentPairMoveDispatchCount,
++			(unsigned long long)profile.enlargedShapeTraversalBypassCount,
++			(unsigned long long)profile.lastPairMoveCount, (unsigned long long)profile.lastPairCandidateCount,
++			(unsigned long long)profile.lastPairMoveUploadBytes,
++			(unsigned long long)profile.lastPairTreeUploadBytes,
++			(unsigned long long)profile.lastPairTreePrivateBytes );
++		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
++			(unsigned long long)profile.pairCpuCandidateTraversalBypassCount,
++			(unsigned long long)profile.lastPairCpuFilterMoveCount,
++			(unsigned long long)profile.lastPairCpuFilterCandidateCount,
++			(unsigned long long)profile.lastPairDirectCreateCount,
++			(unsigned long long)profile.pairContactSeedDispatchCount,
++			(unsigned long long)profile.pairRecordTraversalBypassCount,
++			(unsigned long long)profile.lastPairContactSeedCount,
++			(unsigned long long)profile.lastPairContactSeedBytes,
++			(unsigned long long)profile.pairPrivateScratchDispatchCount,
++			(unsigned long long)profile.lastPairRawSharedBytes );
 +		b3DestroyWorld( gpuWorld );
 +	}
 +	return 0;
@@ -3768,6 +3779,75 @@ index 0000000..063e43f
 +than a controlled before/after timing comparison. The route counters and byte
 +telemetry are the direct evidence: the raw shared pair stream is zero on both
 +scales while exact topology and the 1/2 MiB seed boundary remain.
+diff --git a/docs/benchmarks/m4-pro-private-pair-tree-2026-09-03.md b/docs/benchmarks/m4-pro-private-pair-tree-2026-09-03.md
+new file mode 100644
+index 0000000..8df0dbb
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-private-pair-tree-2026-09-03.md
+@@ -0,0 +1,63 @@
++# Device-private Metal pair tree
++
++Date: 2026-09-03
++
++Host: Apple M4 Pro, 12 CPU cores, 16 GPU cores, 24 GB unified memory
++
++Build: Release, Metal enabled, 8 Box3D workers, 4 substeps
++
++## Ownership boundary
++
++The authoritative Metal snapshot of Erin's static, kinematic, and dynamic tree
++nodes now uses `MTLStorageModePrivate`. When the CPU tree revision changes,
++Box3D packs a shared staging buffer and encodes its blit before pair traversal
++in the same command buffer. The device revision advances only after successful
++completion. Unchanged pair queries reuse the private tree with zero staged
++tree bytes, and shape finalization continues to update leaves and refit internal
++bounds directly in that private snapshot.
++
++The staging allocation remains CPU-visible and reusable for later topology
++changes; this checkpoint changes authoritative ownership and steady access, not
++total allocated unified-memory capacity. CPU mutation, route changes, and
++fallback continue to invalidate or restore the CPU oracle before reuse.
++
++## Correctness evidence
++
++- The 620-move/1,905-candidate differential reports 70,560 logical private
++  tree bytes on its first query, zero upload bytes on its unchanged second
++  query, and a complete restage after explicit tree enlargement.
++- Every compact seed remains in Erin's exact move-ascending,
++  candidate-descending creation order.
++- Exact 28-contact topology and five randomized 48-body topology trials remain
++  unchanged.
++- Dense materialization, custom/compound residual filtering, blocked-joint
++  filtering, resident refit, and CPU fallback tests remain enabled.
++
++## Whole-world telemetry
++
++| Contacts | Latest tree upload | Private tree snapshot | Raw shared pair result |
++| ---: | ---: | ---: | ---: |
++| 131,072 | 25,167,216 bytes | 25,167,216 bytes (24.001 MiB) | 0 bytes |
++| 262,144 | 50,333,040 bytes | 50,333,040 bytes (48.001 MiB) | 0 bytes |
++
++These benchmark worlds create their pairs on the first step and do not need a
++later pair query, so the public `last_pair_tree_upload_bytes` value describes
++that latest initial pair phase. The direct unchanged-query differential is the
++evidence for the zero-byte reuse path.
++
++Three five-repeat steady samples were also recorded for the private-tree build
++and the immediately preceding shared-tree commit `def103c`:
++
++| Contacts | Shared-tree Metal samples | Private-tree Metal samples |
++| ---: | --- | --- |
++| 131,072 | 10.240, 15.465, 13.641 ms | 10.350, 10.149, 10.961 ms |
++| 262,144 | 21.676, 21.849, 21.292 ms | 21.638, 22.237, 22.130 ms |
++
++The 131k baseline was visibly noisy and the 262k medians differ by about two
++percent in the opposite direction, so these timings do not establish a causal
++speedup. Current cold first-step observations were 97.354 ms CPU versus
++133.330 ms Metal (0.730x) at 131,072 contacts and 172.927 ms versus 245.926 ms
++(0.703x) at 262,144. The cold regression remains dominated by CPU contact
++topology, repeated narrow-phase input packing, manifold allocation, and
++first-touch island/graph work; private tree ownership removes a residency
++boundary but does not claim to solve that later pipeline cost.
 diff --git a/docs/benchmarks/m4-pro-private-shape-results-2026-09-02.md b/docs/benchmarks/m4-pro-private-shape-results-2026-09-02.md
 new file mode 100644
 index 0000000..96eff9c
@@ -4989,10 +5069,10 @@ index 0000000..bf16de3
 +before that traversal and state readback can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..e6eb217
+index 0000000..86aedee
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,633 @@
+@@ -0,0 +1,639 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -5234,8 +5314,11 @@ index 0000000..e6eb217
 +property authority.
 +
 +An independently opt-in pair stage copies Erin's existing static, kinematic,
-+and dynamic tree topology into persistent shared Metal buffers. A monotonic
-+broad-phase revision lets node snapshots remain resident across pair queries.
++and dynamic tree topology through shared upload staging into a persistent
++device-private Metal buffer. The upload blit precedes traversal in the same
++command buffer, and the revision becomes authoritative only after successful
++completion. A monotonic broad-phase revision lets node snapshots remain resident
++across pair queries without a CPU-visible authoritative copy.
 +For supported non-CCD steps, shape finalization writes enlarged leaf bounds
 +directly into that snapshot and deterministic height-ordered kernels refit
 +kinematic and dynamic internal nodes. This preserves Erin's topology and DFS
@@ -5608,6 +5691,9 @@ index 0000000..e6eb217
 +Private raw pair scratch, dense materialization, compound-query gating, and the
 +current cold/steady measurements are recorded in
 +[`benchmarks/m4-pro-private-pair-scratch-2026-09-03.md`](benchmarks/m4-pro-private-pair-scratch-2026-09-03.md).
++Device-private dynamic-tree ownership, revision upload/reuse telemetry, and
++whole-world timing samples are recorded in
++[`benchmarks/m4-pro-private-pair-tree-2026-09-03.md`](benchmarks/m4-pro-private-pair-tree-2026-09-03.md).
 +Fully resident convex-contact state, sim, shape-bound, and body-finalization
 +ownership is recorded in
 +[`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).
@@ -5642,10 +5728,10 @@ index 2e82590..cd49acf 100644
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000..dd95a0d
+index 0000000..87585cf
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,266 @@
+@@ -0,0 +1,272 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -5788,6 +5874,12 @@ index 0000000..dd95a0d
 +	uint64_t pairDispatchCount;
 +	uint64_t pairFallbackCount;
 +	uint64_t pairTreeUploadCount;
++	/// CPU tree-node bytes staged and blitted into the private Metal snapshot by
++	/// the latest pair phase. Zero when the resident snapshot was reused.
++	uint64_t lastPairTreeUploadBytes;
++	/// Logical bytes in the device-private tree snapshot used by the latest pair
++	/// phase. This excludes transient shared upload staging capacity.
++	uint64_t lastPairTreePrivateBytes;
 +	uint64_t pairMetadataUploadCount;
 +	/// Exact blocked joint-body pair registry uploads caused by joint topology or
 +	/// collide-connected changes.
@@ -6340,7 +6432,7 @@ index f517e7b..f0265dc 100644
  
  b3WorldId b3Body_GetWorld( b3BodyId bodyId )
 diff --git a/src/broad_phase.c b/src/broad_phase.c
-index a369ca6..65095ca 100644
+index a369ca6..6be9108 100644
 --- a/src/broad_phase.c
 +++ b/src/broad_phase.c
 @@ -12,9 +12,21 @@
@@ -6625,7 +6717,7 @@ index a369ca6..65095ca 100644
  
  	if ( moveCount == 0 )
  	{
-@@ -409,27 +513,119 @@ void b3UpdateBroadPhasePairs( b3World* world )
+@@ -409,27 +513,121 @@ void b3UpdateBroadPhasePairs( b3World* world )
  	b3TracyCZoneNC( update_pairs, "Pairs", b3_colorMediumSlateBlue, true );
  
  	b3Stack* alloc = &world->stack;
@@ -6700,6 +6792,8 @@ index a369ca6..65095ca 100644
 +			world->metalPairDispatchCount += 1;
 +			world->metalResidentPairMoveDispatchCount += useResidentMoves ? 1 : 0;
 +			world->metalPairTreeUploadCount += (uint64_t)stats.treeUploadCount;
++			world->metalLastPairTreeUploadBytes = stats.pairTreeUploadBytes;
++			world->metalLastPairTreePrivateBytes = stats.pairTreePrivateBytes;
 +			world->metalPairMetadataUploadCount += (uint64_t)stats.metadataUploadCount;
 +			world->metalPairFilterRegistryUploadCount += (uint64_t)stats.pairFilterRegistryUploadCount;
 +			world->metalPairSetUploadCount += (uint64_t)stats.pairSetUploadCount;
@@ -6756,7 +6850,7 @@ index a369ca6..65095ca 100644
  	{
  		world->userTreeTask = world->enqueueTaskFcn( &b3UpdateTreesTask, world, world->userTaskContext, "rebuild tree" );
  		world->taskCount += 1;
-@@ -442,11 +638,44 @@ void b3UpdateBroadPhasePairs( b3World* world )
+@@ -442,11 +640,44 @@ void b3UpdateBroadPhasePairs( b3World* world )
  	}
  
  	// Single-threaded work
@@ -6804,7 +6898,7 @@ index a369ca6..65095ca 100644
  		b3MovePair* pair = result->pairList;
  		while ( pair != NULL )
  		{
-@@ -481,10 +710,16 @@ void b3UpdateBroadPhasePairs( b3World* world )
+@@ -481,10 +712,16 @@ void b3UpdateBroadPhasePairs( b3World* world )
  	}
  	b3Array_Clear( bp->moveArray );
  
@@ -7819,10 +7913,10 @@ index f2d76c6..95b4ad8 100644
  	b3Body* bodyB = b3Array_Get( world->bodies, joint->edges[1].bodyId );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000..bf16e0b
+index 0000000..23cf752
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,275 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -7931,6 +8025,10 @@ index 0000000..bf16e0b
 +	int bodyCount;
 +	int commandBufferCount;
 +	int treeUploadCount;
++	// Bytes copied from shared staging into the private persistent pair tree by
++	// this dispatch, and the logical byte size of that private snapshot.
++	uint64_t pairTreeUploadBytes;
++	uint64_t pairTreePrivateBytes;
 +	int metadataUploadCount;
 +	int pairSetUploadCount;
 +	int pairFilterRegistryUploadCount;
@@ -8096,10 +8194,10 @@ index 0000000..bf16e0b
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..8998875
+index 0000000..fa83751
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,6458 @@
+@@ -0,0 +1,6484 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -8225,6 +8323,8 @@ index 0000000..8998875
 +	bool residentPairMovesValid;
 +	id<MTLBuffer> pairMoveBuffer;
 +	NSUInteger pairMoveCapacity;
++	id<MTLBuffer> pairTreeUploadBuffer;
++	NSUInteger pairTreeUploadCapacity;
 +	id<MTLBuffer> pairTreeBuffer;
 +	NSUInteger pairTreeCapacity;
 +	id<MTLBuffer> pairMovedBuffer;
@@ -10307,6 +10407,7 @@ index 0000000..8998875
 +	[context->shapeBlockBuffer release];
 +	[context->shapeSummaryBuffer release];
 +	[context->pairMoveBuffer release];
++	[context->pairTreeUploadBuffer release];
 +	[context->pairTreeBuffer release];
 +	[context->pairMovedBuffer release];
 +	[context->pairShapeBuffer release];
@@ -10763,14 +10864,25 @@ index 0000000..8998875
 +		context->pairCpuFilterMoveBuffer = buffer;
 +		context->pairCpuFilterMoveCapacity = capacity;
 +	}
-+	if ( context->pairTreeCapacity < treeBytes )
++	if ( context->pairTreeCapacity < treeBytes || context->pairTreeUploadCapacity < treeBytes )
 +	{
 +		NSUInteger capacity = context->pairTreeCapacity > 0 ? context->pairTreeCapacity : 4096;
 +		while ( capacity < treeBytes ) capacity *= 2;
-+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
-+		if ( buffer == nil ) return false;
++		id<MTLBuffer> uploadBuffer =
++			[context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
++		id<MTLBuffer> treeBuffer =
++			[context->device newBufferWithLength:capacity options:MTLResourceStorageModePrivate];
++		if ( uploadBuffer == nil || treeBuffer == nil )
++		{
++			[uploadBuffer release];
++			[treeBuffer release];
++			return false;
++		}
++		[context->pairTreeUploadBuffer release];
 +		[context->pairTreeBuffer release];
-+		context->pairTreeBuffer = buffer;
++		context->pairTreeUploadBuffer = uploadBuffer;
++		context->pairTreeUploadCapacity = capacity;
++		context->pairTreeBuffer = treeBuffer;
 +		context->pairTreeCapacity = capacity;
 +		context->pairTreeRevision = 0;
 +	}
@@ -12445,17 +12557,16 @@ index 0000000..8998875
 +				}
 +			}
 +		}
-+		if ( context->pairTreeRevision != broadPhase->treeRevision )
++		bool uploadPairTree = context->pairTreeRevision != broadPhase->treeRevision;
++		if ( uploadPairTree )
 +		{
-+			b3TreeNode* nodeDestination = context->pairTreeBuffer.contents;
++			b3TreeNode* nodeDestination = context->pairTreeUploadBuffer.contents;
 +			for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
 +			{
 +				const b3DynamicTree* tree = broadPhase->trees + treeIndex;
 +				memcpy( nodeDestination + nodeOffsets[treeIndex], tree->nodes,
 +					(NSUInteger)tree->nodeCapacity * sizeof( b3TreeNode ) );
 +			}
-+			context->pairTreeRevision = broadPhase->treeRevision;
-+			if ( stats != NULL ) stats->treeUploadCount = 1;
 +		}
 +		memset( context->pairSummaryBuffer.contents, 0, sizeof( b3MetalPairSummary ) );
 +		uint32_t movedEpoch = context->pairMovedEpoch + 1u;
@@ -12495,8 +12606,17 @@ index 0000000..8998875
 +
 +		id<MTLComputePipelineState> pairPipeline = context->pairCandidatesPipeline;
 +		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
++		if ( commandBuffer == nil ) return false;
++		if ( uploadPairTree )
++		{
++			id<MTLBlitCommandEncoder> uploadEncoder = [commandBuffer blitCommandEncoder];
++			if ( uploadEncoder == nil ) return false;
++			[uploadEncoder copyFromBuffer:context->pairTreeUploadBuffer sourceOffset:0
++				toBuffer:context->pairTreeBuffer destinationOffset:0 size:treeBytes];
++			[uploadEncoder endEncoding];
++		}
 +		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-+		if ( commandBuffer == nil || encoder == nil ) return false;
++		if ( encoder == nil ) return false;
 +		id<MTLBuffer> residentMoveBuffer = context->shapeCompactBuffer != nil ? context->shapeCompactBuffer : context->pairMoveBuffer;
 +		[encoder setComputePipelineState:context->pairMarkMovesPipeline];
 +		[encoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
@@ -12579,6 +12699,7 @@ index 0000000..8998875
 +		[commandBuffer commit];
 +		[commandBuffer waitUntilCompleted];
 +		if ( commandBuffer.status != MTLCommandBufferStatusCompleted ) return false;
++		if ( uploadPairTree ) context->pairTreeRevision = broadPhase->treeRevision;
 +		if ( stats != NULL ) stats->commandBufferCount = 1;
 +
 +		double gpuMilliseconds = commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime
@@ -12689,6 +12810,9 @@ index 0000000..8998875
 +		if ( stats != NULL )
 +		{
 +			stats->gpuMilliseconds = gpuMilliseconds;
++			stats->treeUploadCount = uploadPairTree ? 1 : 0;
++			stats->pairTreeUploadBytes = uploadPairTree ? treeBytes : 0;
++			stats->pairTreePrivateBytes = treeBytes;
 +			stats->pairRequiresCpuFiltering = summary->cpuFilterMoveCount != 0;
 +			stats->pairContactSeedCount = compactSeedPlan ? (int)summary->totalCount : 0;
 +			stats->pairContactSeedDispatchCount = compactSeedPlan && summary->totalCount > 0 ? 1 : 0;
@@ -15699,7 +15823,7 @@ index 0000000..a4424e5
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..1638982 100644
+index 29c13c7..00585e8 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -15775,7 +15899,7 @@ index 29c13c7..1638982 100644
  
  	b3DestroyStack( &world->stack );
  
-@@ -538,12 +565,319 @@ int b3GetWorldCount( void )
+@@ -538,12 +565,321 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -16026,6 +16150,8 @@ index 29c13c7..1638982 100644
 +	profile.pairDispatchCount = world->metalPairDispatchCount;
 +	profile.pairFallbackCount = world->metalPairFallbackCount;
 +	profile.pairTreeUploadCount = world->metalPairTreeUploadCount;
++	profile.lastPairTreeUploadBytes = world->metalLastPairTreeUploadBytes;
++	profile.lastPairTreePrivateBytes = world->metalLastPairTreePrivateBytes;
 +	profile.pairMetadataUploadCount = world->metalPairMetadataUploadCount;
 +	profile.pairFilterRegistryUploadCount = world->metalPairFilterRegistryUploadCount;
 +	profile.pairSetUploadCount = world->metalPairSetUploadCount;
@@ -16096,7 +16222,7 @@ index 29c13c7..1638982 100644
  // Used to hide the random-access latency of contact lookups while we work on an
  // earlier index.
  static inline void b3PrefetchContact( const b3Contact* contact )
-@@ -582,18 +916,72 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -582,18 +918,72 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  	const int contactPrefetchDistance = 4;
  	int prefetchEnd = endIndex - contactPrefetchDistance;
  
@@ -16170,7 +16296,7 @@ index 29c13c7..1638982 100644
  
  		b3Shape* shapeA = shapes + contact->shapeIdA;
  		b3Shape* shapeB = shapes + contact->shapeIdB;
-@@ -653,8 +1041,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -653,8 +1043,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		// Contact recycling optimization. Please cite this library if you use this optimization.
  		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
  		// However, this allows larger relative motion and has fewer tuning parameters (just one).
@@ -16182,7 +16308,7 @@ index 29c13c7..1638982 100644
  		{
  			// The scalar part of b3InvMulQuat is just the quaternion dot product.
  			// cos(relative_angle/2) = scalar(conj(q1) * q2) = dot(q1, q2)
-@@ -728,6 +1117,14 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -728,6 +1119,14 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  						taskContext->manifoldCounts[bucketIndex - 1] += 1;
  					}
  
@@ -16197,7 +16323,7 @@ index 29c13c7..1638982 100644
  					// Contact is recycled. This also skips updating other aspects of the contact
  					// such as material parameters.
  					continue;
-@@ -741,9 +1138,125 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -741,9 +1140,125 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
  		contact->flags |= b3_relativeTransformValid;
  
@@ -16326,7 +16452,7 @@ index 29c13c7..1638982 100644
  
  		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
  		if ( bucketIndex > 0 )
-@@ -814,8 +1327,34 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
+@@ -814,8 +1329,34 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
  	}
  }
  
@@ -16362,7 +16488,7 @@ index 29c13c7..1638982 100644
  {
  	b3World* world = context->world;
  
-@@ -825,12 +1364,17 @@ static void b3Collide( b3StepContext* context )
+@@ -825,12 +1366,17 @@ static void b3Collide( b3StepContext* context )
  
  	// Gather contacts from all the graph colors into a single array for easier parallel-for
  	int touchingCount = 0;
@@ -16380,7 +16506,7 @@ index 29c13c7..1638982 100644
  
  	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
  	int nonTouchingCount = awakeSet->contactIndices.count;
-@@ -840,58 +1384,145 @@ static void b3Collide( b3StepContext* context )
+@@ -840,58 +1386,145 @@ static void b3Collide( b3StepContext* context )
  	if ( contactCount == 0 )
  	{
  		b3TracyCZoneEnd( collide );
@@ -16556,7 +16682,7 @@ index 29c13c7..1638982 100644
  	contactIndices = NULL;
  
  	// Serially update contact state
-@@ -900,8 +1531,10 @@ static void b3Collide( b3StepContext* context )
+@@ -900,8 +1533,10 @@ static void b3Collide( b3StepContext* context )
  
  	int satMultiplier = context->dt > 0.0f ? 1 : 0;
  
@@ -16569,7 +16695,7 @@ index 29c13c7..1638982 100644
  	world->satCallCount = satMultiplier * world->taskContexts.data[0].satCallCount;
  	world->satCacheHitCount = satMultiplier * world->taskContexts.data[0].satCacheHitCount;
  	memcpy( world->manifoldCounts, world->taskContexts.data[0].manifoldCounts,
-@@ -909,7 +1542,8 @@ static void b3Collide( b3StepContext* context )
+@@ -909,7 +1544,8 @@ static void b3Collide( b3StepContext* context )
  
  	for ( int i = 1; i < world->workerCount; ++i )
  	{
@@ -16579,7 +16705,7 @@ index 29c13c7..1638982 100644
  		world->satCallCount += world->taskContexts.data[i].satCallCount;
  		world->satCacheHitCount += world->taskContexts.data[i].satCacheHitCount;
  		for ( int j = 0; j < B3_CONTACT_MANIFOLD_COUNT_BUCKETS; ++j )
-@@ -932,7 +1566,8 @@ static void b3Collide( b3StepContext* context )
+@@ -932,7 +1568,8 @@ static void b3Collide( b3StepContext* context )
  	uint16_t worldId = world->worldId;
  
  	// Process contact state changes. Iterate over set bits
@@ -16589,7 +16715,7 @@ index 29c13c7..1638982 100644
  	{
  		uint64_t bits = bitSet->bits[k];
  		while ( bits != 0 )
-@@ -1027,8 +1662,17 @@ static void b3Collide( b3StepContext* context )
+@@ -1027,8 +1664,17 @@ static void b3Collide( b3StepContext* context )
  	b3ValidateSolverSets( world );
  	b3ValidateContacts( world );
  
@@ -16607,7 +16733,7 @@ index 29c13c7..1638982 100644
  }
  
  void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
-@@ -1039,6 +1683,41 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1685,41 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -16649,7 +16775,7 @@ index 29c13c7..1638982 100644
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -1055,6 +1734,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1055,6 +1736,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Prepare to capture events
  	// Ensure user does not access stale data if there is an early return
  	b3Array_Clear( world->bodyMoveEvents );
@@ -16660,7 +16786,7 @@ index 29c13c7..1638982 100644
  	b3Array_Clear( world->sensorBeginEvents );
  	b3Array_Clear( world->contactBeginEvents );
  	b3Array_Clear( world->contactHitEvents );
-@@ -1131,7 +1814,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1131,7 +1816,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Narrow phase : update contacts
  	{
  		uint64_t collideTicks = b3GetTicks();
@@ -16674,7 +16800,7 @@ index 29c13c7..1638982 100644
  		world->profile.collide = b3GetMilliseconds( collideTicks );
  	}
  
-@@ -1176,6 +1864,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1176,6 +1866,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  
  	if ( world->recording != NULL )
  	{
@@ -16695,7 +16821,7 @@ index 29c13c7..1638982 100644
  		uint64_t hash = b3HashWorldState( world );
  		b3RecArgs_StateHash stateHash = { worldId, hash };
  		b3RecWrite_StateHash( world->recording, &stateHash );
-@@ -1440,7 +2142,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1440,7 +2144,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  				b3WorldTransform transform = { bodySim->center, bodySim->transform.q };
  				draw->DrawTransformFcn( transform, draw->context );
  
@@ -16704,7 +16830,7 @@ index 29c13c7..1638982 100644
  				{
  					b3Vec3 offset = { 0.05f, 0.05f, 0.05f };
  					b3Pos p = b3TransformWorldPoint( transform, offset );
-@@ -1517,6 +2219,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1517,6 +2221,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  					// avoid double draw
  					if ( b3GetBit( &world->debugContactSet, contactId ) == false )
  					{
@@ -16716,7 +16842,7 @@ index 29c13c7..1638982 100644
  						b3Body* bodyA = b3Array_Get( world->bodies, contact->edges[0].bodyId );
  						b3BodySim* bodySimA = b3GetBodySim( world, bodyA );
  						b3Body* bodyB = b3Array_Get( world->bodies, contact->edges[1].bodyId );
-@@ -1753,6 +2460,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
+@@ -1753,6 +2462,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
  		return (b3BodyEvents){ 0 };
  	}
  
@@ -16731,7 +16857,7 @@ index 29c13c7..1638982 100644
  	int count = world->bodyMoveEvents.count;
  	b3BodyEvents events = { world->bodyMoveEvents.data, count };
  	return events;
-@@ -2125,6 +2840,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
+@@ -2125,6 +2842,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
  	B3_REC( world, WorldSetContactRecycleDistance, worldId, recycleDistance );
  
  	world->contactRecycleDistance = b3ClampFloat( recycleDistance, 0.0f, FLT_MAX );
@@ -16739,7 +16865,7 @@ index 29c13c7..1638982 100644
  }
  
  float b3World_GetContactRecycleDistance( b3WorldId worldId )
-@@ -2259,6 +2975,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
+@@ -2259,6 +2977,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
  	}
  
  	world->frictionCallback = callback != NULL ? callback : b3DefaultFrictionCallback;
@@ -16750,7 +16876,7 @@ index 29c13c7..1638982 100644
  }
  
  void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* callback )
-@@ -2270,6 +2990,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
+@@ -2270,6 +2992,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
  	}
  
  	world->restitutionCallback = callback != NULL ? callback : b3DefaultRestitutionCallback;
@@ -16761,7 +16887,7 @@ index 29c13c7..1638982 100644
  }
  
  void b3World_SetWorkerCount( b3WorldId worldId, int count )
-@@ -2312,6 +3036,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
+@@ -2312,6 +3038,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
  	}
  
  	b3StartRecordingIntoBuffer( world, recording );
@@ -16769,7 +16895,7 @@ index 29c13c7..1638982 100644
  }
  
  void b3World_StopRecording( b3WorldId worldId )
-@@ -2323,6 +3048,7 @@ void b3World_StopRecording( b3WorldId worldId )
+@@ -2323,6 +3050,7 @@ void b3World_StopRecording( b3WorldId worldId )
  	}
  
  	b3StopRecordingInternal( world );
@@ -16777,7 +16903,7 @@ index 29c13c7..1638982 100644
  }
  
  void b3World_DumpMemoryStats( b3WorldId worldId )
-@@ -3313,6 +4039,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
+@@ -3313,6 +4041,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
  	}
  	world->preSolveFcn = fcn;
  	world->preSolveContext = context;
@@ -16785,7 +16911,7 @@ index 29c13c7..1638982 100644
  }
  
  void b3World_SetGravity( b3WorldId worldId, b3Vec3 gravity )
-@@ -3445,6 +4172,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3445,6 +4174,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	}
  
  	B3_REC( world, WorldExplode, worldId, *explosionDef );
@@ -16797,7 +16923,7 @@ index 29c13c7..1638982 100644
  
  	// Locked due to waking
  	world->locked = true;
-@@ -3457,6 +4189,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3457,6 +4191,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	b3AABB aabb = b3OffsetAABB( localBox, position );
  
  	b3DynamicTree_Query( world->broadPhase.trees + b3_dynamicBody, aabb, maskBits, false, ExplosionCallback, &explosionContext );
@@ -16805,7 +16931,7 @@ index 29c13c7..1638982 100644
  
  	world->locked = false;
  }
-@@ -3473,6 +4206,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +4208,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -16817,7 +16943,7 @@ index 29c13c7..1638982 100644
  }
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
-@@ -3637,7 +4375,15 @@ void b3ValidateSolverSets( b3World* world )
+@@ -3637,7 +4377,15 @@ void b3ValidateSolverSets( b3World* world )
  					uint32_t syncedFlags = body->flags & ~b3_bodyTransientFlags;
  					B3_ASSERT( ( bodySim->flags & syncedFlags ) == syncedFlags );
  
@@ -16835,7 +16961,7 @@ index 29c13c7..1638982 100644
  					{
  						B3_ASSERT( ( bodyState->flags & syncedFlags ) == syncedFlags );
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8..9600577 100644
+index 8bd3df8..d1ec889 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
 @@ -10,6 +10,7 @@
@@ -16854,7 +16980,7 @@ index 8bd3df8..9600577 100644
  
  	b3DebugPoint points[B3_DEBUG_POINT_CAPACITY];
  	int pointCount;
-@@ -266,6 +268,138 @@ typedef struct b3World
+@@ -266,6 +268,140 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
@@ -16926,6 +17052,8 @@ index 8bd3df8..9600577 100644
 +	uint64_t metalPairDispatchCount;
 +	uint64_t metalPairFallbackCount;
 +	uint64_t metalPairTreeUploadCount;
++	uint64_t metalLastPairTreeUploadBytes;
++	uint64_t metalLastPairTreePrivateBytes;
 +	uint64_t metalPairMetadataUploadCount;
 +	uint64_t metalPairFilterRegistryUploadCount;
 +	uint64_t metalPairSetUploadCount;
@@ -16993,7 +17121,7 @@ index 8bd3df8..9600577 100644
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -288,6 +422,78 @@ typedef struct b3World
+@@ -288,6 +424,78 @@ typedef struct b3World
  	bool inUse;
  } b3World;
  
@@ -17072,7 +17200,7 @@ index 8bd3df8..9600577 100644
  b3World* b3GetUnlockedWorldFromId( b3WorldId id );
  b3World* b3GetWorldFromId( b3WorldId id );
  
-@@ -347,4 +553,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +555,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
@@ -18928,10 +19056,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..6e38dd6
+index 0000000..d09c506
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,4446 @@
+@@ -0,0 +1,4461 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -20097,6 +20225,11 @@ index 0000000..6e38dd6
 +	b3World* world = b3GetWorldFromId( worldId );
 +	b3BroadPhase* broadPhase = &world->broadPhase;
 +	int moveCount = broadPhase->moveArray.count;
++	uint64_t expectedTreeBytes = 0;
++	for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
++	{
++		expectedTreeBytes += (uint64_t)broadPhase->trees[treeIndex].nodeCapacity * sizeof( b3TreeNode );
++	}
 +	ENSURE( moveCount == bodyCount + ( bodyCount + 49 ) / 50 );
 +	const b3MetalPairQueryRecord* gpuRecords = NULL;
 +	const b3MetalPairCandidate* gpuCandidates = NULL;
@@ -20111,6 +20244,8 @@ index 0000000..6e38dd6
 +										   &contactSeedCount, &stats ) );
 +	ENSURE( stats.commandBufferCount == 1 );
 +	ENSURE( stats.treeUploadCount == 1 );
++	ENSURE( stats.pairTreeUploadBytes == expectedTreeBytes );
++	ENSURE( stats.pairTreePrivateBytes == expectedTreeBytes );
 +	ENSURE( stats.metadataUploadCount == 1 );
 +	ENSURE( stats.pairSetUploadCount == 1 );
 +	ENSURE( cpuFilterMoveCount == 0 );
@@ -20131,6 +20266,8 @@ index 0000000..6e38dd6
 +										   &contactSeedCount, &stats ) );
 +	ENSURE( stats.commandBufferCount == 1 );
 +	ENSURE( stats.treeUploadCount == 0 );
++	ENSURE( stats.pairTreeUploadBytes == 0 );
++	ENSURE( stats.pairTreePrivateBytes == expectedTreeBytes );
 +	ENSURE( stats.metadataUploadCount == 0 );
 +	ENSURE( stats.pairSetUploadCount == 0 );
 +	ENSURE( cpuFilterMoveCount == 0 );
@@ -20208,12 +20345,16 @@ index 0000000..6e38dd6
 +										   &gpuCandidates, &gpuCandidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds,
 +										   &contactSeedCount, &stats ) );
 +	ENSURE( stats.treeUploadCount == 1 );
++	ENSURE( stats.pairTreeUploadBytes == expectedTreeBytes );
++	ENSURE( stats.pairTreePrivateBytes == expectedTreeBytes );
 +	ENSURE( stats.metadataUploadCount == 1 );
 +	ENSURE( stats.pairSetUploadCount == 0 );
 +	ENSURE( cpuFilterMoveCount == 0 );
 +	ENSURE( VerifyResidentPairTraversal( world ) == 0 );
-+	printf( "    pair traversal moves=%d candidates=%d initial=%.3f ms steady=%.3f ms exactOrder=yes\n", moveCount,
-+			gpuCandidateCount, initialGpuMilliseconds, steadyGpuMilliseconds );
++	printf( "    pair traversal moves=%d candidates=%d initial=%.3f ms steady=%.3f ms treePrivate=%llu "
++			"reuseUpload=0 exactOrder=yes\n",
++			moveCount, gpuCandidateCount, initialGpuMilliseconds, steadyGpuMilliseconds,
++			(unsigned long long)expectedTreeBytes );
 +
 +	free( cpuCandidates );
 +	b3DestroyWorld( worldId );
@@ -20308,6 +20449,8 @@ index 0000000..6e38dd6
 +	ENSURE( profile.lastPairContactSeedCount == bodyCount * ( bodyCount - 1 ) / 2 );
 +	ENSURE( profile.lastPairContactSeedBytes ==
 +			(uint64_t)( bodyCount * ( bodyCount - 1 ) / 2 ) * sizeof( b3MetalPairContactSeed ) );
++	ENSURE( profile.lastPairTreeUploadBytes > 0 );
++	ENSURE( profile.lastPairTreePrivateBytes == profile.lastPairTreeUploadBytes );
 +	ENSURE( profile.pairPrivateScratchDispatchCount == 1 );
 +	ENSURE( profile.lastPairRawSharedBytes == 0 );
 +	printf( "    final pair plan contacts=%d direct=%d seedBytes=%llu recordTraversal=bypassed exactTopology=yes\n",
