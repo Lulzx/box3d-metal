@@ -19,6 +19,11 @@ materials, tangent velocity, and manifold storage identity. Removing that walk
 requires a resident persistence/material exception pipeline; it is not claimed
 by this checkpoint.
 
+This was the boundary at this checkpoint. The follow-on
+[`contact-prepare metadata residency`](m4-pro-contact-prepare-residency-2026-09-02.md)
+retains those records by contact ID during the existing persistence pass and
+reduces solver submission to a four-byte-per-lane schedule.
+
 The route is fail closed:
 
 - every colored convex contact must have current resident ownership;

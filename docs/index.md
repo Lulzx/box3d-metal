@@ -57,6 +57,7 @@ for review.
 - [Resident manifold table](benchmarks/m4-pro-resident-manifold-table-2026-09-02.md)
 - [Resident solver ownership](benchmarks/m4-pro-resident-solver-ownership-2026-09-02.md)
 - [Resident contact preparation](benchmarks/m4-pro-resident-contact-preparation-2026-09-02.md)
+- [Contact-prepare metadata residency](benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md)
 
 ## Repository map
 

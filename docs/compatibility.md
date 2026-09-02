@@ -49,9 +49,10 @@ on Metal. Telemetry distinguishes these routes.
 
 The convex solver consumes constraints prepared on Metal when every colored
 contact owns a current private-table result and no callback or convex overflow
-exception exists. Normal and identity remain device-private; the CPU still
-packs a 144-byte persistence/material record per lane. Other convex constraints
-and all scalar mesh constraints arrive CPU-prepared. The supported contact solve
+exception exists. Normal and identity remain device-private. CPU persistence
+writes generation-tagged metadata by contact ID; solver submission carries only
+a four-byte ID schedule per SIMD lane. Other convex constraints and all scalar
+mesh constraints arrive CPU-prepared. The supported contact solve
 can therefore cover contacts originating from both accelerated convex pairs and
 Box3D's CPU convex/mesh/height-field collision paths. Collision detection is
 partially accelerated only for the experimental narrow-phase pairs listed above.

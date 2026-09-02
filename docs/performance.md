@@ -73,9 +73,11 @@ for the traversal architecture, not a benchmark of the current scan.
 The resident contact-preparation checkpoint removes CPU preparation arithmetic
 for complete supported colored convex sets and sources normal/identity from the
 private contact-id table in the existing solver command buffer. It deliberately
-adds no new whole-world timing from the loaded host. The CPU still traverses the
-colored contacts and packs a 144-byte persistence/material record per lane, so
-this is a correctness and ownership checkpoint rather than a speedup claim.
+adds no new whole-world timing from the loaded host. Its follow-on retains
+post-persistence metadata by contact ID and replaces the dedicated contact walk
+and padded 144-byte lane stream with a four-byte lane schedule. The 81-contact
+fixture drops solver submission from 12,096 to 336 bytes. This remains ownership
+evidence, not a loaded-host speedup claim.
 
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
@@ -94,6 +96,8 @@ BOX3D_METAL_SHAPES=1 BOX3D_METAL_FINALIZATION=1 BOX3D_METAL_BROAD_PHASE=1 \
 BOX3D_METAL_WORLD_COUNT=524288 BOX3D_METAL_WORLD_REPEATS=12 \
   BOX3D_METAL_SHAPES=1 BOX3D_METAL_FINALIZATION=1 BOX3D_METAL_BROAD_PHASE=1 \
   ../box3d-metal-worktree/build/metal-release/bin/metal_world_benchmark
+BOX3D_METAL_RESIDENT_CONTACT_COUNT=8192 BOX3D_METAL_RESIDENT_CONTACT_REPEATS=20 \
+  ../box3d-metal-worktree/build/metal-release/bin/metal_resident_contact_benchmark
 ```
 
 The benchmark script prints raw CSV-like rows. Run complete executables in at

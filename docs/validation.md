@@ -92,6 +92,9 @@ Direct primitive tests separately cover packed state and integration kernels.
   unsupported revolute joint.
 - Pre-solve callback invocation excludes the contact from resident preparation
   authority without producing a fallback count.
+- The 81-contact preparation fixture reports a 336-byte contact-ID schedule
+  versus the former 12,096-byte padded metadata stream. Recycling, callbacks,
+  and unsupported-joint preflight report zero submitted schedule bytes.
 
 ## Recorded error maxima
 
@@ -172,6 +175,11 @@ The resident contact-preparation checkpoint passed the portable CPU suite,
 float and double/VF64 warning-as-error Metal suites, full AddressSanitizer and
 float UndefinedBehaviorSanitizer suites, and focused double/VF64
 UndefinedBehaviorSanitizer Metal suite.
+
+The contact-prepare metadata-residency checkpoint reran the same matrix after
+moving record writes into the existing parallel persistence pass and replacing
+the solver-time contact walk with per-color bulk ID copies. Whole-world harness
+smokes at 512 and 8,192 contacts each completed ten resident dispatches.
 
 ## What the tests do not prove
 

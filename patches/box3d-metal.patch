@@ -22,10 +22,10 @@ index e5d603b5e15a38d050450891b3acbb461c0d7e0b..5545d63fe1396d21255442b6d2a8aeec
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..37d06b11e723ce86393bc5e1707c12b28c4af44a 100644
+index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..ed53beaee78cf82456ead5fb1c8225a40e0e784c 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,111 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,115 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -89,10 +89,13 @@ index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..37d06b11e723ce86393bc5e1707c12b2
 +When every colored convex contact remains authoritative after persistence and
 +callback processing, a Metal preparation kernel now builds Erin's SIMD-wide
 +contact constraints from that table in the solver command buffer. The CPU still
-+packs a 144-byte persistence/material record per contact lane; normal and
-+contact identity remain private on-device. Mixed, recycled, callback, overflow,
-+or unsupported solver worlds fail closed to CPU preparation, including explicit
-+prepare-on-fallback recovery when a later constraint rejects the Metal route.
++owns persistence and material resolution, but writes the resulting 144-byte
++record once into a generation-tagged contact-ID table during that existing pass.
++Solver submission bulk-copies only a deterministic four-byte contact-ID schedule
++per SIMD lane; it no longer walks and dereferences every contact to repack the
++records. Normal and identity remain private on-device. Mixed, recycled, callback,
++overflow, or unsupported solver worlds fail closed to CPU preparation, including
++explicit prepare-on-fallback recovery when a later constraint rejects the route.
 +The stages remain off by default;
 +cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 +crosses over only in large measured worlds.
@@ -110,6 +113,7 @@ index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..37d06b11e723ce86393bc5e1707c12b2
 +./build/metal-release/bin/metal_fused_benchmark
 +./build/metal-release/bin/metal_world_benchmark
 +./build/metal-release/bin/metal_contact_benchmark
++./build/metal-release/bin/metal_resident_contact_benchmark
 +./build/metal-release/bin/metal_mesh_benchmark
 +./build/metal-release/bin/metal_joint_benchmark
 +./build/metal-release/bin/metal_parallel_joint_benchmark
@@ -138,10 +142,10 @@ index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..37d06b11e723ce86393bc5e1707c12b2
  
  ### Collision
 diff --git a/benchmark/CMakeLists.txt b/benchmark/CMakeLists.txt
-index 73f721017afd57e492ee0450cf3798428a6546b1..9c62c764f8253edee721a623cb11a054217c46a2 100644
+index 73f721017afd57e492ee0450cf3798428a6546b1..fcfa0c3585337762da2f82d396d4de31e19d67a9 100644
 --- a/benchmark/CMakeLists.txt
 +++ b/benchmark/CMakeLists.txt
-@@ -10,4 +10,44 @@ set_target_properties(benchmark PROPERTIES C_STANDARD 17)
+@@ -10,4 +10,48 @@ set_target_properties(benchmark PROPERTIES C_STANDARD 17)
  
  target_link_libraries(benchmark PRIVATE box3d shared)
  
@@ -171,6 +175,10 @@ index 73f721017afd57e492ee0450cf3798428a6546b1..9c62c764f8253edee721a623cb11a054
 +	add_executable(metal_contact_benchmark metal_contacts.c)
 +	set_target_properties(metal_contact_benchmark PROPERTIES C_STANDARD 17)
 +	target_link_libraries(metal_contact_benchmark PRIVATE box3d)
++
++	add_executable(metal_resident_contact_benchmark metal_resident_contacts.c)
++	set_target_properties(metal_resident_contact_benchmark PROPERTIES C_STANDARD 17)
++	target_link_libraries(metal_resident_contact_benchmark PRIVATE box3d)
 +
 +	add_executable(metal_mesh_benchmark metal_mesh_contacts.c)
 +	set_target_properties(metal_mesh_benchmark PROPERTIES C_STANDARD 17)
@@ -989,6 +997,113 @@ index 0000000000000000000000000000000000000000..9f2dcfab868438c01fd57f3c1dd56b07
 +	}
 +	return 0;
 +}
+diff --git a/benchmark/metal_resident_contacts.c b/benchmark/metal_resident_contacts.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..e5fba79b9be78afc87f81135aefac16788b5c03a
+--- /dev/null
++++ b/benchmark/metal_resident_contacts.c
+@@ -0,0 +1,101 @@
++// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
++// SPDX-License-Identifier: MIT
++
++#include "box3d/box3d.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++
++static b3WorldId CreateResidentContactWorld( int contactCount, int workerCount, bool enableMetal )
++{
++	b3WorldDef worldDef = b3DefaultWorldDef();
++	worldDef.gravity = b3Vec3_zero;
++	worldDef.enableSleep = false;
++	worldDef.enableContinuous = false;
++	worldDef.workerCount = (uint32_t)workerCount;
++	worldDef.capacity.staticBodyCount = contactCount;
++	worldDef.capacity.dynamicBodyCount = contactCount;
++	worldDef.capacity.staticShapeCount = contactCount;
++	worldDef.capacity.dynamicShapeCount = contactCount;
++	worldDef.capacity.contactCount = contactCount;
++	b3WorldId worldId = b3CreateWorld( &worldDef );
++	if ( enableMetal && b3World_EnableMetal( worldId, 1 ) == false )
++	{
++		b3DestroyWorld( worldId );
++		return b3_nullWorldId;
++	}
++	b3World_SetContactRecycleDistance( worldId, 0.0f );
++
++	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
++	b3ShapeDef shapeDef = b3DefaultShapeDef();
++	shapeDef.baseMaterial.friction = 0.6f;
++	shapeDef.baseMaterial.rollingResistance = 0.05f;
++	for ( int i = 0; i < contactCount; ++i )
++	{
++		b3BodyDef staticDef = b3DefaultBodyDef();
++		staticDef.position = (b3Pos){ 0.0, 0.0, 3.0 * (double)i };
++		b3BodyId staticBody = b3CreateBody( worldId, &staticDef );
++		b3CreateSphereShape( staticBody, &shapeDef, &sphere );
++
++		b3BodyDef dynamicDef = b3DefaultBodyDef();
++		dynamicDef.type = b3_dynamicBody;
++		dynamicDef.enableSleep = false;
++		dynamicDef.position = (b3Pos){ 0.99, 0.0, 3.0 * (double)i };
++		b3BodyId dynamicBody = b3CreateBody( worldId, &dynamicDef );
++		b3CreateSphereShape( dynamicBody, &shapeDef, &sphere );
++	}
++	return worldId;
++}
++
++static double TimeWorld( b3WorldId worldId, int warmupCount, int repeatCount )
++{
++	for ( int i = 0; i < warmupCount; ++i )
++	{
++		b3World_Step( worldId, 1.0f / 60.0f, 4 );
++	}
++	uint64_t ticks = b3GetTicks();
++	for ( int i = 0; i < repeatCount; ++i )
++	{
++		b3World_Step( worldId, 1.0f / 60.0f, 4 );
++	}
++	return b3GetMilliseconds( ticks ) / repeatCount;
++}
++
++int main( void )
++{
++	const int workerCount = 8;
++	const char* countText = getenv( "BOX3D_METAL_RESIDENT_CONTACT_COUNT" );
++	const char* repeatText = getenv( "BOX3D_METAL_RESIDENT_CONTACT_REPEATS" );
++	int requestedCount = countText != NULL ? atoi( countText ) : 0;
++	int requestedRepeats = repeatText != NULL ? atoi( repeatText ) : 0;
++	const int counts[] = { 512, 2048, 8192, 32768, 65536 };
++	int testCount = requestedCount > 0 ? 1 : (int)( sizeof( counts ) / sizeof( counts[0] ) );
++
++	printf( "# operation=whole_world_resident_sphere_contacts substeps=4 workers=%d timing=wall_clock_step\n",
++		workerCount );
++	printf( "contacts,repeats,cpu_ms,gpu_ms,speedup,prepare_dispatches,index_bytes,prior_stream_bytes\n" );
++	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
++	{
++		int contactCount = requestedCount > 0 ? requestedCount : counts[testIndex];
++		int repeats = requestedRepeats > 0 ? requestedRepeats :
++			contactCount <= 2048 ? 40 : contactCount <= 8192 ? 20 : contactCount <= 32768 ? 8 : 4;
++		b3WorldId cpuWorld = CreateResidentContactWorld( contactCount, workerCount, false );
++		double cpuMs = TimeWorld( cpuWorld, 8, repeats );
++		b3DestroyWorld( cpuWorld );
++
++		b3WorldId gpuWorld = CreateResidentContactWorld( contactCount, workerCount, true );
++		if ( B3_IS_NULL( gpuWorld ) )
++		{
++			fprintf( stderr, "Metal initialization failed\n" );
++			return 1;
++		}
++		double gpuMs = TimeWorld( gpuWorld, 8, repeats );
++		b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
++		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
++		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu\n", contactCount, repeats, cpuMs, gpuMs,
++			cpuMs / gpuMs, (unsigned long long)profile.contactPrepareDispatchCount,
++			(unsigned long long)profile.lastContactPrepareIndexBytes, (unsigned long long)priorBytes );
++		b3DestroyWorld( gpuWorld );
++	}
++	return 0;
++}
 diff --git a/benchmark/metal_world.c b/benchmark/metal_world.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..858c3427ca4747353f7b9117a00776c0b8701930
@@ -1164,6 +1279,67 @@ index 0000000000000000000000000000000000000000..bb2756a124e56de72533d4dbc8c017eb
 +and exposed a shared 80-byte result per contact. A bounded hull-sphere slice
 +followed. Resident convex geometry/transform inputs and direct manifold storage
 +are still needed to remove both streams.
+diff --git a/docs/benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md b/docs/benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..a896810e7b35ff47e12441c7f9fc601cfea0b66a
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md
+@@ -0,0 +1,55 @@
++# Contact-prepare metadata residency (2026-09-02)
++
++## Scope
++
++This checkpoint removes the dedicated solver-time `b3Contact` traversal and
++144-byte per-lane preparation stream introduced by the first Metal preparation
++kernel. It does not move Box3D manifold persistence, materials, callbacks,
++events, graph coloring, or impulse storage to the GPU.
++
++During the already-required collision/persistence pass, each authoritative
++contact writes one 144-byte record into a persistent shared table indexed by
++Box3D contact ID. Records carry a narrow-phase generation. Pre-solve callbacks,
++recycling, CPU geometry, and stale generations cannot acquire solver authority.
++
++Solver submission now clears tail lanes and bulk-copies each active color's
++contact IDs into a four-byte-per-lane schedule. The backend performs at most one
++bulk copy per active color and does not dereference `b3Contact`, `b3Manifold`, or
++world contact storage. The preparation kernel validates the schedule against
++both the generation-tagged metadata table and private manifold table.
++
++## Evidence
++
++The 81-contact differential fixture uses 21 four-lane constraints. Its current
++solver schedule is 336 bytes (`21 * 4 * 4`). The former 144-byte-per-lane stream
++included three padded tail lanes, so its allocation was 12,096 bytes
++(`21 * 4 * 144`). This is a 97.2% reduction in the solver submission stream; it
++is not a claim that persistence metadata disappeared.
++
++Four consecutive four-substep steps produced four Metal preparation dispatches
++with maximum float transform error `5.96e-08` and velocity error `3.58e-07`.
++The recycling and pre-solve fixtures leave stale table records inaccessible and
++report zero schedule bytes. The unsupported-joint fixture performs CPU
++prepare-on-fallback before any schedule is submitted.
++
++The profile field `lastContactPrepareIndexBytes` reports the current schedule
++size and is zero on routes that never submit resident preparation.
++
++Focused harness smoke runs at 512 and 8,192 contacts each recorded ten resident
++preparation dispatches after eight warmups plus two measured steps. Their
++schedule/prior-stream byte pairs were 2,048/73,728 and 32,768/1,179,648,
++respectively. Wall-clock values from those loaded-host smoke runs are not
++published as performance evidence.
++
++No whole-world timing is claimed from the loaded development host. The next
++performance measurement must compare complete world steps on a quiet machine;
++the next ownership work is GPU persistence/impulse storage plus a resident graph
++schedule or compact CPU exception stream.
++
++The reproducible whole-world harness is
++`metal_resident_contact_benchmark`. It creates independent sphere contacts,
++forces fresh supported narrow phase by disabling recycling in both worlds, and
++prints CPU/GPU wall-clock step time, preparation dispatches, current schedule
++bytes, and the equivalent prior padded-stream bytes. Environment variables
++`BOX3D_METAL_RESIDENT_CONTACT_COUNT` and
++`BOX3D_METAL_RESIDENT_CONTACT_REPEATS` select a focused point.
 diff --git a/docs/benchmarks/m4-pro-convex-contacts-2026-09-01.md b/docs/benchmarks/m4-pro-convex-contacts-2026-09-01.md
 new file mode 100644
 index 0000000000000000000000000000000000000000..05672d5529e3eb2f6c5a786499ae36080e05a617
@@ -1987,10 +2163,10 @@ index 0000000000000000000000000000000000000000..796daea742f0dc3f7cd4faa84f4b8212
 +moves full results to private storage and returns only active ordered records.
 diff --git a/docs/benchmarks/m4-pro-resident-contact-preparation-2026-09-02.md b/docs/benchmarks/m4-pro-resident-contact-preparation-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..862a96bb196ca5e3706e3b74a37944dea34aaa49
+index 0000000000000000000000000000000000000000..19b0a6e1f14a1d0c26e59e2a29a3bad0baf97cb6
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-contact-preparation-2026-09-02.md
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,56 @@
 +# Resident convex contact preparation (2026-09-02)
 +
 +## Scope
@@ -2011,6 +2187,11 @@ index 0000000000000000000000000000000000000000..862a96bb196ca5e3706e3b74a37944de
 +materials, tangent velocity, and manifold storage identity. Removing that walk
 +requires a resident persistence/material exception pipeline; it is not claimed
 +by this checkpoint.
++
++This was the boundary at this checkpoint. The follow-on
++[`contact-prepare metadata residency`](m4-pro-contact-prepare-residency-2026-09-02.md)
++retains those records by contact ID during the existing persistence pass and
++reduces solver submission to a four-byte-per-lane schedule.
 +
 +The route is fail closed:
 +
@@ -2669,10 +2850,10 @@ index 0000000000000000000000000000000000000000..1e74458571cada9e4d648bbce49dffb5
 +needed before the shared narrow-phase streams can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..41da78c043bea2f739406478960d69dfe77c07fb
+index 0000000000000000000000000000000000000000..49ad9aa75b0dd975ae71cb5f4547e9eb8038a5fb
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,346 @@
+@@ -0,0 +1,354 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -2891,16 +3072,21 @@ index 0000000000000000000000000000000000000000..41da78c043bea2f739406478960d69df
 +front of the existing solver command buffer. CPU workers skip
 +`b3PrepareContacts_Convex`; instead, the kernel reads normal and identity from
 +the private contact-id table and writes the existing 1,696-byte SIMD-wide
-+constraint ABI. A 144-byte shared input per contact lane still carries CPU-owned
-+persistence anchors, warm-start impulses, materials, tangent velocity, body
-+indices, and manifold storage identity. It computes Erin's tangent frame,
++constraint ABI. CPU-owned persistence anchors, warm-start impulses, materials,
++tangent velocity, body indices, and manifold storage identity are retained in a
++generation-tagged 144-byte shared table indexed by contact ID. Collision workers
++write disjoint records during the existing persistence pass. Solver submission
++then initializes tail lanes and bulk-copies one four-byte contact-ID schedule per
++active color; it does not dereference contacts or repack their metadata. The
++kernel computes Erin's tangent frame,
 +softness, effective normal and tangent masses, friction centers, lever arms,
 +relative velocities, twist mass, rolling mass, and projected warm-start
 +impulses on Metal. A status word validates table authority without staging the
 +table. If input packing or a later unsupported constraint rejects the route,
 +CPU convex preparation is rerun before the CPU solver fallback. This removes
-+CPU preparation arithmetic for supported resident contacts, but the CPU contact
-+traversal and 144-byte metadata stream remain the next residency boundary.
++CPU preparation arithmetic plus the dedicated solver-time contact traversal and
++144-byte lane stream. CPU manifold persistence/material work, table writes, the
++graph-color schedule, impulse storage, events, and topology remain.
 +
 +Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 +unsupported joint solution, continuous collision, events, and sleeping/island
@@ -3015,6 +3201,9 @@ index 0000000000000000000000000000000000000000..41da78c043bea2f739406478960d69df
 +[`benchmarks/m4-pro-resident-solver-ownership-2026-09-02.md`](benchmarks/m4-pro-resident-solver-ownership-2026-09-02.md).
 +The first resident convex contact-preparation kernel is recorded in
 +[`benchmarks/m4-pro-resident-contact-preparation-2026-09-02.md`](benchmarks/m4-pro-resident-contact-preparation-2026-09-02.md).
++The follow-on contact-ID metadata residency and four-byte lane schedule are
++recorded in
++[`benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md`](benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md).
 +Private shape results and selective synchronization are recorded in
 +[`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 +Persistent shape-input reuse is recorded in
@@ -3035,10 +3224,10 @@ index 2e8259039a9ed575b8b0e59c1ea7064245517b42..cd49acff561bfc6d9b781415209a5560
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..3c585a3c130fc423928567e4ce9578e8f8417626
+index 0000000000000000000000000000000000000000..58cd64e3aa94d7a45552ddf6ba9021b527d4350c
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,111 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -3073,6 +3262,10 @@ index 0000000000000000000000000000000000000000..3c585a3c130fc423928567e4ce9578e8
 +	/// Optimistic Metal preparation steps recovered by running CPU preparation
 +	/// before the CPU solver fallback.
 +	uint64_t contactPrepareFallbackCount;
++	/// Bytes in the most recent deterministic contact-id lane schedule. The
++	/// post-persistence metadata table is retained by contact id and is not
++	/// repacked into this stream.
++	uint64_t lastContactPrepareIndexBytes;
 +	uint64_t jointDispatchCount;
 +	uint64_t jointFallbackCount;
 +	uint64_t finalizationDispatchCount;
@@ -4109,10 +4302,10 @@ index d85f2331a52e6f3e488582e33de30dd7a13e536f..ffa6859a9bc069551962a92badf88da5
  int b3GetWideContactConstraintByteCount( void );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6cb0f487c11afdd490415eb9f951b939c62e9657
+index 0000000000000000000000000000000000000000..9780917d1717aa959c543c3a9141ee6d6320deef
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,154 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -4131,6 +4324,7 @@ index 0000000000000000000000000000000000000000..6cb0f487c11afdd490415eb9f951b939
 +typedef struct b3ManifoldConstraint b3ManifoldConstraint;
 +typedef struct b3BroadPhase b3BroadPhase;
 +typedef struct b3World b3World;
++typedef struct b3Contact b3Contact;
 +
 +typedef struct b3MetalPairQueryRecord
 +{
@@ -4251,6 +4445,11 @@ index 0000000000000000000000000000000000000000..6cb0f487c11afdd490415eb9f951b939
 +bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalConvexManifoldResult* results,
 +	int resultCapacity );
 +
++// Retain post-persistence solver metadata by contact id during the existing CPU
++// collision pass. The narrow-phase dispatch preallocates the table, so parallel
++// collision workers only write disjoint records and never allocate.
++bool b3MetalStageResidentContactPrepare( b3MetalContext* context, const b3Contact* contact );
++
 +// Mark the resident tree snapshot as matching CPU bounds after a successful
 +// shape-result leaf update/refit and the corresponding CPU bookkeeping pass.
 +void b3MetalCommitPairTreeRefit( b3MetalContext* context, const b3BroadPhase* broadPhase );
@@ -4263,10 +4462,10 @@ index 0000000000000000000000000000000000000000..6cb0f487c11afdd490415eb9f951b939
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3cd8dfeb6
+index 0000000000000000000000000000000000000000..e4b4e3eeacdd6b3d399202f43f1092dd1e6b9af2
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,4625 @@
+@@ -0,0 +1,4661 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -4425,9 +4624,12 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +	uint64_t convexBodyTransformRevision;
 +	id<MTLBuffer> contactConstraintBuffer;
 +	NSUInteger contactConstraintCapacity;
-+	id<MTLBuffer> contactPrepareInputBuffer;
-+	NSUInteger contactPrepareInputCapacity;
++	id<MTLBuffer> contactPrepareTableBuffer;
++	NSUInteger contactPrepareTableCapacity;
++	id<MTLBuffer> contactPrepareIndexBuffer;
++	NSUInteger contactPrepareIndexCapacity;
 +	id<MTLBuffer> contactPrepareStatusBuffer;
++	uint32_t contactPrepareGeneration;
 +	id<MTLBuffer> meshContactBuffer;
 +	NSUInteger meshContactCapacity;
 +	id<MTLBuffer> meshManifoldBuffer;
@@ -4609,7 +4811,7 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +{
 +	uint32_t contactId;
 +	int indexA, indexB;
-+	uint32_t pointCount;
++	uint32_t generation;
 +	uint64_t manifold;
 +	float friction, restitution;
 +	float rollingResistance, tangentVelocityX, tangentVelocityY, tangentVelocityZ;
@@ -4625,7 +4827,7 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +	b3Softness contactSoftness;
 +	float padding0;
 +	b3Softness staticSoftness;
-+	float padding1;
++	uint32_t generation;
 +} b3MetalContactPrepareParams;
 +
 +_Static_assert( sizeof( b3MetalContactPreparePoint ) == 32, "Metal contact-prepare point ABI changed" );
@@ -5310,12 +5512,12 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,scanOffset,contactId; };\n"
 +	"struct PreparePoint { float anchorAX,anchorAY,anchorAZ,separation; float anchorBX,anchorBY,anchorBZ,normalImpulse; };\n"
 +	"struct Softness { float biasRate, massScale, impulseScale; };\n"
-+	"struct PrepareInput { uint contactId; int indexA,indexB; uint pointCount; ulong manifold; float friction,restitution;\n"
++	"struct PrepareInput { uint contactId; int indexA,indexB; uint generation; ulong manifold; float friction,restitution;\n"
 +	"  float rollingResistance,tangentVelocityX,tangentVelocityY,tangentVelocityZ;\n"
 +	"  float twistImpulse,frictionImpulseX,frictionImpulseY,frictionImpulseZ;\n"
 +	"  float rollingImpulseX,rollingImpulseY,rollingImpulseZ,padding; PreparePoint points[2]; };\n"
 +	"struct PrepareParams { uint wideCount,tableCount; float warmStartScale,invTau; Softness contactSoftness; float padding0;\n"
-+	"  Softness staticSoftness; float padding1; };\n"
++	"  Softness staticSoftness; uint generation; };\n"
 +	"struct BodyProperties { float qx,qy,qz,qw; float forceX,forceY,forceZ; float torqueX,torqueY,torqueZ; float invMass;\n"
 +	"  float invInertiaLocal[9]; float invInertiaWorld[9]; float linearDamping,angularDamping,gravityScale; };\n"
 +	"struct BodyW { V3W v; V3W w; V3W dp; QW dq; };\n"
@@ -5382,16 +5584,16 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +	"void store_body(device BodyState* states,int index,BodyS b){if(index<0)return;BodyState s=states[index];if((s.flags&0x1000u)==0u)return;\n"
 +	"  if(s.flags&1u)b.v.x=0;if(s.flags&2u)b.v.y=0;if(s.flags&4u)b.v.z=0;if(s.flags&8u)b.w.x=0;if(s.flags&16u)b.w.y=0;if(s.flags&32u)b.w.z=0;\n"
 +	"  s.lvx=b.v.x;s.lvy=b.v.y;s.lvz=b.v.z;s.avx=b.w.x;s.avy=b.w.y;s.avz=b.w.z;states[index]=s;}\n"
-+	"kernel void b3_prepare_contacts(const device PrepareInput* inputs [[buffer(0)]],\n"
-+	"  const device ConvexManifoldResult* table [[buffer(1)]],const device BodyProperties* properties [[buffer(2)]],\n"
-+	"  const device BodyState* states [[buffer(3)]],device ContactWide* constraints [[buffer(4)]],\n"
-+	"  device atomic_uint* status [[buffer(5)]],constant PrepareParams& p [[buffer(6)]],uint tid [[thread_position_in_grid]]){\n"
++	"kernel void b3_prepare_contacts(const device uint* indices [[buffer(0)]],const device PrepareInput* inputs [[buffer(1)]],\n"
++	"  const device ConvexManifoldResult* table [[buffer(2)]],const device BodyProperties* properties [[buffer(3)]],\n"
++	"  const device BodyState* states [[buffer(4)]],device ContactWide* constraints [[buffer(5)]],\n"
++	"  device atomic_uint* status [[buffer(6)]],constant PrepareParams& p [[buffer(7)]],uint tid [[thread_position_in_grid]]){\n"
 +	"  if(tid>=p.wideCount)return;device ContactWide& c=constraints[tid];\n"
-+	"  for(uint lane=0;lane<4u;++lane){PrepareInput in=inputs[4u*tid+lane];if(in.contactId==0xffffffffu)continue;\n"
-+	"    if(in.contactId>=p.tableCount){atomic_fetch_or_explicit(status,1u,memory_order_relaxed);continue;}\n"
-+	"    ConvexManifoldResult mr=table[in.contactId];if(mr.eligible==0u||mr.touching==0u||mr.contactId!=in.contactId||\n"
-+	"      mr.inputIndex!=in.contactId||mr.pointCount!=in.pointCount||in.pointCount==0u||in.pointCount>2u){atomic_fetch_or_explicit(status,2u,memory_order_relaxed);continue;}\n"
-+	"    int ia=in.indexA,ib=in.indexB;c.indexA[lane]=ia+1;c.indexB[lane]=ib+1;c.pointCounts[lane]=int(in.pointCount);c.manifolds[lane]=in.manifold;\n"
++	"  for(uint lane=0;lane<4u;++lane){uint contactId=indices[4u*tid+lane];if(contactId==0xffffffffu)continue;\n"
++	"    if(contactId>=p.tableCount){atomic_fetch_or_explicit(status,1u,memory_order_relaxed);continue;}PrepareInput in=inputs[contactId];\n"
++	"    ConvexManifoldResult mr=table[contactId];if(in.contactId!=contactId||in.generation!=p.generation||mr.eligible==0u||mr.touching==0u||mr.contactId!=contactId||\n"
++	"      mr.inputIndex!=contactId||mr.pointCount==0u||mr.pointCount>2u){atomic_fetch_or_explicit(status,2u,memory_order_relaxed);continue;}\n"
++	"    uint pointCount=mr.pointCount;int ia=in.indexA,ib=in.indexB;c.indexA[lane]=ia+1;c.indexB[lane]=ib+1;c.pointCounts[lane]=int(pointCount);c.manifolds[lane]=in.manifold;\n"
 +	"    float ma=ia>=0?properties[ia].invMass:0.0f,mb=ib>=0?properties[ib].invMass:0.0f;c.invMassA[lane]=ma;c.invMassB[lane]=mb;\n"
 +	"    SM3 iA=load_inertia(properties,ia),iB=load_inertia(properties,ib);\n"
 +	"    c.invIA.cxx[lane]=iA.cx.x;c.invIA.cxy[lane]=iA.cy.x;c.invIA.cxz[lane]=iA.cz.x;c.invIA.cyy[lane]=iA.cy.y;c.invIA.cyz[lane]=iA.cz.y;c.invIA.czz[lane]=iA.cz.z;\n"
@@ -5403,7 +5605,7 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +	"    Softness soft=(ia<0||ib<0)?p.staticSoftness:p.contactSoftness;c.biasRate[lane]=soft.biasRate;c.massScale[lane]=soft.massScale;c.impulseScale[lane]=soft.impulseScale;\n"
 +	"    BodyState sa={};BodyState sb={};if(ia>=0)sa=states[ia];if(ib>=0)sb=states[ib];S3 va=S3{sa.lvx,sa.lvy,sa.lvz},wa=S3{sa.avx,sa.avy,sa.avz};\n"
 +	"    S3 vb=S3{sb.lvx,sb.lvy,sb.lvz},wb=S3{sb.avx,sb.avy,sb.avz},centerA=S3{0,0,0},centerB=S3{0,0,0};float totalWeight=0.0f;\n"
-+	"    for(uint j=0;j<in.pointCount;++j){PreparePoint mp=in.points[j];device PointWide& cp=c.points[j];S3 rA=S3{mp.anchorAX,mp.anchorAY,mp.anchorAZ},rB=S3{mp.anchorBX,mp.anchorBY,mp.anchorBZ};\n"
++	"    for(uint j=0;j<pointCount;++j){PreparePoint mp=in.points[j];device PointWide& cp=c.points[j];S3 rA=S3{mp.anchorAX,mp.anchorAY,mp.anchorAZ},rB=S3{mp.anchorBX,mp.anchorBY,mp.anchorBZ};\n"
 +	"      float weight=clamp(2.0f-mp.separation*p.invTau,1.0e-10f,1.0f);centerA=sadd(centerA,smul(weight,rA));centerB=sadd(centerB,smul(weight,rB));totalWeight+=weight;\n"
 +	"      cp.anchorAs.X[lane]=rA.x;cp.anchorAs.Y[lane]=rA.y;cp.anchorAs.Z[lane]=rA.z;cp.anchorBs.X[lane]=rB.x;cp.anchorBs.Y[lane]=rB.y;cp.anchorBs.Z[lane]=rB.z;\n"
 +	"      cp.baseSeparations[lane]=mp.separation-sdot(ssub(rB,rA),n);cp.normalImpulses[lane]=p.warmStartScale*mp.normalImpulse;cp.totalNormalImpulses[lane]=0.0f;\n"
@@ -5411,8 +5613,8 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +	"      S3 vrA=sadd(va,scross(wa,rA)),vrB=sadd(vb,scross(wb,rB));cp.relativeVelocities[lane]=sdot(n,ssub(vrB,vrA));}\n"
 +	"    float iw=1.0f/totalWeight;centerA=smul(iw,centerA);centerB=smul(iw,centerB);c.centerA.X[lane]=centerA.x;c.centerA.Y[lane]=centerA.y;c.centerA.Z[lane]=centerA.z;\n"
 +	"    c.centerB.X[lane]=centerB.x;c.centerB.Y[lane]=centerB.y;c.centerB.Z[lane]=centerB.z;\n"
-+	"    for(uint j=0;j<in.pointCount;++j){S3 rA=S3{in.points[j].anchorAX,in.points[j].anchorAY,in.points[j].anchorAZ};c.points[j].leverArms[lane]=length(float3(rA.x-centerA.x,rA.y-centerA.y,rA.z-centerA.z));}\n"
-+	"    for(uint j=in.pointCount;j<4u;++j){device PointWide& cp=c.points[j];cp.anchorAs.X[lane]=0;cp.anchorAs.Y[lane]=0;cp.anchorAs.Z[lane]=0;cp.anchorBs.X[lane]=0;cp.anchorBs.Y[lane]=0;cp.anchorBs.Z[lane]=0;\n"
++	"    for(uint j=0;j<pointCount;++j){S3 rA=S3{in.points[j].anchorAX,in.points[j].anchorAY,in.points[j].anchorAZ};c.points[j].leverArms[lane]=length(float3(rA.x-centerA.x,rA.y-centerA.y,rA.z-centerA.z));}\n"
++	"    for(uint j=pointCount;j<4u;++j){device PointWide& cp=c.points[j];cp.anchorAs.X[lane]=0;cp.anchorAs.Y[lane]=0;cp.anchorAs.Z[lane]=0;cp.anchorBs.X[lane]=0;cp.anchorBs.Y[lane]=0;cp.anchorBs.Z[lane]=0;\n"
 +	"      cp.baseSeparations[lane]=0;cp.normalImpulses[lane]=0;cp.totalNormalImpulses[lane]=0;cp.normalMasses[lane]=0;cp.leverArms[lane]=0;cp.relativeVelocities[lane]=0;}\n"
 +	"    S3 ra1=scross(centerA,t1),ra2=scross(centerA,t2),rb1=scross(centerB,t1),rb2=scross(centerB,t2);float kxx=ma+mb+sdot(ra1,smulm(iA,ra1))+sdot(rb1,smulm(iB,rb1));\n"
 +	"    float kyy=ma+mb+sdot(ra2,smulm(iA,ra2))+sdot(rb2,smulm(iB,rb2)),kxy=sdot(ra1,smulm(iA,ra2))+sdot(rb1,smulm(iB,rb2));float det=kxx*kyy-kxy*kxy;\n"
@@ -6002,7 +6204,8 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +	[context->convexShapeGeometryBuffer release];
 +	[context->convexBodyTransformBuffer release];
 +	[context->contactConstraintBuffer release];
-+	[context->contactPrepareInputBuffer release];
++	[context->contactPrepareTableBuffer release];
++	[context->contactPrepareIndexBuffer release];
 +	[context->contactPrepareStatusBuffer release];
 +	[context->meshContactBuffer release];
 +	[context->meshManifoldBuffer release];
@@ -6457,17 +6660,33 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +	return true;
 +}
 +
-+static bool b3MetalEnsureContactPrepareCapacity( b3MetalContext* context, NSUInteger requiredBytes )
++static bool b3MetalEnsureContactPrepareTableCapacity( b3MetalContext* context, NSUInteger requiredBytes )
 +{
-+	if ( context->contactPrepareInputCapacity < requiredBytes )
++	if ( context->contactPrepareTableCapacity < requiredBytes )
 +	{
-+		NSUInteger capacity = context->contactPrepareInputCapacity > 0 ? context->contactPrepareInputCapacity : 4096;
++		NSUInteger capacity = context->contactPrepareTableCapacity > 0 ? context->contactPrepareTableCapacity : 4096;
 +		while ( capacity < requiredBytes ) capacity *= 2;
 +		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
 +		if ( buffer == nil ) return false;
-+		[context->contactPrepareInputBuffer release];
-+		context->contactPrepareInputBuffer = buffer;
-+		context->contactPrepareInputCapacity = capacity;
++		memset( buffer.contents, 0, capacity );
++		[context->contactPrepareTableBuffer release];
++		context->contactPrepareTableBuffer = buffer;
++		context->contactPrepareTableCapacity = capacity;
++	}
++	return true;
++}
++
++static bool b3MetalEnsureContactPrepareIndexCapacity( b3MetalContext* context, NSUInteger requiredBytes )
++{
++	if ( context->contactPrepareIndexCapacity < requiredBytes )
++	{
++		NSUInteger capacity = context->contactPrepareIndexCapacity > 0 ? context->contactPrepareIndexCapacity : 4096;
++		while ( capacity < requiredBytes ) capacity *= 2;
++		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
++		if ( buffer == nil ) return false;
++		[context->contactPrepareIndexBuffer release];
++		context->contactPrepareIndexBuffer = buffer;
++		context->contactPrepareIndexCapacity = capacity;
 +	}
 +	if ( context->contactPrepareStatusBuffer == nil )
 +	{
@@ -6732,7 +6951,58 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +	}
 +}
 +
-+static bool b3MetalPackContactPrepareInputs( b3MetalContext* context, const b3StepContext* stepContext,
++bool b3MetalStageResidentContactPrepare( b3MetalContext* context, const b3Contact* contact )
++{
++	if ( context == NULL || contact == NULL || context->contactPrepareGeneration == 0 ||
++		contact->contactId < 0 || contact->contactId >= context->convexManifoldTableCount ||
++		contact->manifoldCount != 1 || contact->manifolds == NULL ||
++		contact->manifolds[0].pointCount < 1 || contact->manifolds[0].pointCount > 2 )
++	{
++		return false;
++	}
++	NSUInteger tableIndex = (NSUInteger)contact->contactId;
++	if ( tableIndex >= context->contactPrepareTableCapacity / sizeof( b3MetalContactPrepareInput ) ) return false;
++
++	const b3Manifold* manifold = contact->manifolds;
++	b3MetalContactPrepareInput input = {
++		.contactId = (uint32_t)contact->contactId,
++		.indexA = contact->bodySimIndexA,
++		.indexB = contact->bodySimIndexB,
++		.generation = context->contactPrepareGeneration,
++		.manifold = (uint64_t)(uintptr_t)manifold,
++		.friction = contact->friction,
++		.restitution = contact->restitution,
++		.rollingResistance = contact->rollingResistance,
++		.tangentVelocityX = contact->tangentVelocity.x,
++		.tangentVelocityY = contact->tangentVelocity.y,
++		.tangentVelocityZ = contact->tangentVelocity.z,
++		.twistImpulse = manifold->twistImpulse,
++		.frictionImpulseX = manifold->frictionImpulse.x,
++		.frictionImpulseY = manifold->frictionImpulse.y,
++		.frictionImpulseZ = manifold->frictionImpulse.z,
++		.rollingImpulseX = manifold->rollingImpulse.x,
++		.rollingImpulseY = manifold->rollingImpulse.y,
++		.rollingImpulseZ = manifold->rollingImpulse.z,
++	};
++	for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
++	{
++		const b3ManifoldPoint* point = manifold->points + pointIndex;
++		input.points[pointIndex] = (b3MetalContactPreparePoint){
++			.anchorAX = point->anchorA.x,
++			.anchorAY = point->anchorA.y,
++			.anchorAZ = point->anchorA.z,
++			.separation = point->separation,
++			.anchorBX = point->anchorB.x,
++			.anchorBY = point->anchorB.y,
++			.anchorBZ = point->anchorB.z,
++			.normalImpulse = point->normalImpulse,
++		};
++	}
++	( (b3MetalContactPrepareInput*)context->contactPrepareTableBuffer.contents )[tableIndex] = input;
++	return true;
++}
++
++static bool b3MetalPackContactPrepareIndices( b3MetalContext* context, const b3StepContext* stepContext,
 +	bool* hasRestitution )
 +{
 +	if ( hasRestitution != NULL ) *hasRestitution = false;
@@ -6742,77 +7012,31 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +		return false;
 +	}
 +
-+	NSUInteger inputCount = (NSUInteger)stepContext->wideContactCount * B3_SIMD_WIDTH;
-+	if ( inputCount > NSUIntegerMax / sizeof( b3MetalContactPrepareInput ) ) return false;
-+	NSUInteger inputBytes = inputCount * sizeof( b3MetalContactPrepareInput );
-+	if ( b3MetalEnsureContactPrepareCapacity( context, inputBytes ) == false ) return false;
-+	b3MetalContactPrepareInput* inputs = context->contactPrepareInputBuffer.contents;
-+	memset( inputs, 0, inputBytes );
-+	for ( NSUInteger i = 0; i < inputCount; ++i ) inputs[i].contactId = UINT32_MAX;
++	NSUInteger indexCount = (NSUInteger)stepContext->wideContactCount * B3_SIMD_WIDTH;
++	if ( indexCount > NSUIntegerMax / sizeof( uint32_t ) ) return false;
++	NSUInteger indexBytes = indexCount * sizeof( uint32_t );
++	if ( b3MetalEnsureContactPrepareIndexCapacity( context, indexBytes ) == false ) return false;
++	uint32_t* indices = context->contactPrepareIndexBuffer.contents;
++	memset( indices, 0xff, indexBytes );
 +
-+	const b3World* world = stepContext->world;
-+	bool restitution = false;
 +	int packedCount = 0;
 +	for ( int colorIndex = 0; colorIndex < stepContext->activeColorCount; ++colorIndex )
 +	{
 +		const b3WidePrepareSpan* span = stepContext->widePrepareSpans + colorIndex;
-+		for ( int contactIndex = 0; contactIndex < span->count; ++contactIndex )
++		if ( span->count < 0 || span->start < 0 || span->start > stepContext->wideContactCount ) return false;
++		if ( span->count > 0 )
 +		{
-+			int contactId = span->contacts[contactIndex];
-+			if ( contactId < 0 || contactId >= world->contacts.count || contactId >= context->convexManifoldTableCount )
-+			{
-+				return false;
-+			}
-+			const b3Contact* contact = world->contacts.data + contactId;
-+			if ( contact->contactId != contactId || contact->manifoldCount != 1 ||
-+				( contact->flags & b3_simMetalManifold ) == 0 ||
-+				( contact->flags & b3_simEnablePreSolveEvents ) != 0 )
-+			{
-+				return false;
-+			}
-+			const b3Manifold* manifold = contact->manifolds;
-+			if ( manifold == NULL || manifold->pointCount < 1 || manifold->pointCount > 2 ) return false;
-+
-+			int wideIndex = span->start + contactIndex / B3_SIMD_WIDTH;
-+			int lane = contactIndex & ( B3_SIMD_WIDTH - 1 );
-+			b3MetalContactPrepareInput* input = inputs + B3_SIMD_WIDTH * wideIndex + lane;
-+			input->contactId = (uint32_t)contactId;
-+			input->indexA = contact->bodySimIndexA;
-+			input->indexB = contact->bodySimIndexB;
-+			input->pointCount = (uint32_t)manifold->pointCount;
-+			input->manifold = (uint64_t)(uintptr_t)manifold;
-+			input->friction = contact->friction;
-+			input->restitution = contact->restitution;
-+			input->rollingResistance = contact->rollingResistance;
-+			input->tangentVelocityX = contact->tangentVelocity.x;
-+			input->tangentVelocityY = contact->tangentVelocity.y;
-+			input->tangentVelocityZ = contact->tangentVelocity.z;
-+			input->twistImpulse = manifold->twistImpulse;
-+			input->frictionImpulseX = manifold->frictionImpulse.x;
-+			input->frictionImpulseY = manifold->frictionImpulse.y;
-+			input->frictionImpulseZ = manifold->frictionImpulse.z;
-+			input->rollingImpulseX = manifold->rollingImpulse.x;
-+			input->rollingImpulseY = manifold->rollingImpulse.y;
-+			input->rollingImpulseZ = manifold->rollingImpulse.z;
-+			for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
-+			{
-+				const b3ManifoldPoint* point = manifold->points + pointIndex;
-+				b3MetalContactPreparePoint* output = input->points + pointIndex;
-+				output->anchorAX = point->anchorA.x;
-+				output->anchorAY = point->anchorA.y;
-+				output->anchorAZ = point->anchorA.z;
-+				output->separation = point->separation;
-+				output->anchorBX = point->anchorB.x;
-+				output->anchorBY = point->anchorB.y;
-+				output->anchorBZ = point->anchorB.z;
-+				output->normalImpulse = point->normalImpulse;
-+			}
-+			restitution = restitution || contact->restitution != 0.0f;
-+			packedCount += 1;
++			if ( span->contacts == NULL || (NSUInteger)span->count > NSUIntegerMax / sizeof( int ) ) return false;
++			NSUInteger destination = (NSUInteger)B3_SIMD_WIDTH * (NSUInteger)span->start;
++			if ( destination > indexCount || (NSUInteger)span->count > indexCount - destination ) return false;
++			_Static_assert( sizeof( int ) == sizeof( uint32_t ), "Metal contact-id schedule ABI changed" );
++			memcpy( indices + destination, span->contacts, (NSUInteger)span->count * sizeof( int ) );
 +		}
++		packedCount += span->count;
 +	}
 +	if ( packedCount != stepContext->metalResidentConvexContactCount ) return false;
-+	if ( hasRestitution != NULL ) *hasRestitution = restitution;
++	stepContext->world->metalLastContactPrepareIndexBytes = indexBytes;
++	if ( hasRestitution != NULL ) *hasRestitution = stepContext->metalResidentConvexHasRestitution;
 +	return true;
 +}
 +
@@ -8026,11 +8250,20 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +		NSUInteger blockBytes = (NSUInteger)blockCount * sizeof( b3MetalPairBlock );
 +		NSUInteger tableCount = world->contacts.count > 0 ? (NSUInteger)world->contacts.count : 1;
 +		NSUInteger tableBytes = tableCount * sizeof( b3MetalConvexManifoldResult );
++		if ( tableCount > NSUIntegerMax / sizeof( b3MetalContactPrepareInput ) ) return false;
++		NSUInteger prepareTableBytes = tableCount * sizeof( b3MetalContactPrepareInput );
 +		if ( b3MetalEnsureShapeGeometryRegistry( context, world ) == false ||
 +			 b3MetalEnsureBodyTransformRegistry( context, world ) == false ||
-+			 b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes, resultBytes, blockBytes, tableBytes ) == false )
++			 b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes, resultBytes, blockBytes, tableBytes ) == false ||
++			 b3MetalEnsureContactPrepareTableCapacity( context, prepareTableBytes ) == false )
 +		{
 +			return false;
++		}
++		context->contactPrepareGeneration += 1;
++		if ( context->contactPrepareGeneration == 0 )
++		{
++			memset( context->contactPrepareTableBuffer.contents, 0, prepareTableBytes );
++			context->contactPrepareGeneration = 1;
 +		}
 +		b3MetalConvexManifoldInput* inputs = context->convexManifoldInputBuffer.contents;
 +		memset( inputs, 0, inputBytes );
@@ -8382,7 +8615,7 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +		memcpy( context->bodyStateBuffer.contents, stepContext->states, stateBytes );
 +		b3MetalPackBodyProperties( context->bodyPropertiesBuffer.contents, stepContext->sims, bodyCount );
 +		if ( prepareContactsOnGpu &&
-+			b3MetalPackContactPrepareInputs( context, stepContext, &preparedHasRestitution ) == false )
++			b3MetalPackContactPrepareIndices( context, stepContext, &preparedHasRestitution ) == false )
 +		{
 +			return false;
 +		}
@@ -8508,15 +8741,17 @@ index 0000000000000000000000000000000000000000..8111d68620d1757596e420a0077262e3
 +				.invTau = 1.0f / B3_SPECULATIVE_DISTANCE,
 +				.contactSoftness = stepContext->contactSoftness,
 +				.staticSoftness = stepContext->staticSoftness,
++				.generation = context->contactPrepareGeneration,
 +			};
 +			[encoder setComputePipelineState:context->prepareContactsPipeline];
-+			[encoder setBuffer:context->contactPrepareInputBuffer offset:0 atIndex:0];
-+			[encoder setBuffer:context->convexManifoldTableBuffer offset:0 atIndex:1];
-+			[encoder setBuffer:context->bodyPropertiesBuffer offset:0 atIndex:2];
-+			[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:3];
-+			[encoder setBuffer:context->contactConstraintBuffer offset:0 atIndex:4];
-+			[encoder setBuffer:context->contactPrepareStatusBuffer offset:0 atIndex:5];
-+			[encoder setBytes:&params length:sizeof( params ) atIndex:6];
++			[encoder setBuffer:context->contactPrepareIndexBuffer offset:0 atIndex:0];
++			[encoder setBuffer:context->contactPrepareTableBuffer offset:0 atIndex:1];
++			[encoder setBuffer:context->convexManifoldTableBuffer offset:0 atIndex:2];
++			[encoder setBuffer:context->bodyPropertiesBuffer offset:0 atIndex:3];
++			[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:4];
++			[encoder setBuffer:context->contactConstraintBuffer offset:0 atIndex:5];
++			[encoder setBuffer:context->contactPrepareStatusBuffer offset:0 atIndex:6];
++			[encoder setBytes:&params length:sizeof( params ) atIndex:7];
 +			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)stepContext->wideContactCount, 1, 1 )
 +				threadsPerThreadgroup:MTLSizeMake( prepareWidth, 1, 1 )];
 +			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -10033,7 +10268,7 @@ index 0000000000000000000000000000000000000000..a4424e54a1931d1ca2b31611744fa848
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..80d617482fb8c00b11a8b28bede646548906b6c5 100644
+index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..44cd1501af7b6dd5e65703b2d6caf67af37659bd 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -10060,7 +10295,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..80d617482fb8c00b11a8b28bede64654
  	// Detach any recording before teardown. The user owns and frees the recording buffer.
  	b3StopRecordingInternal( world );
  
-@@ -538,6 +548,166 @@ int b3GetWorldCount( void )
+@@ -538,6 +548,167 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -10177,6 +10412,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..80d617482fb8c00b11a8b28bede64654
 +	profile.contactFallbackCount = world->metalContactFallbackCount;
 +	profile.contactPrepareDispatchCount = world->metalContactPrepareDispatchCount;
 +	profile.contactPrepareFallbackCount = world->metalContactPrepareFallbackCount;
++	profile.lastContactPrepareIndexBytes = world->metalLastContactPrepareIndexBytes;
 +	profile.jointDispatchCount = world->metalJointDispatchCount;
 +	profile.jointFallbackCount = world->metalJointFallbackCount;
 +	profile.finalizationDispatchCount = world->metalFinalizationDispatchCount;
@@ -10227,7 +10463,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..80d617482fb8c00b11a8b28bede64654
  int b3GetMaxWorldCount( void )
  {
  	return b3_maxWorldCount;
-@@ -582,8 +752,38 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -582,8 +753,38 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  	const int contactPrefetchDistance = 4;
  	int prefetchEnd = endIndex - contactPrefetchDistance;
  
@@ -10266,7 +10502,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..80d617482fb8c00b11a8b28bede64654
  		if ( i < prefetchEnd )
  		{
  			b3PrefetchContact( contacts + contactIndices[i + contactPrefetchDistance] );
-@@ -594,6 +794,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -594,6 +795,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  
  		b3Contact* contact = contacts + contactIndex;
  		B3_VALIDATE( contact->contactId == contactIndex );
@@ -10274,7 +10510,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..80d617482fb8c00b11a8b28bede64654
  
  		b3Shape* shapeA = shapes + contact->shapeIdA;
  		b3Shape* shapeB = shapes + contact->shapeIdB;
-@@ -741,9 +942,51 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -741,9 +943,52 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
  		contact->flags |= b3_relativeTransformValid;
  
@@ -10320,7 +10556,8 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..80d617482fb8c00b11a8b28bede64654
 +										 precomputedConvexManifold != NULL,
 +										 taskContext->arena );
 +#if defined( BOX3D_METAL )
-+		if ( precomputedConvexManifold != NULL && ( contact->flags & b3_simEnablePreSolveEvents ) == 0 )
++		if ( precomputedConvexManifold != NULL && ( contact->flags & b3_simEnablePreSolveEvents ) == 0 &&
++			 b3MetalStageResidentContactPrepare( world->metalContext, contact ) )
 +		{
 +			contact->flags |= b3_simMetalManifold;
 +		}
@@ -10328,7 +10565,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..80d617482fb8c00b11a8b28bede64654
  
  		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
  		if ( bucketIndex > 0 )
-@@ -873,6 +1116,8 @@ static void b3Collide( b3StepContext* context )
+@@ -873,6 +1118,8 @@ static void b3Collide( b3StepContext* context )
  	}
  
  	context->awakeContactIndices = contactIndices;
@@ -10337,7 +10574,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..80d617482fb8c00b11a8b28bede64654
  
  	// Contact bit set on ids because contact pointers are unstable as they move between touching and not touching.
  	int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
-@@ -886,12 +1131,39 @@ static void b3Collide( b3StepContext* context )
+@@ -886,12 +1133,39 @@ static void b3Collide( b3StepContext* context )
  		memset( taskContext->manifoldCounts, 0, sizeof( taskContext->manifoldCounts ) );
  	}
  
@@ -10377,7 +10614,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..80d617482fb8c00b11a8b28bede64654
  	contactIndices = NULL;
  
  	// Serially update contact state
-@@ -1039,6 +1311,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1313,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -10400,7 +10637,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..80d617482fb8c00b11a8b28bede64654
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -3473,6 +3761,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +3763,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -10413,10 +10650,10 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..80d617482fb8c00b11a8b28bede64654
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8656bec015b96bbfac2caacdde8013b489..6424a4c2e83c8194279521f4d1b74c0fe2288784 100644
+index 8bd3df8656bec015b96bbfac2caacdde8013b489..4e463e3977f9d179c5ea0e2d1fe259f5fd42217a 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
-@@ -266,6 +266,65 @@ typedef struct b3World
+@@ -266,6 +266,66 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
@@ -10432,6 +10669,7 @@ index 8bd3df8656bec015b96bbfac2caacdde8013b489..6424a4c2e83c8194279521f4d1b74c0f
 +	uint64_t metalContactFallbackCount;
 +	uint64_t metalContactPrepareDispatchCount;
 +	uint64_t metalContactPrepareFallbackCount;
++	uint64_t metalLastContactPrepareIndexBytes;
 +	uint64_t metalJointDispatchCount;
 +	uint64_t metalJointFallbackCount;
 +	uint64_t metalFinalizationDispatchCount;
@@ -10482,7 +10720,7 @@ index 8bd3df8656bec015b96bbfac2caacdde8013b489..6424a4c2e83c8194279521f4d1b74c0f
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -347,4 +406,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +407,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
@@ -10591,7 +10829,7 @@ index ed76dd41c99fed574cc6f2bb5c0650d62b647bcc..86b87cbadd64f157a9e7fea5ad12f541
  	float density;
  	float explosionScale;
 diff --git a/src/solver.c b/src/solver.c
-index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2ecdf585b 100644
+index d8aace052bbdf736d53aad0effa9a20a5b322f99..cf7f70722a20ccdd7e634e807671ed3f60900e7f 100644
 --- a/src/solver.c
 +++ b/src/solver.c
 @@ -19,6 +19,9 @@
@@ -11218,16 +11456,17 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
  
  		// count contacts, joints, and colors
  		int activeColorCount = 0;
-@@ -1502,6 +1892,8 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1502,6 +1892,9 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  		// c is the active color index
  		int wideContactCount = 0;
 +		int convexContactCount = 0;
 +		int residentConvexContactCount = 0;
++		bool residentConvexHasRestitution = false;
  		int contactCount = 0;
  		int manifoldCount = 0;
  		int jointCount = 0;
-@@ -1524,6 +1916,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1524,6 +1917,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			int colorWideConstraintCount =
  				colorConvexContactCount > 0 ? ( ( colorConvexContactCount - 1 ) >> B3_SIMD_SHIFT ) + 1 : 0;
  			wideContactCount += colorWideConstraintCount;
@@ -11236,28 +11475,32 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
 +			{
 +				int contactId = color->convexContacts.data[j];
 +				const b3Contact* contact = b3Array_Get( world->contacts, contactId );
-+				residentConvexContactCount += ( contact->flags & b3_simMetalManifold ) != 0;
++				bool resident = ( contact->flags & b3_simMetalManifold ) != 0;
++				residentConvexContactCount += resident;
++				residentConvexHasRestitution = residentConvexHasRestitution || ( resident && contact->restitution != 0.0f );
 +			}
  			colorWideContactCounts[c] = colorWideConstraintCount;
  
  			colorContactCounts[c] = colorContactCount;
-@@ -1548,6 +1947,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1548,6 +1950,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			c += 1;
  		}
  		activeColorCount = c;
 +		stepContext->metalResidentConvexContactCount = residentConvexContactCount;
 +		stepContext->metalResidentConvexComplete =
 +			convexContactCount > 0 && residentConvexContactCount == convexContactCount;
++		stepContext->metalResidentConvexHasRestitution = residentConvexHasRestitution;
 +		stepContext->metalResidentConvexConstraintCount =
 +			stepContext->metalResidentConvexComplete ? wideContactCount : 0;
 +#if defined( BOX3D_METAL )
 +		world->metalLastResidentConvexContactCount = residentConvexContactCount;
 +		world->metalLastResidentConvexConstraintCount = stepContext->metalResidentConvexConstraintCount;
++		world->metalLastContactPrepareIndexBytes = 0;
 +#endif
  
  		// Prepare and store run as one flat parallel-for over the entire wide constraint range,
  		// partitioned into uniformly sized blocks. Color info is consulted inside the task via
-@@ -1557,14 +1965,27 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1557,14 +1970,27 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3BlockDim jointPrepareDim = b3ComputeBlockCount( jointCount, minJointsPerBlock, maxBlockCount );
  
  		int wideContactByteCount = b3GetWideContactConstraintByteCount();
@@ -11292,7 +11535,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
  		int overflowCount = overflow->contacts.count;
  		int overflowManifoldCount = 0;
  		for ( int i = 0; i < overflowCount; ++i )
-@@ -1573,10 +1994,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1573,10 +1999,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			overflowManifoldCount += overflow->contacts.data[i].manifoldCount;
  		}
  
@@ -11335,7 +11578,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
  
  		// Build the span table for the flat prepare/store parallel-for while I slice the
  		// wide constraint buffer across colors. One entry per active color plus a sentinel
-@@ -1798,9 +2247,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1798,9 +2252,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		stepContext->wideContactCount = wideContactCount;
  		stepContext->manifoldConstraints = manifoldConstraints;
  		stepContext->contactConstraints = contactConstraints;
@@ -11351,7 +11594,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
  		b3AtomicStoreU32( &stepContext->atomicSyncBits, 0 );
  		b3AtomicStoreInt( &stepContext->mainClaimed, 0 );
  
-@@ -1884,7 +2339,24 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1884,7 +2344,24 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		}
  
  		// Finalize bodies. Must happen after the constraint solver and after island splitting.
@@ -11376,7 +11619,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
  
  		// Free in reverse order
  		b3StackFree( &world->stack, graphBlocks );
-@@ -1893,11 +2365,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1893,11 +2370,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3StackFree( &world->stack, convexBlocks );
  		b3StackFree( &world->stack, bodyBlocks );
  		b3StackFree( &world->stack, stages );
@@ -11399,7 +11642,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
  
  		world->profile.transforms = b3GetMilliseconds( transformTicks );
  		b3TracyCZoneEnd( update_transforms );
-@@ -2083,25 +2561,50 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2083,25 +2566,50 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			world->activeTaskCount -= 1;
  		}
  
@@ -11462,7 +11705,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
  			b3Body* bodyArray = world->bodies.data;
  			b3BodySim* bodySimArray = awakeSet->bodySims.data;
  			b3Shape* shapeArray = world->shapes.data;
-@@ -2113,24 +2616,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2113,24 +2621,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  				{
  					uint32_t ctz = b3CTZ64( word );
  					uint32_t bodySimIndex = 64 * k + ctz;
@@ -11487,7 +11730,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
  							shapeId = shape->nextShapeId;
  						}
  					}
-@@ -2139,21 +2633,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2139,21 +2638,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  						while ( shapeId != B3_NULL_INDEX )
  						{
  							b3Shape* shape = shapeArray + shapeId;
@@ -11509,7 +11752,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
  					word = word & ( word - 1 );
  				}
  			}
-@@ -2178,7 +2665,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2178,7 +2670,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  		// Serially enlarge broad-phase proxies for bullet shapes
  		b3BroadPhase* broadPhase = &world->broadPhase;
@@ -11517,7 +11760,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
  
  		// Fast array access is important here
  		b3Body* bodyArray = world->bodies.data;
-@@ -2219,12 +2705,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2219,12 +2710,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  				int proxyKey = shape->proxyKey;
  				int proxyId = B3_PROXY_ID( proxyKey );
@@ -11532,7 +11775,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
  
  				shapeId = shape->nextShapeId;
  			}
-@@ -2234,6 +2721,18 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2234,6 +2726,18 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3TracyCZoneEnd( bullets );
  	}
  
@@ -11552,7 +11795,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..a4d7f6c927fef94234e6ae3b2d951fa2
  	stepContext->bulletBodies = NULL;
  	b3AtomicStoreInt( &stepContext->bulletBodyCount, 0 );
 diff --git a/src/solver.h b/src/solver.h
-index 7c8a1c71bb148de9a736d288ead60191cbe6388c..fb314bda9189c93b595b7ff07b9a15a4242e8119 100644
+index 7c8a1c71bb148de9a736d288ead60191cbe6388c..82b73eea18a375d96fb8eb2197c3d8726e5b94dd 100644
 --- a/src/solver.h
 +++ b/src/solver.h
 @@ -137,6 +137,44 @@ typedef struct b3SolverStage
@@ -11620,7 +11863,7 @@ index 7c8a1c71bb148de9a736d288ead60191cbe6388c..fb314bda9189c93b595b7ff07b9a15a4
  	// array of all shape ids for shapes that have enlarged AABBs
  	int* enlargedShapes;
  	int enlargedShapeCount;
-@@ -212,6 +263,12 @@ typedef struct b3StepContext
+@@ -212,6 +263,13 @@ typedef struct b3StepContext
  	// Contact ids for simplified parallel-for access. Used in narrow-phase.
  	// These contacts may or may not be touching. They are associated with awake bodies.
  	int* awakeContactIndices;
@@ -11629,11 +11872,12 @@ index 7c8a1c71bb148de9a736d288ead60191cbe6388c..fb314bda9189c93b595b7ff07b9a15a4
 +	int metalResidentConvexContactCount;
 +	int metalResidentConvexConstraintCount;
 +	bool metalResidentConvexComplete;
++	bool metalResidentConvexHasRestitution;
 +	bool metalPrepareConvexOnGpu;
  
  	// Flat view of the wide contact constraint array used by prepare and store.
  	// prepareSpans has activeColorCount + 1 entries, the last being a sentinel
-@@ -224,9 +281,15 @@ typedef struct b3StepContext
+@@ -224,9 +282,15 @@ typedef struct b3StepContext
  	// Similar for mesh/overflow contact constraints
  	struct b3ManifoldConstraint* manifoldConstraints;
  	struct b3ContactConstraint* contactConstraints;
@@ -11719,10 +11963,10 @@ index bd00ecb5a3542c885e1212eddfa82b99852c394d..93e58e2dafcad8f8967efe2fcf4d6aff
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..91f5b48eb03edb3b99be06df9556999b7114d9e0
+index 0000000000000000000000000000000000000000..937d1f1d98bf5674af936bdc9d643282979d0955
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,2637 @@
+@@ -0,0 +1,2647 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -12813,6 +13057,7 @@ index 0000000000000000000000000000000000000000..91f5b48eb03edb3b99be06df9556999b
 +	ENSURE( profile.lastResidentConvexConstraintCount == 1 );
 +	ENSURE( profile.contactPrepareDispatchCount == 1 );
 +	ENSURE( profile.contactPrepareFallbackCount == 0 );
++	ENSURE( profile.lastContactPrepareIndexBytes == 4 * sizeof( uint32_t ) );
 +	b3Vec3 cpuVelocity = b3Body_GetLinearVelocity( cpuBodyB );
 +	b3Vec3 gpuVelocity = b3Body_GetLinearVelocity( bodyB );
 +	ENSURE( b3Length( b3Sub( cpuVelocity, gpuVelocity ) ) <= 3.0e-5f );
@@ -12829,6 +13074,7 @@ index 0000000000000000000000000000000000000000..91f5b48eb03edb3b99be06df9556999b
 +	ENSURE( profile.lastResidentConvexConstraintCount == 0 );
 +	ENSURE( profile.contactPrepareDispatchCount == 1 );
 +	ENSURE( profile.contactPrepareFallbackCount == 0 );
++	ENSURE( profile.lastContactPrepareIndexBytes == 0 );
 +
 +	b3DestroyWorld( worldId );
 +	b3DestroyWorld( cpuWorldId );
@@ -12873,6 +13119,7 @@ index 0000000000000000000000000000000000000000..91f5b48eb03edb3b99be06df9556999b
 +	ENSURE( profile.lastResidentConvexConstraintCount == 0 );
 +	ENSURE( profile.contactPrepareDispatchCount == 0 );
 +	ENSURE( profile.contactPrepareFallbackCount == 0 );
++	ENSURE( profile.lastContactPrepareIndexBytes == 0 );
 +
 +	b3DestroyWorld( worldId );
 +	return 0;
@@ -12988,6 +13235,7 @@ index 0000000000000000000000000000000000000000..91f5b48eb03edb3b99be06df9556999b
 +	ENSURE( profile.lastResidentConvexConstraintCount == 1 );
 +	ENSURE( profile.contactPrepareDispatchCount == 0 );
 +	ENSURE( profile.contactPrepareFallbackCount == 1 );
++	ENSURE( profile.lastContactPrepareIndexBytes == 0 );
 +	ENSURE( profile.jointFallbackCount == 1 );
 +	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuContactBody ),
 +		b3Body_GetLinearVelocity( gpuContactBody ) ) ) <= 3.0e-5f );
@@ -13072,12 +13320,18 @@ index 0000000000000000000000000000000000000000..91f5b48eb03edb3b99be06df9556999b
 +			b3Length( b3Sub( b3Body_GetAngularVelocity( cpuBodies[i] ), b3Body_GetAngularVelocity( gpuBodies[i] ) ) ) );
 +	}
 +	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
-+	printf( "    resident contact prepare contacts=%d dispatches=%llu transformError=%.3g velocityError=%.3g\n",
-+		count, (unsigned long long)profile.contactPrepareDispatchCount, maxTransformError, maxVelocityError );
++	printf( "    resident contact prepare contacts=%d dispatches=%llu indexBytes=%llu legacyBytes=%zu "
++		"transformError=%.3g velocityError=%.3g\n",
++		count, (unsigned long long)profile.contactPrepareDispatchCount,
++		(unsigned long long)profile.lastContactPrepareIndexBytes,
++		(size_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * 144,
++		maxTransformError, maxVelocityError );
 +	ENSURE( profile.contactPrepareDispatchCount == 4 );
 +	ENSURE( profile.contactPrepareFallbackCount == 0 );
 +	ENSURE( profile.lastResidentConvexContactCount == count );
 +	ENSURE( profile.lastResidentConvexConstraintCount == ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH );
++	ENSURE( profile.lastContactPrepareIndexBytes ==
++		(uint64_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * sizeof( uint32_t ) );
 +	ENSURE( maxTransformError <= 3.0e-4f );
 +	ENSURE( maxVelocityError <= 3.0e-4f );
 +	b3DestroyWorld( gpuWorld );

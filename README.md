@@ -56,9 +56,12 @@ Transient per-contact ownership now carries that authority through persistence,
 and topology into solver setup. Pre-solve callbacks remain CPU-owned. When every
 colored convex contact is resident-authoritative and no convex overflow exists,
 a Metal kernel now prepares Erin's SIMD-wide contact constraints in the existing
-solver command buffer. The CPU still packs a 144-byte persistence/material
-record per lane; mixed, recycled, callback, overflow, and unsupported routes
-fail closed, including explicit CPU prepare-on-fallback recovery.
+solver command buffer. CPU persistence/material work writes a generation-tagged
+144-byte record once into a contact-ID table during the existing collision pass.
+Solver submission bulk-copies only a deterministic four-byte ID schedule per
+SIMD lane and no longer dereferences contacts to repack those records. Mixed,
+recycled, callback, overflow, and unsupported routes fail closed, including
+explicit CPU prepare-on-fallback recovery.
 
 ## Quick start
 
@@ -137,8 +140,10 @@ The resident manifold-table checkpoint establishes stable contact-id addressing
 under the same correctness-only timing boundary.
 The solver-ownership checkpoint establishes the fail-closed preparation gate;
 the resident contact-preparation checkpoint now uses it to skip CPU preparation
-arithmetic for complete supported sets. It adds no loaded-host speedup claim;
-CPU contact traversal and the 144-byte metadata stream remain.
+arithmetic for complete supported sets. The metadata-residency checkpoint also
+removes the dedicated solver-time contact traversal and 144-byte lane stream;
+CPU persistence/table writes, graph scheduling, and impulse storage remain. It
+adds no loaded-host speedup claim.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

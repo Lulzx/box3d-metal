@@ -50,8 +50,8 @@ still use the independent Metal position stage if they meet the threshold.
   and directed float narrowing; local shape geometry remains float by design.
 - CPU convex and mesh contact preparation writes directly into persistent
   shared Metal allocations. Complete resident convex sets instead use a Metal
-  preparation kernel; the CPU still packs a 144-byte persistence/material
-  input per contact lane.
+  preparation kernel. Their post-persistence metadata is retained by contact ID
+  and solver submission copies only a four-byte lane schedule.
 - Distance and parallel joints are packed into compact type-dense records and
   only their accumulated solver state is unpacked after the command buffer.
 - Capacities grow geometrically and buffers are reused.
@@ -224,13 +224,17 @@ and no convex overflow exists.
 
 That gate drives a Metal preparation kernel at the front of the existing solver
 command buffer. It reads normal and identity from the private contact-id table
-and writes the established 1,696-byte SIMD-wide constraint ABI. A 144-byte
-shared record per lane carries CPU-owned persistence anchors, warm-start
-impulses, materials, tangent velocity, body indices, and manifold identity. The
-kernel computes Erin's tangent frame, softness, normal/tangent/twist/rolling
+and writes the established 1,696-byte SIMD-wide constraint ABI. CPU-owned
+persistence anchors, warm-start impulses, materials, tangent velocity, body
+indices, and manifold identity live in a generation-tagged 144-byte shared table
+indexed by contact ID. Collision workers write disjoint records during the
+existing persistence pass. Solver submission initializes tail lanes and
+bulk-copies each active color's four-byte contact IDs without dereferencing
+world contact/manifold storage. The kernel computes Erin's tangent frame,
+softness, normal/tangent/twist/rolling
 masses, friction centers, lever arms, relative velocities, and projected
 warm-start impulses. Mixed, recycled, callback, overflow, stale, or malformed
 sets fail closed. If another unsupported constraint rejects the Metal solver
 after CPU preparation was skipped, Box3D reruns convex preparation before the
-CPU solver fallback. CPU graph-color traversal and metadata packing remain the
-next residency boundary.
+CPU solver fallback. CPU persistence/material table writes, graph scheduling,
+impulse storage, events, and topology remain the next residency boundary.
