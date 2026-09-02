@@ -53,13 +53,19 @@ a 17.9% regression. The CPU still reads every 64-byte shape result, mutates the
 dynamic tree, and traverses it for pairs. GPU pair generation must consume
 resident bounds before this stage can remove that stream.
 
-The first Metal dynamic-tree traversal slice produces an exact raw candidate
-stream, but still copies the CPU tree, synchronizes between count and write for
-a CPU prefix, and returns candidates to CPU filtering. Against the same Metal
-finalization configuration, it improved the paired 524,288-shape median from
-48.441 ms to 45.356 ms (6.4%) while adding 86-107% below 2,048 shapes. Its two
-kernels used about 3.0 ms at the largest point. This is a large-world traversal
-crossover, not proof of a device-resident broad phase.
+The first Metal dynamic-tree traversal slice produced an exact raw candidate
+stream but copied the CPU tree, used an intermediate CPU prefix, and returned
+candidates to CPU filtering. Against the same Metal finalization configuration,
+that historical version improved the paired 524,288-shape median from 48.441 ms
+to 45.356 ms (6.4%) while adding 86-107% below 2,048 shapes. Its two kernels used
+about 3.0 ms at the largest point.
+
+The current implementation replaces that CPU prefix with a deterministic
+hierarchical Metal scan and compact write. A 607-proxy oracle compares all
+8,081 candidates and their per-move order exactly; steady state uses one command
+buffer. No new whole-world number is accepted because concurrent CPU and MPS
+loads contaminated the available host. The earlier crossover remains evidence
+for the traversal architecture, not a benchmark of the current scan.
 
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
@@ -74,6 +80,9 @@ BOX3D_METAL_SHAPES=1 ../box3d-metal-worktree/build/metal-release/bin/metal_world
 BOX3D_METAL_SHAPES=1 BOX3D_METAL_FINALIZATION=1 \
   ../box3d-metal-worktree/build/metal-release/bin/metal_world_benchmark
 BOX3D_METAL_SHAPES=1 BOX3D_METAL_FINALIZATION=1 BOX3D_METAL_BROAD_PHASE=1 \
+  ../box3d-metal-worktree/build/metal-release/bin/metal_world_benchmark
+BOX3D_METAL_WORLD_COUNT=524288 BOX3D_METAL_WORLD_REPEATS=12 \
+  BOX3D_METAL_SHAPES=1 BOX3D_METAL_FINALIZATION=1 BOX3D_METAL_BROAD_PHASE=1 \
   ../box3d-metal-worktree/build/metal-release/bin/metal_world_benchmark
 ```
 

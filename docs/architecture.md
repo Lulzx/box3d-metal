@@ -22,8 +22,10 @@ For a supported constrained world, one command buffer performs:
 
 Pair generation is currently a separate experimental command sequence. Metal
 copies the existing three dynamic-tree node arrays, counts candidates per moved
-proxy, uses a stable CPU prefix, then writes candidates in exact upstream tree
-and depth-first visitation order. The unchanged CPU callback performs pair-set
+proxy, computes a stable hierarchical exclusive scan, and writes candidates in
+exact upstream tree and depth-first visitation order. SIMD subgroups scan fixed
+256-lane blocks, a short serial kernel prefixes block totals, and a parallel
+pass adds block offsets. The unchanged CPU callback performs pair-set
 deduplication, body/shape/joint/custom filters, compound handling, and contact
 creation.
 
@@ -103,6 +105,8 @@ remain on the CPU. The stage is separately opt-in because consuming one flat
 tree ownership or all broad-phase logic. A bounded 64-entry private DFS stack
 and average-candidate capacity guard make failure explicit; excessive depth,
 candidate volume, allocation, or dispatch failure reruns the complete CPU
-traversal. The current two-pass path copies CPU tree nodes to shared buffers,
-synchronizes for a CPU prefix, and reads raw candidates back. It is a measured
-step toward residency, not yet a device-resident broad phase.
+traversal. The steady path counts, scans, and writes in one command buffer. If
+the exact total exceeds the geometrically retained candidate capacity, the
+first call grows the buffer and submits one write-only retry. The path still
+copies CPU tree nodes and reads raw candidates back. It is a measured step
+toward residency, not yet a device-resident broad phase.

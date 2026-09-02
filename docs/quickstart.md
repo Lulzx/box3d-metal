@@ -68,9 +68,10 @@ b3World_SetMetalFinalization(world, true);
 b3World_SetMetalBroadPhase(world, true);
 ```
 
-The broad-phase opt-in currently moves only raw dynamic-tree traversal. It is
-profitable only in the recorded large sparse worlds and retains explicit CPU
-fallback for depth, candidate-capacity, allocation, or dispatch limits.
+The broad-phase opt-in currently moves raw dynamic-tree traversal and stable
+candidate compaction. It is profitable only in the recorded large sparse
+worlds and retains explicit CPU fallback for unsupported scan geometry, depth,
+candidate-capacity, allocation, or dispatch limits.
 
 ## Inspect the route
 

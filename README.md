@@ -11,9 +11,10 @@ original CPU implementation remains the behavioral reference and fallback.
 An experimental, separately opt-in finalization kernel also computes final
 rotation, origin offset, sleep-motion metrics, world-space inverse inertia, and
 awake-shape AABBs. A second experimental opt-in traverses Box3D's existing
-dynamic trees on Metal, preserving upstream candidate order before the
-unchanged CPU filtering/contact callback. Both remain off by default while the
-CPU still owns tree mutation and consumes shared result streams.
+dynamic trees and performs deterministic candidate compaction on Metal,
+preserving upstream candidate order before the unchanged CPU filtering/contact
+callback. Both remain off by default while the CPU still owns tree mutation and
+consumes shared result streams.
 
 ## Quick start
 
@@ -61,6 +62,10 @@ CPU work:
 | Experimental GPU finalization | Correct, but 27% slower at the 524,288-body paired median |
 | GPU shape finalization | Correct, but 17.9% slower at 524,288 shapes |
 | Experimental GPU tree traversal | 1.068x at 524,288 shapes; small worlds regress |
+
+The tree-traversal speedup is historical evidence for the earlier CPU-prefix
+implementation. The current on-device scan has exact-order validation, but no
+new whole-world timing is published from the loaded development machine.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

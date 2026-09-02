@@ -242,10 +242,10 @@ def quickstart_story():
         p("The body threshold is deliberately caller-selected. It is not a universal recommendation; measure your world with full-step timing."),
         p("Experimental residency stages", "h2"),
         code("b3World_SetMetalFinalization(world, true);\nb3World_SetMetalBroadPhase(world, true);"),
-        p("Finalization computes body and awake-shape results on Metal. Broad-phase mode currently moves raw dynamic-tree traversal only; CPU tree mutation, filtering, and contact creation remain."),
+        p("Finalization computes body and awake-shape results on Metal. Broad-phase mode moves raw dynamic-tree traversal plus deterministic candidate compaction; CPU tree mutation, filtering, and contact creation remain."),
         p("Read route telemetry", "h2"),
         code("b3MetalProfile p = b3World_GetMetalProfile(world);\nprintf(\"%s contacts=%llu pairs=%llu pairFallbacks=%llu\\n\",\n       p.deviceName, p.contactDispatchCount,\n       p.pairDispatchCount, p.pairFallbackCount);"),
-        p("Dispatch counters prove a Metal stage ran. Pair dispatch means raw tree traversal, not GPU tree ownership, filtering, narrow phase, CCD, sleeping, or events.", "callout"),
+        p("Dispatch counters prove a Metal stage ran. Pair dispatch means tree traversal and compaction, not GPU tree ownership, filtering, narrow phase, CCD, sleeping, or events.", "callout"),
         p("Next references", "h2"),
         *bullets(["docs/compatibility.md - exact supported and CPU fallback surface", "docs/performance.md - measured M4 Pro crossovers", "docs/troubleshooting.md - initialization, routing, and performance diagnosis"]),
     ]
@@ -283,7 +283,7 @@ def architecture_story():
         p("Deterministic overflow", "h2"),
         p("Overflow constraints may share bodies. A single Metal thread walks them in upstream order. Mixed distance/parallel overflow uses an eight-byte type/index descriptor, preserving order with one launch per phase."),
         p("Experimental pair traversal", "h2"),
-        p("A separate two-pass Metal path traverses copies of Box3D's dynamic trees. Per-move counts receive a stable CPU prefix, then candidates are written in exact upstream tree and DFS order. CPU filters and contact creation remain unchanged. Bounded stack or capacity failures rerun the complete CPU traversal."),
+        p("A separate Metal path traverses copies of Box3D's dynamic trees. A deterministic hierarchical SIMD scan assigns stable per-move offsets, then candidates are compacted in exact upstream tree and DFS order in one steady-state command buffer. CPU filters and contact creation remain unchanged. Bounded stack or capacity failures rerun the complete CPU traversal."),
         p("Apple GPU implementation choices", "h1"),
         *bullets([
             "One command buffer per solver step amortizes submission and synchronization.",
@@ -370,7 +370,7 @@ def performance_story():
         *bullets([
             "Command fusion is the largest demonstrated architectural win.",
             "Body finalization is 27% slower and shape AABBs are 17.9% slower at 524,288 because CPU result streams remain.",
-            "Exact-order tree traversal is 6.4% faster at 524,288 shapes, but regresses small worlds.",
+            "The earlier CPU-prefix tree traversal was 6.4% faster at 524,288 shapes; the on-device scan has exact-order validation but no accepted new whole-world timing.",
             "Mesh contacts cross earlier than convex-wide stacks; distance joints benefit only at very large scale.",
             "Parallel joints expand compatibility without justifying default GPU routing.",
         ]),
@@ -380,7 +380,7 @@ def performance_story():
         p("Run each complete executable in at least three separate processes and compare medians. Do not use GPU kernel time alone as a whole-world claim.", "callout"),
         p("Next performance work", "h2"),
         *bullets([
-            "Move deterministic prefixing on-device, then build/update a GPU-owned broad phase from resident shape bounds.",
+            "Build or update a GPU-owned broad phase from resident shape bounds; deterministic prefixing is now on-device.",
             "Retain state across steps and add joint types only with mode matrices and whole-world evidence.",
         ]),
     ]
