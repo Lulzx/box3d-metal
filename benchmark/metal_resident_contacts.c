@@ -88,7 +88,8 @@ int main( void )
 	printf( "# operation=whole_world_resident_%s_contacts phase=%s substeps=4 workers=%d timing=wall_clock_step\n",
 		useBoxes ? "box" : "sphere", coldPair ? "cold_pair" : "steady", workerCount );
 	printf( "contacts,repeats,cpu_ms,gpu_ms,speedup,prepare_dispatches,device_prepare_refreshes,collision_bypasses,cpu_collision_"
-			"contacts,last_collision_exceptions,manifold_exception_bytes,input_packs,input_reuses,last_input_bytes,coverage_"
+			"contacts,last_collision_exceptions,manifold_exception_bytes,input_packs,input_reuses,last_input_bytes,input_bootstrap_"
+			"dispatches,last_input_bootstrap_bytes,last_input_private_bytes,coverage_"
 			"bypasses,state_walk_bypasses,last_state_clear_bytes,hit_clear_bypasses,last_hit_clear_bytes,awake_island_clear_"
 			"bypasses,last_awake_island_clear_bytes,manifold_syncs,body_walk_bypasses,shape_applies,state_syncs,last_state_bytes,"
 			"sim_syncs,last_sim_count,shape_syncs,"
@@ -130,43 +131,47 @@ int main( void )
 			(unsigned long long)profile.lastContactCollisionExceptionCount,
 			(unsigned long long)profile.lastNarrowPhaseResultBytes, (unsigned long long)profile.contactInputPackCount,
 			(unsigned long long)profile.contactInputReuseCount, (unsigned long long)profile.lastContactInputBytes,
-			(unsigned long long)profile.contactCoverageBypassCount );
+			(unsigned long long)profile.contactInputBootstrapDispatchCount );
 		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+			(unsigned long long)profile.lastContactInputBootstrapBytes,
+			(unsigned long long)profile.lastContactInputPrivateBytes,
+			(unsigned long long)profile.contactCoverageBypassCount,
 			(unsigned long long)profile.contactStateTraversalBypassCount,
 			(unsigned long long)profile.lastContactStateBitSetBytes,
 			(unsigned long long)profile.contactHitEventBitSetClearBypassCount,
 			(unsigned long long)profile.lastContactHitEventBitSetBytes,
 			(unsigned long long)profile.awakeIslandBitSetClearBypassCount,
 			(unsigned long long)profile.lastAwakeIslandBitSetBytes,
-			(unsigned long long)profile.contactManifoldSyncCount,
+			(unsigned long long)profile.contactManifoldSyncCount );
+		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
 			(unsigned long long)profile.finalizationBodyTraversalBypassCount,
 			(unsigned long long)profile.shapeResultApplyCount,
-			(unsigned long long)profile.bodyStateSyncCount );
-		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+			(unsigned long long)profile.bodyStateSyncCount,
 			(unsigned long long)profile.lastBodyStateReadbackBytes,
 			(unsigned long long)profile.bodySimSyncCount,
 			(unsigned long long)profile.lastBodySimSyncCount,
 			(unsigned long long)profile.shapeBoundsSyncCount,
 			(unsigned long long)profile.contactSchedulePackCount, (unsigned long long)profile.contactScheduleReuseCount,
-			(unsigned long long)profile.contactImpulseStoreBypassCount,
-			(unsigned long long)profile.contactImpulseEventSyncCount, (unsigned long long)profile.contactImpulseSyncCount,
-			(unsigned long long)profile.lastContactPrepareIndexBytes );
+			(unsigned long long)profile.contactImpulseStoreBypassCount );
 		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+			(unsigned long long)profile.contactImpulseEventSyncCount, (unsigned long long)profile.contactImpulseSyncCount,
+			(unsigned long long)profile.lastContactPrepareIndexBytes,
 			(unsigned long long)priorBytes, (unsigned long long)profile.lastContactImpulseResultBytes,
 			(unsigned long long)priorImpulseBytes, (unsigned long long)profile.residentPairMoveDispatchCount,
 			(unsigned long long)profile.enlargedShapeTraversalBypassCount,
-			(unsigned long long)profile.lastPairMoveCount, (unsigned long long)profile.lastPairCandidateCount,
+			(unsigned long long)profile.lastPairMoveCount, (unsigned long long)profile.lastPairCandidateCount );
+		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
 			(unsigned long long)profile.lastPairMoveUploadBytes,
 			(unsigned long long)profile.lastPairTreeUploadBytes,
-			(unsigned long long)profile.lastPairTreePrivateBytes );
-		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+			(unsigned long long)profile.lastPairTreePrivateBytes,
 			(unsigned long long)profile.pairCpuCandidateTraversalBypassCount,
 			(unsigned long long)profile.lastPairCpuFilterMoveCount,
 			(unsigned long long)profile.lastPairCpuFilterCandidateCount,
 			(unsigned long long)profile.lastPairDirectCreateCount,
 			(unsigned long long)profile.pairContactSeedDispatchCount,
 			(unsigned long long)profile.pairRecordTraversalBypassCount,
-			(unsigned long long)profile.lastPairContactSeedCount,
+			(unsigned long long)profile.lastPairContactSeedCount );
+		printf( ",%llu,%llu,%llu\n",
 			(unsigned long long)profile.lastPairContactSeedBytes,
 			(unsigned long long)profile.pairPrivateScratchDispatchCount,
 			(unsigned long long)profile.lastPairRawSharedBytes );
