@@ -4563,6 +4563,10 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 			if ( copyCommand.status != MTLCommandBufferStatusCompleted ) return false;
 			materializedPrivateScratch = true;
 			if ( stats != NULL ) stats->commandBufferCount += 1;
+			if ( copyCommand.GPUEndTime >= copyCommand.GPUStartTime )
+			{
+				gpuMilliseconds += 1000.0 * ( copyCommand.GPUEndTime - copyCommand.GPUStartTime );
+			}
 		}
 
 		*recordsOut = privatePairScratch && materializedPrivateScratch == false ? NULL : context->pairRecordBuffer.contents;

@@ -40,9 +40,13 @@ gate before any partial plan is consumed.
 - The mixed custom-filter, compound-target, and blocked-joint scene remains on
   the shared residual route and preserves callback and compound-child order.
 - A 20-candidate single-move fixture proves dense private-to-shared
-  materialization preserves the old capability and reports 372 shared bytes.
-- A moved compound-query fixture proves the shader fails closed and requires
-  the CPU oracle.
+  materialization reports 372 shared bytes, copies every candidate in CPU-tree
+  order, and reproduces the CPU oracle's historical 16-contact fixed-capacity
+  result exactly.
+- A moved compound-query fixture proves the Metal shader rejects the request
+  without exposing a partial plan. The existing validated CPU task does not
+  admit compound queries, so this is a hard unsupported boundary rather than a
+  claimed fallback path.
 
 ## Whole-world measurements
 

@@ -1938,27 +1938,36 @@ static int MetalPrivatePairDenseMaterializationTest( void )
 {
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.gravity = b3Vec3_zero;
-	b3WorldId worldId = b3CreateWorld( &worldDef );
-	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	b3WorldId cpuWorldId = b3CreateWorld( &worldDef );
+	b3WorldId gpuWorldId = b3CreateWorld( &worldDef );
 	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
 	b3BodyDef bodyDef = b3DefaultBodyDef();
 	const int targetCount = 20;
 	for ( int i = 0; i < targetCount; ++i )
 	{
-		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
-		b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+		b3BodyId cpuBody = b3CreateBody( cpuWorldId, &bodyDef );
+		b3BodyId gpuBody = b3CreateBody( gpuWorldId, &bodyDef );
+		b3CreateSphereShape( cpuBody, &shapeDef, &sphere );
+		b3CreateSphereShape( gpuBody, &shapeDef, &sphere );
 	}
 	// Drain the static insertion moves so the dense plan has one query and a
-	// deliberately greater-than-16 candidate list.
-	b3UpdateBroadPhasePairs( b3GetWorldFromId( worldId ) );
+	// deliberately greater-than-16 candidate list. Enable Metal afterward so
+	// this fixture begins with fresh private scratch.
+	b3World* cpuWorld = b3GetWorldFromId( cpuWorldId );
+	b3World* gpuWorld = b3GetWorldFromId( gpuWorldId );
+	b3UpdateBroadPhasePairs( cpuWorld );
+	b3UpdateBroadPhasePairs( gpuWorld );
+	ENSURE( b3World_EnableMetal( gpuWorldId, 1 ) );
+	ENSURE( b3World_SetMetalBroadPhase( gpuWorldId, true ) );
 	bodyDef.type = b3_dynamicBody;
 	bodyDef.enableSleep = false;
-	b3BodyId visitor = b3CreateBody( worldId, &bodyDef );
-	b3CreateSphereShape( visitor, &shapeDef, &sphere );
+	b3BodyId cpuVisitor = b3CreateBody( cpuWorldId, &bodyDef );
+	b3BodyId gpuVisitor = b3CreateBody( gpuWorldId, &bodyDef );
+	b3CreateSphereShape( cpuVisitor, &shapeDef, &sphere );
+	b3ShapeId visitorShape = b3CreateSphereShape( gpuVisitor, &shapeDef, &sphere );
 
-	b3World* world = b3GetWorldFromId( worldId );
-	b3BroadPhase* broadPhase = &world->broadPhase;
+	b3BroadPhase* broadPhase = &gpuWorld->broadPhase;
 	ENSURE( broadPhase->moveArray.count == 1 );
 	const b3MetalPairQueryRecord* records = NULL;
 	const b3MetalPairCandidate* candidates = NULL;
@@ -1968,7 +1977,7 @@ static int MetalPrivatePairDenseMaterializationTest( void )
 	int cpuFilterMoveCount = 0;
 	int contactSeedCount = 0;
 	b3MetalDispatchStats stats = { 0 };
-	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, 1, &records,
+	ENSURE( b3MetalGeneratePairCandidates( gpuWorld->metalContext, gpuWorld, broadPhase->moveArray.data, 1, &records,
 			&candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds, &contactSeedCount, &stats ) );
 	ENSURE( candidateCount == targetCount );
 	ENSURE( records != NULL );
@@ -1978,12 +1987,45 @@ static int MetalPrivatePairDenseMaterializationTest( void )
 	ENSURE( contactSeeds == NULL );
 	ENSURE( contactSeedCount == 0 );
 	ENSURE( stats.pairPrivateScratchDispatchCount == 1 );
+	// The 4 KiB minimum candidate allocation holds 256 records, so this path
+	// needs the traversal command plus the private-to-shared blit, not a retry.
+	ENSURE( stats.commandBufferCount == 2 );
 	ENSURE( stats.pairRawSharedBytes ==
 			sizeof( b3MetalPairQueryRecord ) + targetCount * sizeof( b3MetalPairCandidate ) );
 	ENSURE( records[0].count == targetCount );
-	printf( "    private dense materialization candidates=%d rawSharedBytes=%llu capability=preserved\n", candidateCount,
+	b3MetalPairCandidate cpuCandidates[targetCount];
+	int visitorIndex = visitorShape.index1 - 1;
+	b3PairCandidateCapture capture = {
+		.world = gpuWorld,
+		.broadPhase = broadPhase,
+		.queryProxyKey = gpuWorld->shapes.data[visitorIndex].proxyKey,
+		.queryShapeIndex = visitorIndex,
+		.treeType = b3_staticBody,
+		.candidates = cpuCandidates,
+		.capacity = targetCount,
+	};
+	b3AABB queryAABB = {
+		.lowerBound = { records[0].lowerX, records[0].lowerY, records[0].lowerZ },
+		.upperBound = { records[0].upperX, records[0].upperY, records[0].upperZ },
+	};
+	b3DynamicTree_Query( broadPhase->trees + b3_staticBody, queryAABB, B3_DEFAULT_MASK_BITS, false,
+			CapturePairCandidate, &capture );
+	ENSURE( capture.count == targetCount );
+	for ( int i = 0; i < targetCount; ++i )
+	{
+		ENSURE( candidates[i].proxyId == cpuCandidates[i].proxyId );
+		ENSURE( candidates[i].treeType == cpuCandidates[i].treeType );
+		ENSURE( candidates[i].shapeIndex == cpuCandidates[i].shapeIndex );
+	}
+	b3UpdateBroadPhasePairs( cpuWorld );
+	b3UpdateBroadPhasePairs( gpuWorld );
+	ENSURE( ComparePairTopology( cpuWorld, gpuWorld ) == 0 );
+	ENSURE( broadPhase->pairSet.count == 16 );
+	printf( "    private dense materialization candidates=%d rawSharedBytes=%llu legacyContacts=16 exactTopology=yes\n",
+			candidateCount,
 			(unsigned long long)stats.pairRawSharedBytes );
-	b3DestroyWorld( worldId );
+	b3DestroyWorld( gpuWorldId );
+	b3DestroyWorld( cpuWorldId );
 	return 0;
 }
 
@@ -2031,7 +2073,10 @@ static int MetalCompoundPairQueryGateTest( void )
 	ENSURE( candidates == NULL );
 	ENSURE( cpuFilterMoves == NULL );
 	ENSURE( contactSeeds == NULL );
-	printf( "    compound pair query hardGate=closed cpuOracleRequired=yes\n" );
+	ENSURE( candidateCount == 0 );
+	ENSURE( cpuFilterMoveCount == 0 );
+	ENSURE( contactSeedCount == 0 );
+	printf( "    compound pair query hardGate=closed partialPlanExposed=no\n" );
 	b3DestroyWorld( worldId );
 	b3DestroyCompound( compound );
 	return 0;
