@@ -1,0 +1,6 @@
+4ea9422dd69ad0a174fa77451b656b494cfad4472767732902cfc8b57b2002ec  manifest.env
+751b4c7191515eadfee83ee31035c92c4d20bee8dd7488ca4d51842698e32390  patches/box3d-metal.patch
+1cc92897d298dddd7bcf30289ab3728d1cad7ea0e39d5f3ccd92e504dd5194e8  docs/pdf/box3d-metal-architecture.pdf
+719b11f00e6afe857fec7212f6e7daa671ed744c1cf25abce1d963b80e320595  docs/pdf/box3d-metal-compatibility-validation.pdf
+fb31e748c89b02e8d8bdde190ed7284e91631cc7494a938b7b8974df3811f4a0  docs/pdf/box3d-metal-m4-pro-performance.pdf
+ad7c85b8fdeda48406f6976c41140cc25f6c53d1df57d6bd8cff3f040c1dfcb2  docs/pdf/box3d-metal-quickstart.pdf
