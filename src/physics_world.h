@@ -349,6 +349,10 @@ typedef struct b3World
 	int metalLastPairCpuFilterMoveCount;
 	int metalLastPairCpuFilterCandidateCount;
 	int metalLastPairDirectCreateCount;
+	uint64_t metalPairContactSeedDispatchCount;
+	uint64_t metalPairRecordTraversalBypassCount;
+	int metalLastPairContactSeedCount;
+	uint64_t metalLastPairContactSeedBytes;
 	uint64_t metalPairShapeRevision;
 	uint64_t metalPairFilterRevision;
 	uint64_t metalContactMaterialRevision;

@@ -90,11 +90,14 @@ static int VerifyResidentPairTraversal( b3World* world )
 	const b3MetalPairQueryRecord* records = NULL;
 	const b3MetalPairCandidate* candidates = NULL;
 	const int* cpuFilterMoves = NULL;
+	const b3MetalPairContactSeed* contactSeeds = NULL;
 	int cpuFilterMoveCount = 0;
+	int contactSeedCount = 0;
 	int candidateCount = 0;
 	b3MetalDispatchStats stats = { 0 };
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, residentMoves ? NULL : broadPhase->moveArray.data, moveCount, &records,
-										   &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
+										   &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds,
+										   &contactSeedCount, &stats ) );
 	ENSURE( stats.treeUploadCount == 0 );
 	int observedCpuFilterMoves = 0;
 	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
@@ -1153,26 +1156,49 @@ static int MetalPairTraversalTest( void )
 	const b3MetalPairQueryRecord* gpuRecords = NULL;
 	const b3MetalPairCandidate* gpuCandidates = NULL;
 	const int* cpuFilterMoves = NULL;
+	const b3MetalPairContactSeed* contactSeeds = NULL;
 	int cpuFilterMoveCount = 0;
+	int contactSeedCount = 0;
 	int gpuCandidateCount = 0;
 	b3MetalDispatchStats stats = { 0 };
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount, &gpuRecords,
-										   &gpuCandidates, &gpuCandidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
+										   &gpuCandidates, &gpuCandidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds,
+										   &contactSeedCount, &stats ) );
 	ENSURE( stats.commandBufferCount == 1 );
 	ENSURE( stats.treeUploadCount == 1 );
 	ENSURE( stats.metadataUploadCount == 1 );
 	ENSURE( stats.pairSetUploadCount == 1 );
 	ENSURE( cpuFilterMoveCount == 0 );
 	ENSURE( stats.pairRequiresCpuFiltering == 0 );
+	ENSURE( contactSeeds != NULL );
+	ENSURE( contactSeedCount == gpuCandidateCount );
+	ENSURE( stats.pairContactSeedCount == gpuCandidateCount );
+	ENSURE( stats.pairContactSeedSharedBytes == (uint64_t)gpuCandidateCount * sizeof( b3MetalPairContactSeed ) );
 	double initialGpuMilliseconds = stats.gpuMilliseconds;
 	stats = (b3MetalDispatchStats){ 0 };
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount, &gpuRecords,
-										   &gpuCandidates, &gpuCandidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
+										   &gpuCandidates, &gpuCandidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds,
+										   &contactSeedCount, &stats ) );
 	ENSURE( stats.commandBufferCount == 1 );
 	ENSURE( stats.treeUploadCount == 0 );
 	ENSURE( stats.metadataUploadCount == 0 );
 	ENSURE( stats.pairSetUploadCount == 0 );
 	ENSURE( cpuFilterMoveCount == 0 );
+	ENSURE( contactSeeds != NULL );
+	ENSURE( contactSeedCount == gpuCandidateCount );
+	int seedIndex = 0;
+	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
+	{
+		const b3MetalPairQueryRecord* record = gpuRecords + moveIndex;
+		for ( uint32_t candidateIndex = record->count; candidateIndex-- > 0; )
+		{
+			const b3MetalPairCandidate* candidate = gpuCandidates + record->offset + candidateIndex;
+			ENSURE( contactSeeds[seedIndex].shapeIndexA == candidate->shapeIndex );
+			ENSURE( contactSeeds[seedIndex].shapeIndexB == record->queryShapeIndex );
+			seedIndex += 1;
+		}
+	}
+	ENSURE( seedIndex == contactSeedCount );
 	double steadyGpuMilliseconds = stats.gpuMilliseconds;
 
 	int cpuCapacity = bodyCount * bodyCount;
@@ -1248,7 +1274,8 @@ static int MetalPairTraversalTest( void )
 	b3BroadPhase_EnlargeProxy( broadPhase, dynamicProxyKey, expandedAABB );
 	stats = (b3MetalDispatchStats){ 0 };
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount, &gpuRecords,
-										   &gpuCandidates, &gpuCandidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
+										   &gpuCandidates, &gpuCandidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds,
+										   &contactSeedCount, &stats ) );
 	ENSURE( stats.treeUploadCount == 1 );
 	ENSURE( stats.metadataUploadCount == 1 );
 	ENSURE( stats.pairSetUploadCount == 0 );
@@ -1345,8 +1372,14 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( profile.lastPairCpuFilterMoveCount == 0 );
 	ENSURE( profile.lastPairCpuFilterCandidateCount == 0 );
 	ENSURE( profile.lastPairDirectCreateCount == bodyCount * ( bodyCount - 1 ) / 2 );
-	printf( "    final pair plan contacts=%d direct=%d cpuFilterMoves=%d exactTopology=yes\n",
-			cpu->broadPhase.pairSet.count, profile.lastPairDirectCreateCount, profile.lastPairCpuFilterMoveCount );
+	ENSURE( profile.pairContactSeedDispatchCount == 1 );
+	ENSURE( profile.pairRecordTraversalBypassCount == 1 );
+	ENSURE( profile.lastPairContactSeedCount == bodyCount * ( bodyCount - 1 ) / 2 );
+	ENSURE( profile.lastPairContactSeedBytes ==
+			(uint64_t)( bodyCount * ( bodyCount - 1 ) / 2 ) * sizeof( b3MetalPairContactSeed ) );
+	printf( "    final pair plan contacts=%d direct=%d seedBytes=%llu recordTraversal=bypassed exactTopology=yes\n",
+			cpu->broadPhase.pairSet.count, profile.lastPairDirectCreateCount,
+			(unsigned long long)profile.lastPairContactSeedBytes );
 
 	b3DestroyWorld( gpuWorldId );
 	b3DestroyWorld( cpuWorldId );
@@ -1400,6 +1433,9 @@ static int MetalFinalPairRandomDifferentialTest( void )
 		ENSURE( profile.lastPairCpuFilterMoveCount == 0 );
 		ENSURE( profile.lastPairCpuFilterCandidateCount == 0 );
 		ENSURE( profile.lastPairDirectCreateCount == cpu->broadPhase.pairSet.count );
+		ENSURE( profile.pairContactSeedDispatchCount == 1 );
+		ENSURE( profile.pairRecordTraversalBypassCount == 1 );
+		ENSURE( profile.lastPairContactSeedCount == cpu->broadPhase.pairSet.count );
 		b3DestroyWorld( gpuWorldId );
 		b3DestroyWorld( cpuWorldId );
 	}
@@ -1512,6 +1548,9 @@ static int MetalFinalPairFilterExceptionTest( void )
 	ENSURE( profile.lastPairCpuFilterMoveCount == 3 );
 	ENSURE( profile.lastPairCpuFilterCandidateCount == 3 );
 	ENSURE( profile.pairFilterRegistryUploadCount == 1 );
+	ENSURE( profile.pairContactSeedDispatchCount == 0 );
+	ENSURE( profile.pairRecordTraversalBypassCount == 0 );
+	ENSURE( profile.lastPairContactSeedBytes == 0 );
 
 	b3Joint_SetCollideConnected( cpuJoint, true );
 	b3Joint_SetCollideConnected( gpuJoint, true );
@@ -1525,6 +1564,9 @@ static int MetalFinalPairFilterExceptionTest( void )
 	ENSURE( profile.lastPairCpuFilterMoveCount == 0 );
 	ENSURE( profile.lastPairCpuFilterCandidateCount == 0 );
 	ENSURE( profile.lastPairDirectCreateCount == 1 );
+	ENSURE( profile.pairContactSeedDispatchCount == 1 );
+	ENSURE( profile.pairRecordTraversalBypassCount == 1 );
+	ENSURE( profile.lastPairContactSeedBytes == sizeof( b3MetalPairContactSeed ) );
 	printf( "    final pair exceptions direct=1 filtered=3 callbacks=%d compoundChildren=2 jointMutation=device\n",
 			cpuCapture.count );
 
@@ -1840,11 +1882,14 @@ static int MetalExistingPairFilterTest( void )
 	const b3MetalPairQueryRecord* records = NULL;
 	const b3MetalPairCandidate* candidates = NULL;
 	const int* cpuFilterMoves = NULL;
+	const b3MetalPairContactSeed* contactSeeds = NULL;
 	int cpuFilterMoveCount = 0;
+	int contactSeedCount = 0;
 	int candidateCount = 0;
 	b3MetalDispatchStats stats = { 0 };
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, broadPhase->moveArray.count,
-										   &records, &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
+										   &records, &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds,
+										   &contactSeedCount, &stats ) );
 	ENSURE( candidateCount == 1 );
 	ENSURE( stats.pairSetUploadCount == 1 );
 
@@ -1856,7 +1901,8 @@ static int MetalExistingPairFilterTest( void )
 	b3BufferMove( broadPhase, world->shapes.data[shapeIndexB].proxyKey );
 	stats = (b3MetalDispatchStats){ 0 };
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, broadPhase->moveArray.count,
-										   &records, &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
+										   &records, &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds,
+										   &contactSeedCount, &stats ) );
 	ENSURE( candidateCount == 0 );
 	ENSURE( stats.pairSetUploadCount == 1 );
 	ENSURE( VerifyResidentPairTraversal( world ) == 0 );
@@ -1870,7 +1916,8 @@ static int MetalExistingPairFilterTest( void )
 	b3BufferMove( broadPhase, world->shapes.data[shapeIndexB].proxyKey );
 	stats = (b3MetalDispatchStats){ 0 };
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, broadPhase->moveArray.count,
-										   &records, &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
+										   &records, &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds,
+										   &contactSeedCount, &stats ) );
 	ENSURE( candidateCount == 1 );
 	ENSURE( stats.pairSetUploadCount == 1 );
 	ENSURE( stats.metadataUploadCount == 1 );

@@ -282,7 +282,12 @@ allocation; the serial commit consumes each range in reverse traversal order,
 exactly matching Erin's prepend-list creation order. Exception moves retain
 custom callbacks, compound-child traversal, and the existing move-pair path.
 Registry allocation or validation failure returns to the CPU oracle before a
-partial plan is consumed. Deterministic contact creation and all coupled contact,
+partial plan is consumed. When no exception move exists and density remains
+within the historical `16 * moveCount` bound, a final Metal kernel flattens the
+ranges into 8-byte shape-id seeds in ascending-move, reverse-candidate order.
+The CPU then reads only that flat stream, rather than scanning 52-byte records
+and 16-byte raw candidates. The raw buffers remain shared GPU scratch in this
+checkpoint; mixed custom/compound plans retain the record path. Deterministic contact creation and all coupled contact,
 body-edge, solver-set, pair-set, event, and island topology remain CPU-owned. Unsupported
 threadgroup geometry, tree heights at or
 above 63, shader stack overflow, changing counts, allocation failure, or more
@@ -450,7 +455,7 @@ paths, not yet the final performance architecture.
 | Distance joints, including spring, limit, and motor modes | GPU-resident across all substeps |
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
-| Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, candidate planning, exact blocked-joint body-pair rejection, and residual-filter move compaction. Ordinary ranges bypass CPU candidate filtering; custom/compound exceptions and deterministic contact topology creation remain CPU-owned |
+| Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, candidate planning, exact blocked-joint body-pair rejection, residual-filter move compaction, and flat contact-seed emission. Zero-exception plans bypass CPU record/candidate traversal; custom/compound exceptions and deterministic contact topology creation remain CPU-owned |
 | Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Ordered callback/topology/first-touch exceptions retain the CPU path. Lazy CPU mirrors synchronize only at explicit boundaries. CPU retains cold/revision packing, manifold allocation, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
 | Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts a 112-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
@@ -595,6 +600,9 @@ differentials are recorded in
 Exact joint-body pair rejection and articulated mutation differentials are
 recorded in
 [`benchmarks/m4-pro-joint-pair-registry-2026-09-03.md`](benchmarks/m4-pro-joint-pair-registry-2026-09-03.md).
+The compact contact-seed stream, exact-order differential, and cold/steady
+whole-world measurements are recorded in
+[`benchmarks/m4-pro-contact-seed-stream-2026-09-03.md`](benchmarks/m4-pro-contact-seed-stream-2026-09-03.md).
 Fully resident convex-contact state, sim, shape-bound, and body-finalization
 ownership is recorded in
 [`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).

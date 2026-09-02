@@ -31,7 +31,10 @@ creation consumes them in Erin's exact deterministic order. Moves containing
 compounds or custom callbacks are compacted on-device and retain the CPU filter
 path. A revisioned device hash set rejects exactly the body pairs blocked by a
 `collideConnected == false` joint; unrelated and collision-enabled joints stay
-on the direct GPU plan. Contact topology creation remains CPU-owned. Tree snapshots remain in persistent Metal storage;
+on the direct GPU plan. Zero-exception plans are flattened on-device into an
+8-byte-per-contact seed stream in exact creation order, so the CPU does not walk
+per-move query records or raw tree candidates. Contact topology creation remains
+CPU-owned. Tree snapshots remain in persistent Metal storage;
 ordinary awake-shape motion updates leaves and refits internal bounds on-device,
 while topology changes and unsupported CPU mutations invalidate the snapshot.
 Enlarged proxy bookkeeping remains in a private GPU-compacted stream rather

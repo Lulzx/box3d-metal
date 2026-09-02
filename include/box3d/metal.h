@@ -167,6 +167,12 @@ typedef struct b3MetalProfile
 	/// Ordinary GPU-planned candidates sent directly to deterministic CPU contact
 	/// creation on the latest pair phase.
 	int lastPairDirectCreateCount;
+	/// Pair passes that emitted a flat, deterministic 8-byte contact seed stream.
+	uint64_t pairContactSeedDispatchCount;
+	/// Pair passes whose CPU commit skipped the per-move record traversal.
+	uint64_t pairRecordTraversalBypassCount;
+	int lastPairContactSeedCount;
+	uint64_t lastPairContactSeedBytes;
 	uint64_t narrowPhaseDispatchCount;
 	uint64_t narrowPhaseFallbackCount;
 	uint64_t narrowPhaseGeometryUploadCount;

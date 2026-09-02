@@ -523,8 +523,10 @@ void b3UpdateBroadPhasePairs( b3World* world )
 	const b3MetalPairQueryRecord* metalRecords = NULL;
 	const b3MetalPairCandidate* metalCandidates = NULL;
 	const int* metalCpuFilterMoves = NULL;
+	const b3MetalPairContactSeed* metalContactSeeds = NULL;
 	int candidateCount = 0;
 	int cpuFilterMoveCount = 0;
+	int contactSeedCount = 0;
 #endif
 #ifndef NDEBUG
 	extern b3AtomicInt b3_probeCount;
@@ -536,10 +538,12 @@ void b3UpdateBroadPhasePairs( b3World* world )
 		b3MetalDispatchStats stats = { 0 };
 		const int* moveArray = useResidentMoves ? NULL : bp->moveArray.data;
 		if ( b3MetalGeneratePairCandidates( world->metalContext, world, moveArray, moveCount, &metalRecords, &metalCandidates,
-				&candidateCount, &metalCpuFilterMoves, &cpuFilterMoveCount, &stats ) )
+				&candidateCount, &metalCpuFilterMoves, &cpuFilterMoveCount, &metalContactSeeds, &contactSeedCount, &stats ) )
 		{
 			pairsAreEmpty = candidateCount == 0;
-			directMetalPlan = candidateCount <= 16 * moveCount;
+			directMetalPlan = (uint64_t)candidateCount <= 16ull * (uint64_t)moveCount;
+			B3_ASSERT( metalContactSeeds == NULL ||
+				( directMetalPlan && cpuFilterMoveCount == 0 && contactSeedCount == candidateCount ) );
 			if ( pairsAreEmpty == false )
 			{
 				// Ordinary records are already the final pair plan. Preserve the
@@ -562,18 +566,11 @@ void b3UpdateBroadPhasePairs( b3World* world )
 				}
 			}
 
-			int cpuFilterCandidateCount = 0;
-			int directCreateCount = 0;
-			if ( directMetalPlan )
-			{
-				for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
-				{
-					int count = (int)metalRecords[moveIndex].count;
-					if ( metalRecords[moveIndex].requiresCpuFiltering ) cpuFilterCandidateCount += count;
-					else directCreateCount += count;
-				}
-				world->metalPairCpuCandidateTraversalBypassCount += directCreateCount > 0 ? 1 : 0;
-			}
+			int cpuFilterCandidateCount = directMetalPlan ? stats.pairCpuFilterCandidateCount : candidateCount;
+			int directCreateCount = directMetalPlan ? stats.pairDirectCandidateCount : 0;
+			world->metalPairCpuCandidateTraversalBypassCount += directCreateCount > 0 ? 1 : 0;
+			world->metalPairContactSeedDispatchCount += (uint64_t)stats.pairContactSeedDispatchCount;
+			world->metalPairRecordTraversalBypassCount += metalContactSeeds != NULL && contactSeedCount > 0 ? 1 : 0;
 			world->metalPairDispatchCount += 1;
 			world->metalResidentPairMoveDispatchCount += useResidentMoves ? 1 : 0;
 			world->metalPairTreeUploadCount += (uint64_t)stats.treeUploadCount;
@@ -586,6 +583,8 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			world->metalLastPairCpuFilterMoveCount = directMetalPlan ? cpuFilterMoveCount : moveCount;
 			world->metalLastPairCpuFilterCandidateCount = directMetalPlan ? cpuFilterCandidateCount : candidateCount;
 			world->metalLastPairDirectCreateCount = directMetalPlan ? directCreateCount : 0;
+			world->metalLastPairContactSeedCount = contactSeedCount;
+			world->metalLastPairContactSeedBytes = stats.pairContactSeedSharedBytes;
 			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
 			usedMetalPairs = true;
 		}
@@ -640,6 +639,21 @@ void b3UpdateBroadPhasePairs( b3World* world )
 	// - Create contacts in deterministic order
 	// GPU traversal emits candidates in callback order. Erin's CPU staging path
 	// prepends them, so ordinary GPU-planned ranges are consumed in reverse.
+#if defined( BOX3D_METAL )
+	if ( pairsAreEmpty == false && metalContactSeeds != NULL )
+	{
+		// Metal has already flattened move order and reversed each candidate
+		// range to reproduce the legacy prepend-list creation order.
+		for ( int seedIndex = 0; seedIndex < contactSeedCount; ++seedIndex )
+		{
+			const b3MetalPairContactSeed* seed = metalContactSeeds + seedIndex;
+			b3Shape* shapeA = b3Array_Get( world->shapes, seed->shapeIndexA );
+			b3Shape* shapeB = b3Array_Get( world->shapes, seed->shapeIndexB );
+			b3CreateContact( world, shapeA, shapeB, 0 );
+		}
+	}
+	else
+#endif
 	for ( int i = 0; pairsAreEmpty == false && i < moveCount; ++i )
 	{
 #if defined( BOX3D_METAL )

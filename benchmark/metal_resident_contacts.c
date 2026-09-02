@@ -77,14 +77,16 @@ int main( void )
 	const char* countText = getenv( "BOX3D_METAL_RESIDENT_CONTACT_COUNT" );
 	const char* repeatText = getenv( "BOX3D_METAL_RESIDENT_CONTACT_REPEATS" );
 	const char* shapeText = getenv( "BOX3D_METAL_RESIDENT_CONTACT_SHAPE" );
+	const char* coldText = getenv( "BOX3D_METAL_RESIDENT_CONTACT_COLD_PAIR" );
 	bool useBoxes = shapeText != NULL && strcmp( shapeText, "box" ) == 0;
+	bool coldPair = coldText != NULL && atoi( coldText ) != 0;
 	int requestedCount = countText != NULL ? atoi( countText ) : 0;
 	int requestedRepeats = repeatText != NULL ? atoi( repeatText ) : 0;
 	const int counts[] = { 512, 2048, 8192, 32768, 65536 };
 	int testCount = requestedCount > 0 ? 1 : (int)( sizeof( counts ) / sizeof( counts[0] ) );
 
-	printf( "# operation=whole_world_resident_%s_contacts substeps=4 workers=%d timing=wall_clock_step\n",
-		useBoxes ? "box" : "sphere", workerCount );
+	printf( "# operation=whole_world_resident_%s_contacts phase=%s substeps=4 workers=%d timing=wall_clock_step\n",
+		useBoxes ? "box" : "sphere", coldPair ? "cold_pair" : "steady", workerCount );
 	printf( "contacts,repeats,cpu_ms,gpu_ms,speedup,prepare_dispatches,device_prepare_refreshes,collision_bypasses,cpu_collision_"
 			"contacts,last_collision_exceptions,manifold_exception_bytes,input_packs,input_reuses,last_input_bytes,coverage_"
 			"bypasses,state_walk_bypasses,last_state_clear_bytes,hit_clear_bypasses,last_hit_clear_bytes,awake_island_clear_"
@@ -93,17 +95,19 @@ int main( void )
 			"schedule_packs,schedule_reuses,store_bypasses,event_syncs,public_syncs,index_bytes,prior_stream_bytes,impulse_bytes,"
 			"prior_impulse_bytes,resident_pair_moves,enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,"
 			"last_pair_move_upload_bytes,pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,"
-			"last_pair_cpu_filter_candidates,last_pair_direct_create_candidates\n" );
+			"last_pair_cpu_filter_candidates,last_pair_direct_create_candidates,pair_contact_seed_dispatches,"
+			"pair_record_traversal_bypasses,last_pair_contact_seed_count,last_pair_contact_seed_bytes\n" );
 	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
 	{
 		int contactCount = requestedCount > 0 ? requestedCount : counts[testIndex];
-		int repeats = requestedRepeats > 0	  ? requestedRepeats
+		int repeats = coldPair				  ? 1
+					  : requestedRepeats > 0	  ? requestedRepeats
 					  : contactCount <= 2048  ? 40
 					  : contactCount <= 8192  ? 20
 					  : contactCount <= 32768 ? 8
 											  : 4;
 		b3WorldId cpuWorld = CreateResidentContactWorld( contactCount, workerCount, false, useBoxes );
-		double cpuMs = TimeWorld( cpuWorld, 8, repeats );
+		double cpuMs = TimeWorld( cpuWorld, coldPair ? 0 : 8, repeats );
 		b3DestroyWorld( cpuWorld );
 
 		b3WorldId gpuWorld = CreateResidentContactWorld( contactCount, workerCount, true, useBoxes );
@@ -112,12 +116,12 @@ int main( void )
 			fprintf( stderr, "Metal initialization failed\n" );
 			return 1;
 		}
-		double gpuMs = TimeWorld( gpuWorld, 8, repeats );
+		double gpuMs = TimeWorld( gpuWorld, coldPair ? 0 : 8, repeats );
 		b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
 		uint64_t priorImpulseBytes = (uint64_t)profile.lastResidentConvexConstraintCount * 1696;
 		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%"
-				"llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%llu,%d,%d,%d\n",
+				"llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%llu,%d,%d,%d,%llu,%llu,%d,%llu\n",
 				contactCount, repeats, cpuMs, gpuMs, cpuMs / gpuMs, (unsigned long long)profile.contactPrepareDispatchCount,
 				(unsigned long long)profile.contactPrepareDeviceRefreshCount,
 				(unsigned long long)profile.contactCollisionBypassCount, (unsigned long long)profile.contactCollisionCpuCount,
@@ -150,7 +154,10 @@ int main( void )
 				(unsigned long long)profile.lastPairMoveUploadBytes,
 				(unsigned long long)profile.pairCpuCandidateTraversalBypassCount,
 				profile.lastPairCpuFilterMoveCount, profile.lastPairCpuFilterCandidateCount,
-				profile.lastPairDirectCreateCount );
+				profile.lastPairDirectCreateCount,
+				(unsigned long long)profile.pairContactSeedDispatchCount,
+				(unsigned long long)profile.pairRecordTraversalBypassCount,
+				profile.lastPairContactSeedCount, (unsigned long long)profile.lastPairContactSeedBytes );
 		b3DestroyWorld( gpuWorld );
 	}
 	return 0;
