@@ -2,8 +2,9 @@
 
 ## Current limitations
 
-- Raw dynamic-tree traversal, leaf update, and internal refit have an
-  experimental Metal path, but CPU topology, candidate filtering, and narrow
+- Dynamic-tree traversal, leaf update, internal refit, moved-proxy de-duplication,
+  and built-in same-body/sensor/shape filtering have an experimental Metal path,
+  but CPU topology, existing-pair/joint/custom/compound filtering, and narrow
   phase remain.
 - Manifold and constraint preparation remain CPU-side.
 - Body and awake-shape finalization have an experimental Metal path, but the CPU
@@ -25,8 +26,8 @@
 
 ## Evidence-led next stages
 
-1. Move pair filtering and deterministic accepted-pair compaction to Metal,
-   retaining explicit CPU fallback before contact creation.
+1. Move existing-pair suppression and deterministic accepted-pair compaction to
+   Metal, retaining explicit CPU fallback before contact creation.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,

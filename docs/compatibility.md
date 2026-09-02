@@ -22,13 +22,14 @@ evaluation order differs.
 | Parallel joints | Soft alignment, torque limiting, static/dynamic bodies |
 | Supported contact/joint overflow | Serial GPU execution in deterministic upstream order |
 | Mixed distance/parallel colors and overflow | Supported with type-dense buffers and ordered descriptors |
-| Experimental broad phase | Resident leaf update/refit plus raw candidates in exact CPU visitation order |
+| Experimental broad phase | Resident leaf update/refit plus built-in filtered candidates in exact CPU visitation order |
 
 ## Explicit CPU boundary
 
 The following remain CPU work:
 
-- broad-phase topology mutation, pair filtering/contact creation, narrow phase, and manifold generation;
+- broad-phase topology mutation, existing-pair/joint/custom/compound filtering,
+  contact creation, narrow phase, and manifold generation;
 - contact and joint preparation;
 - events, islands, sleeping, and CCD;
 - recording, queries, topology mutation, and public API calls;
@@ -55,11 +56,13 @@ bounds feed the Metal tree refit directly. This path is
 not enabled by `b3World_EnableMetal` alone because current whole-world
 measurements are slower.
 
-Raw dynamic-tree traversal has another separately opt-in Metal path. It queries
+Dynamic-tree traversal has another separately opt-in Metal path. It queries
 kinematic, static, and dynamic trees in upstream order and preserves each
-tree's DFS leaf order. The CPU still owns filters, pair-set checks, compounds,
-custom callbacks, deterministic contact-list construction, topology changes,
-and CPU fallback rebuilds. Excessive tree depth or candidate volume and any dispatch or
+tree's DFS leaf order. Metal rejects exact moved-proxy duplicates, same-body
+pairs, sensors, and built-in group/category/mask failures from resident tables.
+The CPU still owns pair-set checks, compounds, joint overrides, custom callbacks,
+deterministic contact-list construction, topology changes, and CPU fallback
+rebuilds. Excessive tree depth or candidate volume and any dispatch or
 allocation failure fall back to the complete CPU traversal for that step.
 
 ## Double precision

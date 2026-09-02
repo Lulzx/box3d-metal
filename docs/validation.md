@@ -13,9 +13,12 @@ Direct primitive tests separately cover packed state and integration kernels.
 - Fused velocity/position integration across 8,192 bodies.
 - Body-finalization arithmetic across 4,096 randomized states and all 25 result floats.
 - Integrated unconstrained worlds with 2,048 moving sphere, capsule, and hull AABBs.
-- Exact raw pair traversal and three-block hierarchical scan over 607 mixed body
-  types and 8,081 candidates, including per-move count, offset, order, proxy id,
-  tree type, shape id, query shape id, and all six query fat-AABB bounds.
+- Exact filtered pair traversal over 607 mixed bodies and 620 proxies, including
+  same-body overlaps, sensors, zero masks, and equal positive/negative groups.
+  All 1,905 accepted candidates match CPU per-move count, offset, order, proxy
+  id, tree type, shape id, query shape id, and six query fat-AABB bounds.
+- Shape metadata uploads once, reuses unchanged state, and refreshes exactly
+  once after a filter mutation; tree bounds refresh independently.
 - Capacity growth requires one safe write retry; the same steady route then
   completes in one command buffer.
 - A moving 2,048-body world reuses its resident tree with zero repeat uploads;
@@ -66,7 +69,7 @@ Direct primitive tests separately cover packed state and integration kernels.
 | Body-finalization arithmetic | 2.29e-5 across all result floats |
 | Awake-shape AABBs | 3.81e-6 across all bound components |
 | VF64 far-world AABB containment | zero inward error across 2,048 mixed shapes |
-| Raw pair candidates | 8,081/8,081 exact, including order |
+| Filtered pair candidates | 1,905/1,905 exact, including order |
 | Distance joint plus contacts | 4.66e-10 |
 | Convex friction contacts | 4.77e-7 transform, 3.98e-6 velocity |
 | Convex restitution | 1.19e-7 transform, 2.38e-7 velocity |
@@ -103,6 +106,9 @@ full sanitizer and Metal matrices had already passed the same implementation.
 The persistent-input checkpoint passes float/double warning-as-error Metal,
 full CPU-only, full AddressSanitizer, full float UndefinedBehaviorSanitizer, and
 double UndefinedBehaviorSanitizer Metal gates.
+
+The resident pair-filter checkpoint reran those same gates. Double-precision
+Metal continued through the pinned VF64 exact AABB boundary.
 
 ## What the tests do not prove
 

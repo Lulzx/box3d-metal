@@ -112,13 +112,17 @@ collision consumers remain on the CPU.
 ## Experimental pair traversal boundary
 
 `b3World_SetMetalBroadPhase(world, true)` ports resident leaf update, internal
-refit, and raw traversal, not topology ownership or all broad-phase logic. A bounded 64-entry private DFS stack
+refit, traversal, moved-proxy de-duplication, and built-in shape filtering, not
+topology ownership or all broad-phase logic. A bounded 64-entry private DFS stack
 and average-candidate capacity guard make failure explicit; excessive depth,
 candidate volume, allocation, or dispatch failure reruns the complete CPU
 traversal. The steady path counts, scans, and writes in one command buffer. If
 the exact total exceeds the geometrically retained candidate capacity, the
 first call grows the buffer and submits one write-only retry. Supported moving
-worlds reuse the resident topology; raw candidates still return to the CPU.
+worlds reuse the resident topology. A revisioned 32-byte-per-shape table rejects
+same-body pairs, sensors, and group/category/mask failures during both traversal
+passes. Creation, destruction, and filter mutation refresh it; stable steps do
+not repack it. Accepted candidates still return to the CPU.
 Each per-move record carries the resident query leaf's shape id and fat
 AABB, so CPU filtering no longer dereferences the CPU tree for query metadata.
 After a successful device refit, a 256-lane hierarchical scan stably compacts
@@ -146,3 +150,8 @@ tree revisions, transforms, filter-only changes, invalid mappings, and allocatio
 failure reject reuse. A rejected registry synchronizes stale CPU mirrors before
 repacking from the CPU oracle. `shapeInputPackCount` and
 `shapeInputReuseCount` expose the routes.
+
+Existing-contact suppression, compound child traversal, joint collision
+overrides, custom callbacks, and deterministic contact creation remain in the
+CPU callback. It deliberately repeats the GPU predicates as a fail-closed
+oracle.
