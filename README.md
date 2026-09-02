@@ -51,7 +51,10 @@ hull points, planes, triangles, and shape descriptors, while geometry and
 topology mutation rebuild fail-closed. Identical hull streams remain
 content-deduplicated. A second body-id registry retains static and awake body
 rotations plus VF64-capable world translations for the collision step. Each
-16-byte contact record now carries only eligibility and two shape ids. CPU workers consume the ordered local geometry
+16-byte contact record now carries only eligibility and two shape ids. Full
+80-byte outputs stay in private Metal storage; a stable scan/prefix/scatter pass
+returns only active results, tagged by original contact index, in the same
+command buffer. CPU workers lower-bound once per range and consume the compact ordered local geometry
 while retaining manifold allocation, warm-start feature matching, materials,
 pre-solve callbacks, events, and island mutation. Other shape pairs stay on the
 unchanged CPU path. High-aspect and speculative hull-sphere contacts explicitly

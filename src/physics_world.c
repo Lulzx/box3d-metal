@@ -687,6 +687,7 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.narrowPhaseTransformReuseCount = world->metalNarrowPhaseTransformReuseCount;
 	profile.lastNarrowPhaseHullShapeCount = world->metalLastNarrowPhaseHullShapeCount;
 	profile.lastNarrowPhaseUniqueHullCount = world->metalLastNarrowPhaseUniqueHullCount;
+	profile.lastNarrowPhaseResultCount = world->metalLastNarrowPhaseResultCount;
 	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
 	profile.lastUnconstrainedGpuMilliseconds = world->metalLastUnconstrainedGpuMilliseconds;
 	profile.lastContactGpuMilliseconds = world->metalLastContactGpuMilliseconds;
@@ -746,8 +747,38 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 	const int contactPrefetchDistance = 4;
 	int prefetchEnd = endIndex - contactPrefetchDistance;
 
+#if defined( BOX3D_METAL )
+	const b3MetalConvexManifoldResult* metalResults = stepContext->metalConvexManifolds;
+	int metalResultCount = stepContext->metalConvexManifoldCount;
+	int metalResultIndex = 0;
+	if ( metalResults != NULL )
+	{
+		int low = 0;
+		int high = metalResultCount;
+		while ( low < high )
+		{
+			int middle = low + ( high - low ) / 2;
+			if ( metalResults[middle].inputIndex < (uint32_t)startIndex ) low = middle + 1;
+			else high = middle;
+		}
+		metalResultIndex = low;
+	}
+#endif
+
 	for ( int i = startIndex; i < endIndex; ++i )
 	{
+#if defined( BOX3D_METAL )
+		const b3MetalConvexManifoldResult* metalResult = NULL;
+		while ( metalResultIndex < metalResultCount && metalResults[metalResultIndex].inputIndex < (uint32_t)i )
+		{
+			metalResultIndex += 1;
+		}
+		if ( metalResultIndex < metalResultCount && metalResults[metalResultIndex].inputIndex == (uint32_t)i )
+		{
+			metalResult = metalResults + metalResultIndex;
+			metalResultIndex += 1;
+		}
+#endif
 		if ( i < prefetchEnd )
 		{
 			b3PrefetchContact( contacts + contactIndices[i + contactPrefetchDistance] );
@@ -912,9 +943,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 #if defined( BOX3D_METAL )
 		b3LocalManifold localConvexManifold = { 0 };
 		b3LocalManifoldPoint localConvexPoints[2] = { 0 };
-		if ( stepContext->metalConvexManifolds != NULL )
+		if ( metalResult != NULL )
 		{
-			const b3MetalConvexManifoldResult* result = stepContext->metalConvexManifolds + i;
+			const b3MetalConvexManifoldResult* result = metalResult;
 			if ( result->eligible != 0 )
 			{
 				B3_ASSERT( result->pointCount <= 2 );
@@ -1073,6 +1104,7 @@ static void b3Collide( b3StepContext* context )
 
 	context->awakeContactIndices = contactIndices;
 	context->metalConvexManifolds = NULL;
+	context->metalConvexManifoldCount = 0;
 
 	// Contact bit set on ids because contact pointers are unstable as they move between touching and not touching.
 	int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
@@ -1098,6 +1130,8 @@ static void b3Collide( b3StepContext* context )
 			if ( eligibleCount > 0 )
 			{
 				context->metalConvexManifolds = convexResults;
+				context->metalConvexManifoldCount = eligibleCount;
+				world->metalLastNarrowPhaseResultCount = eligibleCount;
 				world->metalNarrowPhaseDispatchCount += 1;
 				world->metalLastNarrowPhaseGpuMilliseconds = stats.gpuMilliseconds;
 			}
@@ -1116,6 +1150,7 @@ static void b3Collide( b3StepContext* context )
 	b3StackFree( &world->stack, contactIndices );
 	context->awakeContactIndices = NULL;
 	context->metalConvexManifolds = NULL;
+	context->metalConvexManifoldCount = 0;
 	contactIndices = NULL;
 
 	// Serially update contact state

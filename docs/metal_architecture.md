@@ -181,6 +181,14 @@ The 16-byte contact input contains eligibility and two shape ids rather than
 per-contact geometry or transforms; the MSL kernel follows shape-to-body ids to
 load both registries directly.
 
+Full 80-byte narrow-phase outputs are private. A deterministic 256-lane block
+scan, serial block prefix, and parallel scatter compact only active supported
+results into a shared stream in the same command buffer. Each compact record
+carries its original contact-array index and remains ordered by that index. CPU
+collision workers use one lower-bound search per parallel range followed by a
+linear walk; no dense result-to-contact map is allocated. Unsupported records
+and explicit per-record CPU fallbacks do not enter the shared payload.
+
 Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 unsupported joint solution, continuous collision, events, and sleeping/island
 mutation still run on the CPU. Unsupported
@@ -283,6 +291,9 @@ in
 [`benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md`](benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md).
 The body-transform registry and 16-byte pair-record checkpoint is recorded in
 [`benchmarks/m4-pro-resident-body-transforms-2026-09-02.md`](benchmarks/m4-pro-resident-body-transforms-2026-09-02.md).
+Private full manifold results and active-only deterministic readback are
+recorded in
+[`benchmarks/m4-pro-private-manifold-results-2026-09-02.md`](benchmarks/m4-pro-private-manifold-results-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

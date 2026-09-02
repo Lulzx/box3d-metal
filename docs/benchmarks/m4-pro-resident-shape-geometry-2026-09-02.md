@@ -52,4 +52,6 @@ storage remains the following cut.
 The follow-on
 [`resident body-transform checkpoint`](m4-pro-resident-body-transforms-2026-09-02.md)
 retains static and awake transforms by body id and reduces the contact input to
-16 bytes. The ordered manifold-result stream remains.
+16 bytes. The follow-on
+[`private manifold-result checkpoint`](m4-pro-private-manifold-results-2026-09-02.md)
+moves dense outputs to private storage and returns only active ordered records.

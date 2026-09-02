@@ -264,6 +264,7 @@ typedef struct b3StepContext
 	// These contacts may or may not be touching. They are associated with awake bodies.
 	int* awakeContactIndices;
 	const b3MetalConvexManifoldResult* metalConvexManifolds;
+	int metalConvexManifoldCount;
 
 	// Flat view of the wide contact constraint array used by prepare and store.
 	// prepareSpans has activeColorCount + 1 entries, the last being a sentinel

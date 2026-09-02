@@ -44,7 +44,7 @@ typedef struct b3MetalConvexManifoldResult
 	uint32_t eligible;
 	uint32_t touching;
 	uint32_t pointCount;
-	uint32_t padding1;
+	uint32_t inputIndex;
 	float normalX, normalY, normalZ;
 	float padding2;
 	float point1X, point1Y, point1Z, separation1;
@@ -121,10 +121,11 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 	const b3MetalPairQueryRecord** records,
 	const b3MetalPairCandidate** candidates, int* candidateCount, b3MetalDispatchStats* stats );
 
-// Batch the first common convex narrow-phase route. Results preserve contact
-// array order and use exact VF64 subtraction for double-precision world
-// translations before converting the relative displacement to float, matching
-// Box3D's scalar narrow-phase boundary.
+// Batch the first common convex narrow-phase route. The returned array contains
+// only active Metal results, ordered by inputIndex; eligibleCount is its length.
+// Exact VF64 subtraction is used for double-precision world translations before
+// converting the relative displacement to float, matching Box3D's scalar
+// narrow-phase boundary.
 bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
 	int contactCount, const b3MetalConvexManifoldResult** results, int* eligibleCount, b3MetalDispatchStats* stats );
 

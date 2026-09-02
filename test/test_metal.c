@@ -461,6 +461,21 @@ static bool MetalHullSphereEligible( const b3Shape* shapeA, const b3Shape* shape
 	return minExtent > B3_LINEAR_SLOP && maxExtent <= 16.0f * minExtent;
 }
 
+static const b3MetalConvexManifoldResult* MetalFindConvexManifoldResult(
+	const b3MetalConvexManifoldResult* results, int resultCount, int inputIndex )
+{
+	int low = 0;
+	int high = resultCount;
+	while ( low < high )
+	{
+		int middle = low + ( high - low ) / 2;
+		if ( results[middle].inputIndex < (uint32_t)inputIndex ) low = middle + 1;
+		else high = middle;
+	}
+	if ( low == resultCount || results[low].inputIndex != (uint32_t)inputIndex ) return NULL;
+	return results + low;
+}
+
 static int MetalConvexManifoldTest( void )
 {
 #if defined( BOX3D_DOUBLE_PRECISION )
@@ -667,8 +682,15 @@ static int MetalConvexManifoldTest( void )
 	int ineligibleCount = 0;
 	int twoPointCount = 0;
 	int separatedCount = 0;
+	for ( int i = 0; i < eligibleCount; ++i )
+	{
+		ENSURE( gpu[i].eligible == 1 );
+		ENSURE( gpu[i].inputIndex < (uint32_t)contactCount );
+		if ( i > 0 ) ENSURE( gpu[i - 1].inputIndex < gpu[i].inputIndex );
+	}
 	for ( int i = 0; i < contactCount; ++i )
 	{
+		const b3MetalConvexManifoldResult* result = MetalFindConvexManifoldResult( gpu, eligibleCount, i );
 		const b3Contact* contact = world->contacts.data + contactIndices[i];
 		const b3Shape* shape1 = world->shapes.data + contact->shapeIdA;
 		const b3Shape* shape2 = world->shapes.data + contact->shapeIdB;
@@ -678,7 +700,7 @@ static int MetalConvexManifoldTest( void )
 			MetalHullSphereEligible( shape1, shape2 );
 		if ( eligible == false )
 		{
-			ENSURE( gpu[i].eligible == 0 );
+			ENSURE( result == NULL );
 			ineligibleCount += 1;
 			continue;
 		}
@@ -709,25 +731,26 @@ static int MetalConvexManifoldTest( void )
 		{
 			// Compact hull-sphere speculative contacts remain on CPU until the
 			// exact GJK normal path is available.
-			ENSURE( gpu[i].eligible == 0 );
+			ENSURE( result == NULL );
 			ineligibleCount += 1;
 			continue;
 		}
-		ENSURE( gpu[i].eligible == 1 );
-		ENSURE( gpu[i].touching == (uint32_t)( reference.pointCount > 0 ) );
-		ENSURE( gpu[i].pointCount == (uint32_t)reference.pointCount );
+		ENSURE( result != NULL );
+		ENSURE( result->eligible == 1 );
+		ENSURE( result->touching == (uint32_t)( reference.pointCount > 0 ) );
+		ENSURE( result->pointCount == (uint32_t)reference.pointCount );
 		if ( reference.pointCount == 0 ) separatedCount += 1;
 		if ( reference.pointCount == 2 ) twoPointCount += 1;
 		if ( reference.pointCount > 0 )
 		{
-			maxError = b3MaxFloat( maxError, fabsf( gpu[i].normalX - reference.normal.x ) );
-			maxError = b3MaxFloat( maxError, fabsf( gpu[i].normalY - reference.normal.y ) );
-			maxError = b3MaxFloat( maxError, fabsf( gpu[i].normalZ - reference.normal.z ) );
-			float gpuPointX[2] = { gpu[i].point1X, gpu[i].point2X };
-			float gpuPointY[2] = { gpu[i].point1Y, gpu[i].point2Y };
-			float gpuPointZ[2] = { gpu[i].point1Z, gpu[i].point2Z };
-			float gpuSeparation[2] = { gpu[i].separation1, gpu[i].separation2 };
-			uint32_t gpuFeatureId[2] = { gpu[i].featureId1, gpu[i].featureId2 };
+			maxError = b3MaxFloat( maxError, fabsf( result->normalX - reference.normal.x ) );
+			maxError = b3MaxFloat( maxError, fabsf( result->normalY - reference.normal.y ) );
+			maxError = b3MaxFloat( maxError, fabsf( result->normalZ - reference.normal.z ) );
+			float gpuPointX[2] = { result->point1X, result->point2X };
+			float gpuPointY[2] = { result->point1Y, result->point2Y };
+			float gpuPointZ[2] = { result->point1Z, result->point2Z };
+			float gpuSeparation[2] = { result->separation1, result->separation2 };
+			uint32_t gpuFeatureId[2] = { result->featureId1, result->featureId2 };
 			for ( int pointIndex = 0; pointIndex < reference.pointCount; ++pointIndex )
 			{
 				maxError = b3MaxFloat( maxError, fabsf( gpuPointX[pointIndex] - points[pointIndex].point.x ) );
@@ -743,12 +766,14 @@ static int MetalConvexManifoldTest( void )
 	ENSURE( separatedCount == separatedCapsuleSphereCount + 1 );
 	ENSURE( maxError <= 3.0e-5f );
 
-	b3MetalConvexManifoldResult* first = malloc( (size_t)contactCount * sizeof( b3MetalConvexManifoldResult ) );
+	int firstEligibleCount = eligibleCount;
+	b3MetalConvexManifoldResult* first = malloc( (size_t)firstEligibleCount * sizeof( b3MetalConvexManifoldResult ) );
 	ENSURE( first != NULL );
-	memcpy( first, gpu, (size_t)contactCount * sizeof( b3MetalConvexManifoldResult ) );
+	memcpy( first, gpu, (size_t)firstEligibleCount * sizeof( b3MetalConvexManifoldResult ) );
 	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &gpu,
 		&eligibleCount, &stats ) );
-	ENSURE( memcmp( first, gpu, (size_t)contactCount * sizeof( b3MetalConvexManifoldResult ) ) == 0 );
+	ENSURE( eligibleCount == firstEligibleCount );
+	ENSURE( memcmp( first, gpu, (size_t)firstEligibleCount * sizeof( b3MetalConvexManifoldResult ) ) == 0 );
 
 	b3World_Step( worldId, 0.0f, 1 );
 	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
@@ -795,12 +820,14 @@ static int MetalConvexManifoldTest( void )
 	ENSURE( profile.narrowPhaseTransformReuseCount >= 2 );
 	ENSURE( profile.lastNarrowPhaseHullShapeCount == 8 );
 	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 1 );
-	printf( "    resident narrow inputs geometry=%llu/%llu transforms=%llu/%llu hullShapes=%d uniqueHulls=%d inputBytes=16\n",
+	ENSURE( profile.lastNarrowPhaseResultCount == expectedEligibleCount - 1 );
+	printf( "    resident narrow inputs geometry=%llu/%llu transforms=%llu/%llu hullShapes=%d uniqueHulls=%d inputBytes=16 resultBytes=%zu\n",
 		(unsigned long long)profile.narrowPhaseGeometryUploadCount,
 		(unsigned long long)profile.narrowPhaseGeometryReuseCount,
 		(unsigned long long)profile.narrowPhaseTransformUploadCount,
 		(unsigned long long)profile.narrowPhaseTransformReuseCount, profile.lastNarrowPhaseHullShapeCount,
-		profile.lastNarrowPhaseUniqueHullCount );
+		profile.lastNarrowPhaseUniqueHullCount,
+		(size_t)profile.lastNarrowPhaseResultCount * sizeof( b3MetalConvexManifoldResult ) );
 	ENSURE( maxApplyError <= 5.0e-5f );
 
 	free( cpuStepManifolds );

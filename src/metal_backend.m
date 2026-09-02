@@ -56,6 +56,9 @@ struct b3MetalContext
 	id<MTLComputePipelineState> pairUpdateLeavesPipeline;
 	id<MTLComputePipelineState> pairRefitPipeline;
 	id<MTLComputePipelineState> convexManifoldPipeline;
+	id<MTLComputePipelineState> convexManifoldScanPipeline;
+	id<MTLComputePipelineState> convexManifoldPrefixPipeline;
+	id<MTLComputePipelineState> convexManifoldScatterPipeline;
 	id<MTLComputePipelineState> warmStartContactsPipeline;
 	id<MTLComputePipelineState> solveContactsPipeline;
 	id<MTLComputePipelineState> restitutionContactsPipeline;
@@ -125,6 +128,11 @@ struct b3MetalContext
 	NSUInteger convexManifoldInputCapacity;
 	id<MTLBuffer> convexManifoldResultBuffer;
 	NSUInteger convexManifoldResultCapacity;
+	id<MTLBuffer> convexManifoldCompactBuffer;
+	NSUInteger convexManifoldCompactCapacity;
+	id<MTLBuffer> convexManifoldBlockBuffer;
+	NSUInteger convexManifoldBlockCapacity;
+	id<MTLBuffer> convexManifoldSummaryBuffer;
 	id<MTLBuffer> convexHullPointBuffer;
 	NSUInteger convexHullPointCapacity;
 	id<MTLBuffer> convexHullPlaneBuffer;
@@ -277,6 +285,8 @@ _Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed"
 _Static_assert( sizeof( b3MetalConvexManifoldInput ) == 16, "Metal convex-manifold input ABI changed" );
 _Static_assert( sizeof( b3MetalBodyTransform ) == 64, "Metal body-transform ABI changed" );
 _Static_assert( sizeof( b3MetalConvexManifoldResult ) == 80, "Metal convex-manifold result ABI changed" );
+_Static_assert( offsetof( b3MetalConvexManifoldResult, inputIndex ) == 12, "Metal manifold input-index ABI changed" );
+_Static_assert( offsetof( b3MetalConvexManifoldResult, padding3 ) == 72, "Metal manifold scan-offset ABI changed" );
 _Static_assert( sizeof( b3MetalHullTriangle ) == 16, "Metal hull-triangle ABI changed" );
 _Static_assert( sizeof( b3MetalFloat4 ) == 16, "Metal float4 ABI changed" );
 _Static_assert( sizeof( b3MetalShapeGeometry ) == 64, "Metal shape-geometry record ABI changed" );
@@ -426,9 +436,10 @@ static const char* b3_metalSource =
 	"struct HullTriangle { uint index1,index2,index3,face; };\n"
 	"struct ShapeGeometry { float point1X,point1Y,point1Z,radius; float point2X,point2Y,point2Z; int bodyId;\n"
 	"  uint pointOffset,pointCount,planeOffset,planeCount,triangleOffset,triangleCount,type,supported; };\n"
-	"struct ConvexManifoldResult { uint eligible,touching,pointCount,padding1; float nx,ny,nz,padding2;\n"
+	"struct ConvexManifoldResult { uint eligible,touching,pointCount,inputIndex; float nx,ny,nz,padding2;\n"
 	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,padding3,padding4; };\n"
 	"struct ConvexManifoldParams { uint contactCount; float linearSlop,speculativeDistance; uint bodyCount; };\n"
+	"struct ManifoldCompactParams { uint contactCount,blockCount,p0,p1; };\n"
 	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
 	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
 	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
@@ -870,7 +881,7 @@ static const char* b3_metalSource =
 	"                                const device ShapeGeometry* shapeGeometry [[buffer(6)]],\n"
 	"                                const device BodyTransform* bodyTransforms [[buffer(7)]],\n"
 	"                                uint i [[thread_position_in_grid]]) {\n"
-	"  if(i>=p.contactCount)return; ConvexManifoldInput in=inputs[i]; ConvexManifoldResult out={};\n"
+	"  if(i>=p.contactCount)return; ConvexManifoldInput in=inputs[i]; ConvexManifoldResult out={};out.inputIndex=i;\n"
 	"  if(in.eligible==0u){results[i]=out;return;} out.eligible=1u;\n"
 	"  ShapeGeometry geometryA=shapeGeometry[in.shapeIdA],geometryB=shapeGeometry[in.shapeIdB];\n"
 	"  if(geometryA.supported==0u||geometryB.supported==0u||geometryA.bodyId<0||geometryB.bodyId<0||\n"
@@ -930,7 +941,23 @@ static const char* b3_metalSource =
 	"  float3 point=0.5f*((cpA+geometryA.radius*normal+cpB)-geometryB.radius*normal);out.touching=1u;out.pointCount=1u;\n"
 	"  out.nx=normal.x;out.ny=normal.y;out.nz=normal.z;out.p1x=point.x;out.p1y=point.y;out.p1z=point.z;\n"
 	"  out.separation1=distance-radius;out.feature1=0u;results[i]=out;\n"
-	"}\n";
+	"}\n"
+	"kernel void b3_manifold_scan_blocks(device ConvexManifoldResult* results [[buffer(0)]],device PairBlock* blocks [[buffer(1)]],\n"
+	"  constant ManifoldCompactParams& p [[buffer(2)]],uint i [[thread_position_in_grid]],uint ti [[thread_index_in_threadgroup]],\n"
+	"  uint group [[threadgroup_position_in_grid]],ushort lane [[thread_index_in_simdgroup]],ushort subgroup [[simdgroup_index_in_threadgroup]],\n"
+	"  ushort simdWidth [[threads_per_simdgroup]]){threadgroup uint totals[32];threadgroup uint offsets[32];\n"
+	"  uint value=i<p.contactCount?results[i].eligible:0u;uint local=simd_prefix_exclusive_sum(value);uint total=simd_sum(value);\n"
+	"  if(lane==0){totals[subgroup]=total;}threadgroup_barrier(mem_flags::mem_threadgroup);if(ti==0u){uint running=0u;\n"
+	"    for(uint s=0u;s<256u/uint(simdWidth);++s){offsets[s]=running;running+=totals[s];}blocks[group]=PairBlock{running,0u,0u,0u};}\n"
+	"  threadgroup_barrier(mem_flags::mem_threadgroup);if(i<p.contactCount){ConvexManifoldResult r=results[i];\n"
+	"    r.padding3=local+offsets[subgroup];results[i]=r;}}\n"
+	"kernel void b3_manifold_prefix(device PairBlock* blocks [[buffer(0)]],device PairSummary* summary [[buffer(1)]],\n"
+	"  constant ManifoldCompactParams& p [[buffer(2)]]){uint total=0u;for(uint i=0u;i<p.blockCount;++i){PairBlock b=blocks[i];\n"
+	"    b.offset=total;blocks[i]=b;total+=b.sum;}summary->totalCount=ulong(total);summary->flags=0u;summary->writeFlags=0u;}\n"
+	"kernel void b3_manifold_scatter(const device ConvexManifoldResult* results [[buffer(0)]],const device PairBlock* blocks [[buffer(1)]],\n"
+	"  device ConvexManifoldResult* compact [[buffer(2)]],constant ManifoldCompactParams& p [[buffer(3)]],uint i [[thread_position_in_grid]]){\n"
+	"  if(i>=p.contactCount)return;ConvexManifoldResult r=results[i];if(r.eligible==0u)return;uint output=blocks[i/256u].offset+r.padding3;\n"
+	"  r.inputIndex=i;r.padding3=0u;compact[output]=r;}\n";
 #pragma clang diagnostic pop
 
 #pragma clang diagnostic push
@@ -1324,6 +1351,21 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			? [device newComputePipelineStateWithFunction:convexManifoldFunction error:&error]
 			: nil;
 		[convexManifoldFunction release];
+		id<MTLFunction> convexManifoldScanFunction = [library newFunctionWithName:@"b3_manifold_scan_blocks"];
+		id<MTLComputePipelineState> convexManifoldScanPipeline = convexManifoldScanFunction != nil
+			? [device newComputePipelineStateWithFunction:convexManifoldScanFunction error:&error]
+			: nil;
+		[convexManifoldScanFunction release];
+		id<MTLFunction> convexManifoldPrefixFunction = [library newFunctionWithName:@"b3_manifold_prefix"];
+		id<MTLComputePipelineState> convexManifoldPrefixPipeline = convexManifoldPrefixFunction != nil
+			? [device newComputePipelineStateWithFunction:convexManifoldPrefixFunction error:&error]
+			: nil;
+		[convexManifoldPrefixFunction release];
+		id<MTLFunction> convexManifoldScatterFunction = [library newFunctionWithName:@"b3_manifold_scatter"];
+		id<MTLComputePipelineState> convexManifoldScatterPipeline = convexManifoldScatterFunction != nil
+			? [device newComputePipelineStateWithFunction:convexManifoldScatterFunction error:&error]
+			: nil;
+		[convexManifoldScatterFunction release];
 		[library release];
 
 		NSString* contactSource = [NSString stringWithUTF8String:b3_contactSource];
@@ -1406,7 +1448,8 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			 shapeScanBlocksPipeline == nil || shapePrefixPipeline == nil || shapeScatterPipeline == nil ||
 			 pairCandidatesPipeline == nil || pairScanBlocksPipeline == nil || pairPrefixPipeline == nil ||
 			 pairAddOffsetsPipeline == nil || pairUpdateLeavesPipeline == nil || pairRefitPipeline == nil ||
-			 convexManifoldPipeline == nil ||
+			 convexManifoldPipeline == nil || convexManifoldScanPipeline == nil || convexManifoldPrefixPipeline == nil ||
+			 convexManifoldScatterPipeline == nil ||
 			 warmStartPipeline == nil || solvePipeline == nil ||
 			 restitutionPipeline == nil || warmStartMeshPipeline == nil || solveMeshPipeline == nil || restitutionMeshPipeline == nil ||
 			 warmStartOverflowPipeline == nil || solveOverflowPipeline == nil || restitutionOverflowPipeline == nil ||
@@ -1428,6 +1471,9 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[pairUpdateLeavesPipeline release];
 			[pairRefitPipeline release];
 			[convexManifoldPipeline release];
+			[convexManifoldScanPipeline release];
+			[convexManifoldPrefixPipeline release];
+			[convexManifoldScatterPipeline release];
 			[warmStartPipeline release];
 			[solvePipeline release];
 			[restitutionPipeline release];
@@ -1466,6 +1512,9 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[pairUpdateLeavesPipeline release];
 			[pairRefitPipeline release];
 			[convexManifoldPipeline release];
+			[convexManifoldScanPipeline release];
+			[convexManifoldPrefixPipeline release];
+			[convexManifoldScatterPipeline release];
 			[warmStartPipeline release];
 			[solvePipeline release];
 			[restitutionPipeline release];
@@ -1503,6 +1552,9 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		context->pairUpdateLeavesPipeline = pairUpdateLeavesPipeline;
 		context->pairRefitPipeline = pairRefitPipeline;
 		context->convexManifoldPipeline = convexManifoldPipeline;
+		context->convexManifoldScanPipeline = convexManifoldScanPipeline;
+		context->convexManifoldPrefixPipeline = convexManifoldPrefixPipeline;
+		context->convexManifoldScatterPipeline = convexManifoldScatterPipeline;
 		context->convexShapeGeometryRevision = UINT64_MAX;
 		context->convexBodyTransformStepIndex = UINT64_MAX;
 		context->convexBodyTransformRevision = UINT64_MAX;
@@ -1555,6 +1607,9 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->pairBlockBuffer release];
 	[context->convexManifoldInputBuffer release];
 	[context->convexManifoldResultBuffer release];
+	[context->convexManifoldCompactBuffer release];
+	[context->convexManifoldBlockBuffer release];
+	[context->convexManifoldSummaryBuffer release];
 	[context->convexHullPointBuffer release];
 	[context->convexHullPlaneBuffer release];
 	[context->convexHullTriangleBuffer release];
@@ -1580,6 +1635,9 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->pairUpdateLeavesPipeline release];
 	[context->pairRefitPipeline release];
 	[context->convexManifoldPipeline release];
+	[context->convexManifoldScanPipeline release];
+	[context->convexManifoldPrefixPipeline release];
+	[context->convexManifoldScatterPipeline release];
 	[context->warmStartContactsPipeline release];
 	[context->solveContactsPipeline release];
 	[context->restitutionContactsPipeline release];
@@ -1708,8 +1766,15 @@ static bool b3MetalEnsureFinalizePropertiesCapacity( b3MetalContext* context, NS
 	return true;
 }
 
-static bool b3MetalEnsureConvexManifoldCapacity( b3MetalContext* context, NSUInteger inputBytes, NSUInteger resultBytes )
+static bool b3MetalEnsureConvexManifoldCapacity( b3MetalContext* context, NSUInteger inputBytes, NSUInteger resultBytes,
+	NSUInteger compactBytes, NSUInteger blockBytes )
 {
+	if ( context->convexManifoldSummaryBuffer == nil )
+	{
+		context->convexManifoldSummaryBuffer =
+			[context->device newBufferWithLength:sizeof( b3MetalPairSummary ) options:MTLResourceStorageModeShared];
+		if ( context->convexManifoldSummaryBuffer == nil ) return false;
+	}
 	if ( context->convexManifoldInputCapacity < inputBytes )
 	{
 		NSUInteger capacity = context->convexManifoldInputCapacity > 0 ? context->convexManifoldInputCapacity : 4096;
@@ -1724,11 +1789,31 @@ static bool b3MetalEnsureConvexManifoldCapacity( b3MetalContext* context, NSUInt
 	{
 		NSUInteger capacity = context->convexManifoldResultCapacity > 0 ? context->convexManifoldResultCapacity : 4096;
 		while ( capacity < resultBytes ) capacity *= 2;
-		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModePrivate];
 		if ( buffer == nil ) return false;
 		[context->convexManifoldResultBuffer release];
 		context->convexManifoldResultBuffer = buffer;
 		context->convexManifoldResultCapacity = capacity;
+	}
+	if ( context->convexManifoldCompactCapacity < compactBytes )
+	{
+		NSUInteger capacity = context->convexManifoldCompactCapacity > 0 ? context->convexManifoldCompactCapacity : 4096;
+		while ( capacity < compactBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->convexManifoldCompactBuffer release];
+		context->convexManifoldCompactBuffer = buffer;
+		context->convexManifoldCompactCapacity = capacity;
+	}
+	if ( context->convexManifoldBlockCapacity < blockBytes )
+	{
+		NSUInteger capacity = context->convexManifoldBlockCapacity > 0 ? context->convexManifoldBlockCapacity : 4096;
+		while ( capacity < blockBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModePrivate];
+		if ( buffer == nil ) return false;
+		[context->convexManifoldBlockBuffer release];
+		context->convexManifoldBlockBuffer = buffer;
+		context->convexManifoldBlockCapacity = capacity;
 	}
 	return true;
 }
@@ -3398,6 +3483,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 	{
 		return false;
 	}
+	( (b3World*)world )->metalLastNarrowPhaseResultCount = 0;
 	if ( contactCount == 0 ) return true;
 	if ( (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldInput ) ||
 		 (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldResult ) )
@@ -3429,9 +3515,11 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 
 		NSUInteger inputBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldInput );
 		NSUInteger resultBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldResult );
+		uint32_t blockCount = ( (uint32_t)contactCount + 255u ) / 256u;
+		NSUInteger blockBytes = (NSUInteger)blockCount * sizeof( b3MetalPairBlock );
 		if ( b3MetalEnsureShapeGeometryRegistry( context, world ) == false ||
 			 b3MetalEnsureBodyTransformRegistry( context, world ) == false ||
-			 b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes ) == false )
+			 b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes, resultBytes, blockBytes ) == false )
 		{
 			return false;
 		}
@@ -3476,6 +3564,15 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		struct { uint32_t contactCount; float linearSlop, speculativeDistance; uint32_t bodyCount; } params = {
 			(uint32_t)contactCount, B3_LINEAR_SLOP, B3_SPECULATIVE_DISTANCE, (uint32_t)context->convexBodyTransformCount,
 		};
+		struct { uint32_t contactCount, blockCount, padding0, padding1; } compactParams = {
+			(uint32_t)contactCount, blockCount, 0, 0,
+		};
+		NSUInteger scanWidth = context->convexManifoldScanPipeline.threadExecutionWidth;
+		if ( context->convexManifoldScanPipeline.maxTotalThreadsPerThreadgroup < 256 || scanWidth == 0 ||
+			 256 % scanWidth != 0 || 256 / scanWidth > 32 )
+		{
+			return false;
+		}
 		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
 		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
 		if ( commandBuffer == nil || encoder == nil ) return false;
@@ -3491,13 +3588,45 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		[encoder setBuffer:context->convexBodyTransformBuffer offset:0 atIndex:7];
 		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
+		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+
+		pipeline = context->convexManifoldScanPipeline;
+		[encoder setComputePipelineState:pipeline];
+		[encoder setBuffer:context->convexManifoldResultBuffer offset:0 atIndex:0];
+		[encoder setBuffer:context->convexManifoldBlockBuffer offset:0 atIndex:1];
+		[encoder setBytes:&compactParams length:sizeof( compactParams ) atIndex:2];
+		[encoder dispatchThreadgroups:MTLSizeMake( blockCount, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( 256, 1, 1 )];
+		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+
+		pipeline = context->convexManifoldPrefixPipeline;
+		[encoder setComputePipelineState:pipeline];
+		[encoder setBuffer:context->convexManifoldBlockBuffer offset:0 atIndex:0];
+		[encoder setBuffer:context->convexManifoldSummaryBuffer offset:0 atIndex:1];
+		[encoder setBytes:&compactParams length:sizeof( compactParams ) atIndex:2];
+		[encoder dispatchThreads:MTLSizeMake( 1, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( 1, 1, 1 )];
+		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+
+		pipeline = context->convexManifoldScatterPipeline;
+		[encoder setComputePipelineState:pipeline];
+		[encoder setBuffer:context->convexManifoldResultBuffer offset:0 atIndex:0];
+		[encoder setBuffer:context->convexManifoldBlockBuffer offset:0 atIndex:1];
+		[encoder setBuffer:context->convexManifoldCompactBuffer offset:0 atIndex:2];
+		[encoder setBytes:&compactParams length:sizeof( compactParams ) atIndex:3];
+		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
+			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
 		[encoder endEncoding];
 		[commandBuffer commit];
 		[commandBuffer waitUntilCompleted];
 		if ( commandBuffer.status != MTLCommandBufferStatusCompleted ) return false;
-		const b3MetalConvexManifoldResult* completedResults = context->convexManifoldResultBuffer.contents;
-		int eligibleCount = 0;
-		for ( int i = 0; i < contactCount; ++i ) eligibleCount += completedResults[i].eligible != 0;
+		const b3MetalPairSummary* summary = context->convexManifoldSummaryBuffer.contents;
+		if ( summary->flags != 0 || summary->writeFlags != 0 || summary->totalCount > (uint64_t)candidateCount ||
+			 summary->totalCount > (uint64_t)contactCount || summary->totalCount > INT32_MAX )
+		{
+			return false;
+		}
+		int eligibleCount = (int)summary->totalCount;
+		const b3MetalConvexManifoldResult* completedResults = context->convexManifoldCompactBuffer.contents;
+		( (b3World*)world )->metalLastNarrowPhaseResultCount = eligibleCount;
 		*resultsOut = completedResults;
 		*eligibleCountOut = eligibleCount;
 		if ( stats != NULL )

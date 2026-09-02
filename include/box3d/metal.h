@@ -54,6 +54,7 @@ typedef struct b3MetalProfile
 	uint64_t narrowPhaseTransformReuseCount;
 	int lastNarrowPhaseHullShapeCount;
 	int lastNarrowPhaseUniqueHullCount;
+	int lastNarrowPhaseResultCount;
 	double lastPositionGpuMilliseconds;
 	double lastUnconstrainedGpuMilliseconds;
 	double lastContactGpuMilliseconds;

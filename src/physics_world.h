@@ -309,6 +309,7 @@ typedef struct b3World
 	uint64_t metalNarrowPhaseTransformReuseCount;
 	int metalLastNarrowPhaseHullShapeCount;
 	int metalLastNarrowPhaseUniqueHullCount;
+	int metalLastNarrowPhaseResultCount;
 	double metalLastPositionGpuMilliseconds;
 	double metalLastUnconstrainedGpuMilliseconds;
 	double metalLastContactGpuMilliseconds;
