@@ -2389,6 +2389,11 @@ const int* b3MetalGetResidentHitEventContacts( const b3MetalContext* context, in
 	return count > 0 ? context->contactHitEventIdBuffer.contents : NULL;
 }
 
+int b3MetalGetResidentHitEventContactCount( const b3MetalContext* context )
+{
+	return context != NULL ? context->contactHitEventIdCount : 0;
+}
+
 bool b3MetalSyncContactImpulses( const b3MetalContext* context, b3Contact* contact )
 {
 	if ( context == NULL || contact == NULL || contact->contactId < 0 ||

@@ -190,6 +190,10 @@ const b3MetalContactImpulseResult* b3MetalGetResidentContactImpulseTable( const 
 // only while the latest post-solve result table is authoritative.
 const int* b3MetalGetResidentHitEventContacts( const b3MetalContext* context, int* contactCount );
 
+// Current narrow-phase compact event-ID count. Unlike the post-solve getter,
+// this is valid before the current solver result table has been produced.
+int b3MetalGetResidentHitEventContactCount( const b3MetalContext* context );
+
 // Materialize one contact's GPU-authored impulse state into its CPU/public
 // manifold. Contact generation and point feature ids are validated before any
 // field is changed.

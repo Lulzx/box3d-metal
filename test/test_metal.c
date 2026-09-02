@@ -1404,6 +1404,8 @@ static int MetalContactPrepareFallbackTest( void )
 	ENSURE( profile.contactPrepareFallbackCount == 1 );
 	ENSURE( profile.lastContactPrepareIndexBytes == 0 );
 	ENSURE( profile.jointFallbackCount == 1 );
+	ENSURE( profile.contactHitEventBitSetClearBypassCount == 0 );
+	ENSURE( profile.lastContactHitEventBitSetBytes > 0 );
 	b3World* gpu = b3GetWorldFromId( gpuWorld );
 	int staleResultCount = 0;
 	ENSURE( b3MetalGetResidentContactImpulseTable( gpu->metalContext, NULL, &staleResultCount ) == NULL );
@@ -1494,7 +1496,7 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	}
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    resident contact prepare contacts=%d dispatches=%llu deviceRefreshes=%llu collisionCpu=%llu lastExceptions=%llu "
-			"inputs=%llu/%llu/%llu coverage=%llu stateWalks=%llu/%llu schedule=%llu/%llu indexBytes=%llu "
+			"inputs=%llu/%llu/%llu coverage=%llu stateWalks=%llu/%llu hitClears=%llu/%llu schedule=%llu/%llu indexBytes=%llu "
 			"legacyBytes=%zu "
 			"impulseBytes=%llu legacyImpulseBytes=%zu transformError=%.3g velocityError=%.3g\n",
 			count, (unsigned long long)profile.contactPrepareDispatchCount,
@@ -1504,6 +1506,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 			(unsigned long long)profile.contactCoverageBypassCount,
 			(unsigned long long)profile.contactStateTraversalBypassCount,
 			(unsigned long long)profile.lastContactStateBitSetBytes,
+			(unsigned long long)profile.contactHitEventBitSetClearBypassCount,
+			(unsigned long long)profile.lastContactHitEventBitSetBytes,
 			(unsigned long long)profile.contactSchedulePackCount,
 			(unsigned long long)profile.contactScheduleReuseCount, (unsigned long long)profile.lastContactPrepareIndexBytes,
 			(size_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * 144,
@@ -1524,6 +1528,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.contactCoverageBypassCount == 3 * count );
 	ENSURE( profile.contactStateTraversalBypassCount == 3 );
 	ENSURE( profile.lastContactStateBitSetBytes == 0 );
+	ENSURE( profile.contactHitEventBitSetClearBypassCount == 4 );
+	ENSURE( profile.lastContactHitEventBitSetBytes == 0 );
 	b3Counters cpuCounters = b3World_GetCounters( cpuWorld );
 	b3Counters gpuCounters = b3World_GetCounters( gpuWorld );
 	ENSURE( cpuCounters.satCallCount == gpuCounters.satCallCount );
@@ -1562,6 +1568,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.contactInputReuseCount == 2 );
 	ENSURE( profile.lastContactInputBytes == count * 32u );
 	ENSURE( profile.lastContactStateBitSetBytes > 0 );
+	ENSURE( profile.contactHitEventBitSetClearBypassCount == 4 );
+	ENSURE( profile.lastContactHitEventBitSetBytes > 0 );
 	b3Shape_EnableHitEvents( cpuDynamicShapes[0], false );
 	b3Shape_EnableHitEvents( gpuDynamicShapes[0], false );
 
@@ -1596,6 +1604,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.contactInputReuseCount == 2 );
 	ENSURE( profile.lastContactInputBytes == ( count + 1 ) * 32u );
 	ENSURE( profile.lastContactStateBitSetBytes > 0 );
+	ENSURE( profile.contactHitEventBitSetClearBypassCount == 5 );
+	ENSURE( profile.lastContactHitEventBitSetBytes == 0 );
 	ENSURE( profile.lastResidentConvexContactCount == count + 1 );
 	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuAddedDynamic ), b3Body_GetLinearVelocity( gpuAddedDynamic ) ) ) <=
 			3.0e-5f );
@@ -1757,8 +1767,11 @@ static int MetalResidentContactHitEventTest( void )
 	ENSURE( profile.contactImpulseStoreBypassCount == 1 );
 	ENSURE( profile.contactImpulseEventSyncCount == 1 );
 	ENSURE( profile.contactImpulseSyncCount == 1 );
-	printf( "    resident hit event speed=%.3g impulseBytes=%llu cpuGpuMatch=yes\n", gpuHit.approachSpeed,
-			(unsigned long long)profile.lastContactImpulseResultBytes );
+	ENSURE( profile.contactHitEventBitSetClearBypassCount == 0 );
+	ENSURE( profile.lastContactHitEventBitSetBytes > 0 );
+	printf( "    resident hit event speed=%.3g impulseBytes=%llu hitClearBytes=%llu cpuGpuMatch=yes\n",
+			gpuHit.approachSpeed, (unsigned long long)profile.lastContactImpulseResultBytes,
+			(unsigned long long)profile.lastContactHitEventBitSetBytes );
 	b3DestroyWorld( gpuWorld );
 	b3DestroyWorld( cpuWorld );
 	return 0;

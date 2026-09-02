@@ -1478,6 +1478,24 @@ static void b3RefreshStaleContactManifoldsAfterMetalFallback( b3StepContext* con
 	}
 }
 
+static void b3ClearDeferredHitEventBitSets( b3StepContext* context )
+{
+	if ( context->metalHitEventBitSetClearDeferred == false )
+		return;
+	b3World* world = context->world;
+	int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
+	for ( int i = 0; i < world->workerCount; ++i )
+	{
+		b3TaskContext* taskContext = b3Array_Get( world->taskContexts, i );
+		b3SetBitCountAndClear( &taskContext->hitEventBitSet, contactIdCapacity );
+		taskContext->hasHitEvents = false;
+	}
+	uint64_t blockCount = ( (uint64_t)contactIdCapacity + 63u ) / 64u;
+	world->metalLastContactHitEventBitSetBytes =
+		blockCount * sizeof( uint64_t ) * (uint64_t)world->workerCount;
+	context->metalHitEventBitSetClearDeferred = false;
+}
+
 static void b3PrepareConvexContactsAfterMetalFallback( b3StepContext* context )
 {
 	b3RefreshStaleContactManifoldsAfterMetalFallback( context );
@@ -1590,6 +1608,7 @@ static void b3SolverTask( void* taskContext )
 		solvedAllConstraintsOnMetal = b3ExecuteMetalConstraintSubsteps( context );
 		if ( solvedAllConstraintsOnMetal == false )
 		{
+			b3ClearDeferredHitEventBitSets( context );
 			if ( context->metalPrepareConvexOnGpu )
 			{
 				b3PrepareConvexContactsAfterMetalFallback( context );
@@ -2349,11 +2368,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 
 		int jointIdCapacity = b3GetIdCapacity( &world->jointIdPool );
 		int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
+#if defined( BOX3D_METAL )
+		stepContext->metalHitEventBitSetClearDeferred =
+			stepContext->metalPrepareConvexOnGpu && contactCount == 0 && overflowCount == 0 &&
+			b3MetalGetResidentHitEventContactCount( world->metalContext ) == 0;
+#endif
 		for ( int i = 0; i < workerCount; ++i )
 		{
 			b3TaskContext* taskContext = b3Array_Get( world->taskContexts, i );
 			b3SetBitCountAndClear( &taskContext->jointStateBitSet, jointIdCapacity );
-			b3SetBitCountAndClear( &taskContext->hitEventBitSet, contactIdCapacity );
+			if ( stepContext->metalHitEventBitSetClearDeferred == false )
+				b3SetBitCountAndClear( &taskContext->hitEventBitSet, contactIdCapacity );
 			taskContext->hasHitEvents = false;
 
 			workerContext[i].context = stepContext;
@@ -2403,6 +2428,19 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		world->splitIslandId = B3_NULL_INDEX;
 
 		world->profile.constraints = b3GetMillisecondsAndReset( &constraintTicks );
+#if defined( BOX3D_METAL )
+		if ( stepContext->metalHitEventBitSetClearDeferred )
+		{
+			world->metalContactHitEventBitSetClearBypassCount += 1;
+			world->metalLastContactHitEventBitSetBytes = 0;
+		}
+		else
+		{
+			uint64_t blockCount = ( (uint64_t)contactIdCapacity + 63u ) / 64u;
+			world->metalLastContactHitEventBitSetBytes =
+				blockCount * sizeof( uint64_t ) * (uint64_t)workerCount;
+		}
+#endif
 		b3TracyCZoneEnd( solve_constraints );
 
 		b3TracyCZoneNC( update_transforms, "Update Transforms", b3_colorMediumSeaGreen, true );

@@ -121,8 +121,11 @@ walk. A zero-exception dispatch also bypasses capacity-linear contact-state
 bitset clears, worker unions, and the serial state-change traversal; the next
 exception or fallback clears before any CPU worker writes. CPU topology
 mutation, callbacks, events, unsupported geometry, and cold/revision rebuilds
-remain explicit fallback boundaries, so this remains a residency checkpoint
-rather than a universal whole-world speedup.
+remain explicit fallback boundaries. The solver likewise defers its
+contact-capacity hit-event bitset clears when the current resident compact event
+list is empty, restoring them before an event-enabled path or Metal fallback.
+This remains a residency checkpoint rather than a universal whole-world
+speedup.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.

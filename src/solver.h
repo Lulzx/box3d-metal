@@ -272,6 +272,7 @@ typedef struct b3StepContext
 	bool metalResidentConvexHasRestitution;
 	bool metalResidentConvexCoverageProven;
 	bool metalPrepareConvexOnGpu;
+	bool metalHitEventBitSetClearDeferred;
 
 	// Flat view of the wide contact constraint array used by prepare and store.
 	// prepareSpans has activeColorCount + 1 entries, the last being a sentinel

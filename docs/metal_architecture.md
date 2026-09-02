@@ -231,6 +231,15 @@ or Metal fallback clears all worker bitsets to the current contact-ID capacity
 before dispatching CPU collision work. Diagnostic manifold and SAT counters are
 reset and aggregated independently of the bitsets.
 
+Solver hit-event scratch follows the same rule. Before worker launch, the
+current narrow-phase compact event-ID count is known independently of the prior
+post-solve table. A complete resident convex set with no mesh/overflow contacts
+and an empty event list defers all contact-capacity hit-event bitset clears.
+Successful Metal solve/store leaves the stale bits unreachable because no
+worker can set `hasHitEvents`. An event-enabled contact clears normally; if the
+Metal solver rejects after deferral, the orchestrator clears every worker
+bitset before advancing any CPU store stage.
+
 Public contact/body/shape queries, force debug drawing, snapshots, sleep
 transitions, Metal disable, and CPU solver fallback materialize stale geometry
 by contact ID and contact generation. CPU solver fallback first attempts one
@@ -431,6 +440,8 @@ Revisioned contact input/order reuse and solver coverage proof are recorded in
 [`benchmarks/m4-pro-contact-input-residency-2026-09-02.md`](benchmarks/m4-pro-contact-input-residency-2026-09-02.md).
 Zero-exception contact-state traversal bypass is recorded in
 [`benchmarks/m4-pro-contact-state-traversal-bypass-2026-09-02.md`](benchmarks/m4-pro-contact-state-traversal-bypass-2026-09-02.md).
+Empty resident hit-event scratch bypass is recorded in
+[`benchmarks/m4-pro-hit-event-bitset-residency-2026-09-02.md`](benchmarks/m4-pro-hit-event-bitset-residency-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

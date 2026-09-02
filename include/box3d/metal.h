@@ -74,6 +74,12 @@ typedef struct b3MetalProfile
 	/// Contact-state bitset bytes cleared on the latest collision phase.
 	/// A zero-exception resident phase reports zero.
 	uint64_t lastContactStateBitSetBytes;
+	/// Successful resident solver phases that skipped all per-worker hit-event
+	/// bitset clears because the current compact event-ID list was empty.
+	uint64_t contactHitEventBitSetClearBypassCount;
+	/// Hit-event bitset bytes cleared on the latest solver phase. An empty
+	/// compact resident event list reports zero unless Metal falls back.
+	uint64_t lastContactHitEventBitSetBytes;
 	/// Individual resident manifolds materialized into the CPU mirror on a
 	/// public, debug, snapshot, route-change, or solver-fallback boundary.
 	uint64_t contactManifoldSyncCount;
