@@ -1808,6 +1808,8 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		stepContext->metalFinalizeResults = NULL;
 		stepContext->metalShapeResults = NULL;
 		stepContext->metalShapeResultCount = 0;
+		stepContext->metalEnlargedShapeResults = NULL;
+		stepContext->metalEnlargedShapeResultCount = 0;
 		stepContext->metalStatesResident = false;
 
 		// count contacts, joints, and colors
@@ -2493,23 +2495,25 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		}
 
 		// Enlarge broad-phase proxies and build move array. A successful Metal tree refit has no
-		// fast bodies, and its flat shape results are packed in the same deterministic sim/shape
-		// order as the CPU body walk. Consume that order directly so the resident path does not
-		// merge body bit sets and traverse body shape lists a second time.
+		// fast bodies. Its enlarged-only stream is stably compacted in the same deterministic
+		// sim/shape order as the CPU body walk, so the resident path does not merge body bit sets,
+		// scan all shape results, or traverse body shape lists a second time.
 #if defined( BOX3D_METAL )
 		if ( stepContext->metalTreeRefit )
 		{
 			b3BroadPhase* broadPhase = &world->broadPhase;
-			for ( int resultIndex = 0; resultIndex < stepContext->metalShapeResultCount; ++resultIndex )
+			for ( int resultIndex = 0; resultIndex < stepContext->metalEnlargedShapeResultCount; ++resultIndex )
 			{
-				const b3MetalShapeAABBResult* result = stepContext->metalShapeResults + resultIndex;
-				if ( result->enlarged != 0 )
-				{
-					b3Shape* shape = world->shapes.data + result->shapeId;
-					B3_ASSERT( shape->flags & b3_enlargedAABB );
-					b3BroadPhase_EnlargeProxy( broadPhase, shape->proxyKey, shape->fatAABB );
-					shape->flags &= ~b3_enlargedAABB;
-				}
+				const b3MetalEnlargedShapeResult* result = stepContext->metalEnlargedShapeResults + resultIndex;
+				b3Shape* shape = world->shapes.data + result->shapeId;
+				B3_ASSERT( shape->flags & b3_enlargedAABB );
+				B3_ASSERT( shape->proxyKey == result->proxyKey );
+				b3AABB fatAABB = {
+					{ result->lowerX, result->lowerY, result->lowerZ },
+					{ result->upperX, result->upperY, result->upperZ },
+				};
+				b3BroadPhase_EnlargeProxy( broadPhase, result->proxyKey, fatAABB );
+				shape->flags &= ~b3_enlargedAABB;
 			}
 		}
 		else

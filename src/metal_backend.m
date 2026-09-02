@@ -42,6 +42,9 @@ struct b3MetalContext
 	id<MTLComputePipelineState> integrateUnconstrainedPipeline;
 	id<MTLComputePipelineState> finalizeBodiesPipeline;
 	id<MTLComputePipelineState> finalizeShapesPipeline;
+	id<MTLComputePipelineState> shapeScanBlocksPipeline;
+	id<MTLComputePipelineState> shapePrefixPipeline;
+	id<MTLComputePipelineState> shapeScatterPipeline;
 	id<MTLComputePipelineState> pairCandidatesPipeline;
 	id<MTLComputePipelineState> pairScanBlocksPipeline;
 	id<MTLComputePipelineState> pairPrefixPipeline;
@@ -75,6 +78,11 @@ struct b3MetalContext
 	NSUInteger shapeInputCapacity;
 	id<MTLBuffer> shapeResultBuffer;
 	NSUInteger shapeResultCapacity;
+	id<MTLBuffer> shapeCompactBuffer;
+	NSUInteger shapeCompactCapacity;
+	id<MTLBuffer> shapeBlockBuffer;
+	NSUInteger shapeBlockCapacity;
+	id<MTLBuffer> shapeSummaryBuffer;
 	id<MTLBuffer> pairMoveBuffer;
 	NSUInteger pairMoveCapacity;
 	id<MTLBuffer> pairTreeBuffer;
@@ -167,6 +175,7 @@ _Static_assert( sizeof( b3MetalFinalizeProperties ) == 64, "Metal finalization-p
 _Static_assert( sizeof( b3MetalFinalizeResult ) == 100, "Metal finalization-result ABI changed" );
 _Static_assert( sizeof( b3MetalShapeInput ) == 72, "Metal shape-input ABI changed" );
 _Static_assert( sizeof( b3MetalShapeAABBResult ) == 64, "Metal shape-result ABI changed" );
+_Static_assert( sizeof( b3MetalEnlargedShapeResult ) == 32, "Metal enlarged-shape ABI changed" );
 _Static_assert( sizeof( b3TreeNode ) == 48, "Metal tree-node ABI changed" );
 _Static_assert( offsetof( b3TreeNode, categoryBits ) == 24, "Metal tree-node ABI changed" );
 _Static_assert( offsetof( b3TreeNode, children ) == 32, "Metal tree-node ABI changed" );
@@ -302,6 +311,7 @@ static const char* b3_metalSource =
 	"  uint shapeId, bodyIndex, enlarged, padding;\n"
 	"  float lx,ly,lz,ux,uy,uz; float flx,fly,flz,fux,fuy,fuz;\n"
 	"};\n"
+	"struct EnlargedShapeResult { int shapeId,proxyKey; float lx,ly,lz,ux,uy,uz; };\n"
 	"struct TreeNode {\n"
 	"  float lx,ly,lz,ux,uy,uz; ulong categoryBits; uint child1,child2; int parent; ushort height,flags;\n"
 	"};\n"
@@ -315,6 +325,7 @@ static const char* b3_metalSource =
 	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
 	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
 	"struct ShapeParams { uint shapeCount; float extra; uint p0; uint p1; };\n"
+	"struct ShapeCompactParams { uint shapeCount,blockCount,p0,p1; };\n"
 	"struct FusedParams {\n"
 	"  uint bodyCount; float h; float maxLinearSpeed; float maxAngularSpeed;\n"
 	"  float gravityX, gravityY, gravityZ; uint integratePosition;\n"
@@ -570,6 +581,34 @@ static const char* b3_metalSource =
 	"  ShapeResult out; out.shapeId=in.shapeId; out.bodyIndex=in.bodyIndex; out.enlarged=enlarged?1u:0u; out.padding=0;\n"
 	"  out.lx=lo.x;out.ly=lo.y;out.lz=lo.z;out.ux=hi.x;out.uy=hi.y;out.uz=hi.z;\n"
 	"  out.flx=fatLo.x;out.fly=fatLo.y;out.flz=fatLo.z;out.fux=fatHi.x;out.fuy=fatHi.y;out.fuz=fatHi.z; results[i]=out;\n"
+	"}\n"
+	"kernel void b3_shape_scan_blocks(device ShapeResult* results [[buffer(0)]],device PairBlock* blocks [[buffer(1)]],\n"
+	"                                 constant ShapeCompactParams& p [[buffer(2)]],uint i [[thread_position_in_grid]],\n"
+	"                                 uint threadIndex [[thread_index_in_threadgroup]],uint group [[threadgroup_position_in_grid]],\n"
+	"                                 ushort lane [[thread_index_in_simdgroup]],ushort subgroup [[simdgroup_index_in_threadgroup]],\n"
+	"                                 ushort simdWidth [[threads_per_simdgroup]]) {\n"
+	"  threadgroup uint subgroupTotals[32];threadgroup uint subgroupOffsets[32];\n"
+	"  uint value=i<p.shapeCount?results[i].enlarged:0u;uint localOffset=simd_prefix_exclusive_sum(value);\n"
+	"  uint subgroupTotal=simd_sum(value);if(lane==0){subgroupTotals[subgroup]=subgroupTotal;}\n"
+	"  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+	"  if(threadIndex==0u){uint running=0u;uint subgroupCount=256u/uint(simdWidth);\n"
+	"    for(uint s=0u;s<subgroupCount;++s){subgroupOffsets[s]=running;running+=subgroupTotals[s];}\n"
+	"    PairBlock b;b.sum=running;b.flags=0u;b.offset=0u;b.padding=0u;blocks[group]=b;}\n"
+	"  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+	"  if(i<p.shapeCount){ShapeResult r=results[i];r.padding=localOffset+subgroupOffsets[subgroup];results[i]=r;}\n"
+	"}\n"
+	"kernel void b3_shape_prefix(device PairBlock* blocks [[buffer(0)]],device PairSummary* summary [[buffer(1)]],\n"
+	"                            constant ShapeCompactParams& p [[buffer(2)]]) {\n"
+	"  uint total=0u;for(uint i=0u;i<p.blockCount;++i){PairBlock b=blocks[i];b.offset=total;blocks[i]=b;total+=b.sum;}\n"
+	"  summary->totalCount=ulong(total);summary->flags=0u;summary->writeFlags=0u;\n"
+	"}\n"
+	"kernel void b3_shape_scatter(const device ShapeInput* inputs [[buffer(0)]],const device ShapeResult* results [[buffer(1)]],\n"
+	"                             const device PairBlock* blocks [[buffer(2)]],device EnlargedShapeResult* compact [[buffer(3)]],\n"
+	"                             constant ShapeCompactParams& p [[buffer(4)]],uint i [[thread_position_in_grid]]) {\n"
+	"  if(i>=p.shapeCount)return;ShapeResult r=results[i];if(r.enlarged==0u)return;\n"
+	"  uint output=blocks[i/256u].offset+r.padding;ShapeInput input=inputs[i];EnlargedShapeResult c;\n"
+	"  c.shapeId=int(r.shapeId);c.proxyKey=input.proxyKey;c.lx=r.flx;c.ly=r.fly;c.lz=r.flz;\n"
+	"  c.ux=r.fux;c.uy=r.fuy;c.uz=r.fuz;compact[output]=c;\n"
 	"}\n"
 	"kernel void b3_pair_update_leaves(const device ShapeInput* inputs [[buffer(0)]],\n"
 	"                                  const device ShapeResult* results [[buffer(1)]],\n"
@@ -997,6 +1036,21 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			? [device newComputePipelineStateWithFunction:finalizeShapesFunction error:&error]
 			: nil;
 		[finalizeShapesFunction release];
+		id<MTLFunction> shapeScanBlocksFunction = [library newFunctionWithName:@"b3_shape_scan_blocks"];
+		id<MTLComputePipelineState> shapeScanBlocksPipeline = shapeScanBlocksFunction != nil
+			? [device newComputePipelineStateWithFunction:shapeScanBlocksFunction error:&error]
+			: nil;
+		[shapeScanBlocksFunction release];
+		id<MTLFunction> shapePrefixFunction = [library newFunctionWithName:@"b3_shape_prefix"];
+		id<MTLComputePipelineState> shapePrefixPipeline = shapePrefixFunction != nil
+			? [device newComputePipelineStateWithFunction:shapePrefixFunction error:&error]
+			: nil;
+		[shapePrefixFunction release];
+		id<MTLFunction> shapeScatterFunction = [library newFunctionWithName:@"b3_shape_scatter"];
+		id<MTLComputePipelineState> shapeScatterPipeline = shapeScatterFunction != nil
+			? [device newComputePipelineStateWithFunction:shapeScatterFunction error:&error]
+			: nil;
+		[shapeScatterFunction release];
 		id<MTLFunction> pairCandidatesFunction = [library newFunctionWithName:@"b3_pair_candidates"];
 		id<MTLComputePipelineState> pairCandidatesPipeline = pairCandidatesFunction != nil
 			? [device newComputePipelineStateWithFunction:pairCandidatesFunction error:&error]
@@ -1106,6 +1160,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		[solveJointOverflowFunction release];
 		[contactLibrary release];
 		if ( positionPipeline == nil || fusedPipeline == nil || finalizePipeline == nil || finalizeShapesPipeline == nil ||
+			 shapeScanBlocksPipeline == nil || shapePrefixPipeline == nil || shapeScatterPipeline == nil ||
 			 pairCandidatesPipeline == nil || pairScanBlocksPipeline == nil || pairPrefixPipeline == nil ||
 			 pairAddOffsetsPipeline == nil || pairUpdateLeavesPipeline == nil || pairRefitPipeline == nil ||
 			 warmStartPipeline == nil || solvePipeline == nil ||
@@ -1119,6 +1174,9 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[fusedPipeline release];
 			[finalizePipeline release];
 			[finalizeShapesPipeline release];
+			[shapeScanBlocksPipeline release];
+			[shapePrefixPipeline release];
+			[shapeScatterPipeline release];
 			[pairCandidatesPipeline release];
 			[pairScanBlocksPipeline release];
 			[pairPrefixPipeline release];
@@ -1153,6 +1211,9 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[fusedPipeline release];
 			[finalizePipeline release];
 			[finalizeShapesPipeline release];
+			[shapeScanBlocksPipeline release];
+			[shapePrefixPipeline release];
+			[shapeScatterPipeline release];
 			[pairCandidatesPipeline release];
 			[pairScanBlocksPipeline release];
 			[pairPrefixPipeline release];
@@ -1186,6 +1247,9 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		context->integrateUnconstrainedPipeline = fusedPipeline;
 		context->finalizeBodiesPipeline = finalizePipeline;
 		context->finalizeShapesPipeline = finalizeShapesPipeline;
+		context->shapeScanBlocksPipeline = shapeScanBlocksPipeline;
+		context->shapePrefixPipeline = shapePrefixPipeline;
+		context->shapeScatterPipeline = shapeScatterPipeline;
 		context->pairCandidatesPipeline = pairCandidatesPipeline;
 		context->pairScanBlocksPipeline = pairScanBlocksPipeline;
 		context->pairPrefixPipeline = pairPrefixPipeline;
@@ -1225,6 +1289,9 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->finalizePropertiesBuffer release];
 	[context->shapeInputBuffer release];
 	[context->shapeResultBuffer release];
+	[context->shapeCompactBuffer release];
+	[context->shapeBlockBuffer release];
+	[context->shapeSummaryBuffer release];
 	[context->pairMoveBuffer release];
 	[context->pairTreeBuffer release];
 	[context->pairRecordBuffer release];
@@ -1241,6 +1308,9 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->integrateUnconstrainedPipeline release];
 	[context->finalizeBodiesPipeline release];
 	[context->finalizeShapesPipeline release];
+	[context->shapeScanBlocksPipeline release];
+	[context->shapePrefixPipeline release];
+	[context->shapeScatterPipeline release];
 	[context->pairCandidatesPipeline release];
 	[context->pairScanBlocksPipeline release];
 	[context->pairPrefixPipeline release];
@@ -1377,6 +1447,12 @@ static bool b3MetalEnsureFinalizePropertiesCapacity( b3MetalContext* context, NS
 
 static bool b3MetalEnsureShapeCapacity( b3MetalContext* context, NSUInteger inputBytes, NSUInteger resultBytes )
 {
+	if ( context->shapeSummaryBuffer == nil )
+	{
+		context->shapeSummaryBuffer =
+			[context->device newBufferWithLength:sizeof( b3MetalPairSummary ) options:MTLResourceStorageModeShared];
+		if ( context->shapeSummaryBuffer == nil ) return false;
+	}
 	if ( context->shapeInputCapacity < inputBytes )
 	{
 		NSUInteger capacity = context->shapeInputCapacity > 0 ? context->shapeInputCapacity : 4096;
@@ -1396,6 +1472,30 @@ static bool b3MetalEnsureShapeCapacity( b3MetalContext* context, NSUInteger inpu
 		[context->shapeResultBuffer release];
 		context->shapeResultBuffer = buffer;
 		context->shapeResultCapacity = capacity;
+	}
+	NSUInteger shapeCount = resultBytes / sizeof( b3MetalShapeAABBResult );
+	NSUInteger compactBytes = shapeCount * sizeof( b3MetalEnlargedShapeResult );
+	if ( context->shapeCompactCapacity < compactBytes )
+	{
+		NSUInteger capacity = context->shapeCompactCapacity > 0 ? context->shapeCompactCapacity : 4096;
+		while ( capacity < compactBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->shapeCompactBuffer release];
+		context->shapeCompactBuffer = buffer;
+		context->shapeCompactCapacity = capacity;
+	}
+	NSUInteger blockCount = ( shapeCount + 255 ) / 256;
+	NSUInteger blockBytes = blockCount * sizeof( b3MetalPairBlock );
+	if ( context->shapeBlockCapacity < blockBytes )
+	{
+		NSUInteger capacity = context->shapeBlockCapacity > 0 ? context->shapeBlockCapacity : 4096;
+		while ( capacity < blockBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->shapeBlockBuffer release];
+		context->shapeBlockBuffer = buffer;
+		context->shapeBlockCapacity = capacity;
 	}
 	return true;
 }
@@ -1770,6 +1870,8 @@ static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepC
 {
 	stepContext->metalShapeResults = NULL;
 	stepContext->metalShapeResultCount = 0;
+	stepContext->metalEnlargedShapeResults = NULL;
+	stepContext->metalEnlargedShapeResultCount = 0;
 	stepContext->metalTreeRefitEligible = false;
 	stepContext->metalTreeRefit = false;
 	b3World* world = stepContext->world;
@@ -1874,6 +1976,42 @@ static bool b3MetalEncodePairTreeRefit( b3MetalContext* context, id<MTLComputeCo
 	b3StepContext* stepContext, int shapeCount )
 {
 	if ( shapeCount == 0 || stepContext == NULL || stepContext->metalTreeRefitEligible == false ) return false;
+	NSUInteger scanWidth = context->shapeScanBlocksPipeline.threadExecutionWidth;
+	if ( context->shapeScanBlocksPipeline.maxTotalThreadsPerThreadgroup < 256 || scanWidth < 8 || 256 % scanWidth != 0 )
+	{
+		return false;
+	}
+	uint32_t blockCount = ( (uint32_t)shapeCount + 255u ) / 256u;
+	struct
+	{
+		uint32_t shapeCount, blockCount, padding0, padding1;
+	} compactParams = { (uint32_t)shapeCount, blockCount, 0, 0 };
+	_Static_assert( sizeof( compactParams ) == 16, "Metal shape-compact parameter ABI changed" );
+
+	[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+	[encoder setComputePipelineState:context->shapeScanBlocksPipeline];
+	[encoder setBuffer:context->shapeResultBuffer offset:0 atIndex:0];
+	[encoder setBuffer:context->shapeBlockBuffer offset:0 atIndex:1];
+	[encoder setBytes:&compactParams length:sizeof( compactParams ) atIndex:2];
+	[encoder dispatchThreadgroups:MTLSizeMake( blockCount, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( 256, 1, 1 )];
+
+	[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+	[encoder setComputePipelineState:context->shapePrefixPipeline];
+	[encoder setBuffer:context->shapeBlockBuffer offset:0 atIndex:0];
+	[encoder setBuffer:context->shapeSummaryBuffer offset:0 atIndex:1];
+	[encoder setBytes:&compactParams length:sizeof( compactParams ) atIndex:2];
+	[encoder dispatchThreads:MTLSizeMake( 1, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( 1, 1, 1 )];
+
+	[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+	[encoder setComputePipelineState:context->shapeScatterPipeline];
+	[encoder setBuffer:context->shapeInputBuffer offset:0 atIndex:0];
+	[encoder setBuffer:context->shapeResultBuffer offset:0 atIndex:1];
+	[encoder setBuffer:context->shapeBlockBuffer offset:0 atIndex:2];
+	[encoder setBuffer:context->shapeCompactBuffer offset:0 atIndex:3];
+	[encoder setBytes:&compactParams length:sizeof( compactParams ) atIndex:4];
+	[encoder dispatchThreads:MTLSizeMake( (NSUInteger)shapeCount, 1, 1 )
+		threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->shapeScatterPipeline ), 1, 1 )];
+
 	struct
 	{
 		uint32_t offset0, offset1, offset2, padding;
@@ -2120,6 +2258,23 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 		{
 			finalizationContext->metalShapeResults = context->shapeResultBuffer.contents;
 			finalizationContext->metalShapeResultCount = shapeCount;
+			finalizationContext->world->metalLastShapeResultCount = shapeCount;
+			finalizationContext->world->metalLastEnlargedShapeResultCount = 0;
+			if ( treeRefitEncoded )
+			{
+				b3MetalPairSummary* summary = context->shapeSummaryBuffer.contents;
+				if ( summary->totalCount <= (uint64_t)shapeCount )
+				{
+					finalizationContext->metalEnlargedShapeResults = context->shapeCompactBuffer.contents;
+					finalizationContext->metalEnlargedShapeResultCount = (int)summary->totalCount;
+					finalizationContext->world->metalLastEnlargedShapeResultCount = (int)summary->totalCount;
+					finalizationContext->world->metalShapeCompactDispatchCount += 1;
+				}
+				else
+				{
+					treeRefitEncoded = false;
+				}
+			}
 			finalizationContext->metalTreeRefit = treeRefitEncoded;
 			finalizationContext->world->metalShapeDispatchCount += 1;
 			finalizationContext->world->metalPairTreeRefitCount += treeRefitEncoded ? 1 : 0;
@@ -2886,6 +3041,23 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		{
 			stepContext->metalShapeResults = context->shapeResultBuffer.contents;
 			stepContext->metalShapeResultCount = shapeCount;
+			stepContext->world->metalLastShapeResultCount = shapeCount;
+			stepContext->world->metalLastEnlargedShapeResultCount = 0;
+			if ( treeRefitEncoded )
+			{
+				b3MetalPairSummary* summary = context->shapeSummaryBuffer.contents;
+				if ( summary->totalCount <= (uint64_t)shapeCount )
+				{
+					stepContext->metalEnlargedShapeResults = context->shapeCompactBuffer.contents;
+					stepContext->metalEnlargedShapeResultCount = (int)summary->totalCount;
+					stepContext->world->metalLastEnlargedShapeResultCount = (int)summary->totalCount;
+					stepContext->world->metalShapeCompactDispatchCount += 1;
+				}
+				else
+				{
+					treeRefitEncoded = false;
+				}
+			}
 			stepContext->metalTreeRefit = treeRefitEncoded;
 			stepContext->world->metalShapeDispatchCount += 1;
 			stepContext->world->metalPairTreeRefitCount += treeRefitEncoded ? 1 : 0;

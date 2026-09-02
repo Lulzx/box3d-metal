@@ -569,6 +569,59 @@ static int MetalPairTraversalFallbackTest( void )
 	return 0;
 }
 
+static int MetalShapeCompactionTest( void )
+{
+	const int bodyCount = 1024;
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	worldDef.enableContinuous = false;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( worldId, true ) );
+	ENSURE( b3World_SetMetalBroadPhase( worldId, true ) );
+
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.filter.maskBits = 0;
+	shapeDef.invokeContactCreation = false;
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.2f };
+	int* movingProxyKeys = malloc( (size_t)( bodyCount / 2 ) * sizeof( int ) );
+	ENSURE( movingProxyKeys != NULL );
+	for ( int i = 0; i < bodyCount; ++i )
+	{
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_dynamicBody;
+		bodyDef.enableSleep = false;
+		bodyDef.position = (b3Pos){ 3.0f * (float)i, 0.0f, 0.0f };
+		bodyDef.linearVelocity = i % 2 == 0 ? (b3Vec3){ 20.0f, 0.0f, 0.0f } : b3Vec3_zero;
+		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+		b3ShapeId shapeId = b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+		if ( i % 2 == 0 )
+		{
+			b3World* world = b3GetWorldFromId( worldId );
+			movingProxyKeys[i / 2] = world->shapes.data[shapeId.index1 - 1].proxyKey;
+		}
+	}
+
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	b3World* world = b3GetWorldFromId( worldId );
+	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.shapeCompactDispatchCount == 1 );
+	ENSURE( profile.lastShapeResultCount == bodyCount );
+	ENSURE( profile.lastEnlargedShapeResultCount == bodyCount / 2 );
+	ENSURE( world->broadPhase.moveArray.count == bodyCount / 2 );
+	for ( int i = 0; i < bodyCount / 2; ++i )
+	{
+		ENSURE( world->broadPhase.moveArray.data[i] == movingProxyKeys[i] );
+	}
+	printf( "    shape compaction enlarged=%d/%d stableOrder=yes\n", profile.lastEnlargedShapeResultCount,
+		profile.lastShapeResultCount );
+
+	free( movingProxyKeys );
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
 static int MetalWorldIntegrationTest( void )
 {
 	const int count = 2048;
@@ -629,13 +682,13 @@ static int MetalWorldIntegrationTest( void )
 
 	b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
-	ENSURE( VerifyResidentPairTraversal( b3GetWorldFromId( gpuWorld ) ) == 0 );
+	b3World* gpuWorldInternal = b3GetWorldFromId( gpuWorld );
+	ENSURE( VerifyResidentPairTraversal( gpuWorldInternal ) == 0 );
 
 	float maxPositionError = 0.0f;
 	float maxRotationError = 0.0f;
 	float maxAABBError = 0.0f;
 #if defined( BOX3D_DOUBLE_PRECISION )
-	b3World* gpuWorldInternal = b3GetWorldFromId( gpuWorld );
 	float maxOracleUnderflow = 0.0f;
 #endif
 	for ( int i = 0; i < count; ++i )
@@ -672,10 +725,10 @@ static int MetalWorldIntegrationTest( void )
 	}
 
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
-	printf( "    integrated world device=%s fusedDispatches=%llu shapeDispatches=%llu maxPositionError=%.3g "
-			"maxRotationError=%.3g maxAABBError=%.3g\n", profile.deviceName,
+	printf( "    integrated world device=%s fusedDispatches=%llu shapeDispatches=%llu compact=%d/%d "
+			"maxPositionError=%.3g maxRotationError=%.3g maxAABBError=%.3g\n", profile.deviceName,
 			(unsigned long long)profile.unconstrainedDispatchCount, (unsigned long long)profile.shapeDispatchCount,
-			maxPositionError, maxRotationError, maxAABBError );
+			profile.lastEnlargedShapeResultCount, profile.lastShapeResultCount, maxPositionError, maxRotationError, maxAABBError );
 	ENSURE( profile.enabled );
 	ENSURE( profile.unconstrainedDispatchCount == 4 );
 	ENSURE( profile.unconstrainedFallbackCount == 0 );
@@ -683,6 +736,10 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.finalizationDispatchCount == 1 );
 	ENSURE( profile.shapeDispatchCount == 1 );
 	ENSURE( profile.shapeFallbackCount == 0 );
+	ENSURE( profile.shapeCompactDispatchCount == 1 );
+	ENSURE( profile.lastShapeResultCount == count );
+	ENSURE( 0 < profile.lastEnlargedShapeResultCount && profile.lastEnlargedShapeResultCount <= count );
+	ENSURE( gpuWorldInternal->broadPhase.moveArray.count == profile.lastEnlargedShapeResultCount );
 	ENSURE( profile.positionDispatchCount == 0 );
 	ENSURE( profile.positionFallbackCount == 0 );
 	ENSURE( maxPositionError <= 3.0e-5f );
@@ -1606,6 +1663,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalFinalizationTest );
 	RUN_SUBTEST( MetalPairTraversalTest );
 	RUN_SUBTEST( MetalPairTraversalFallbackTest );
+	RUN_SUBTEST( MetalShapeCompactionTest );
 	RUN_SUBTEST( MetalWorldIntegrationTest );
 	RUN_SUBTEST( MetalDistanceJointContactTest );
 	RUN_SUBTEST( MetalUnsupportedJointFallbackTest );

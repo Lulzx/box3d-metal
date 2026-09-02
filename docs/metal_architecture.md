@@ -100,9 +100,11 @@ A final traversal writes disjoint candidate ranges in the same command buffer.
 Each per-move record also carries the resident leaf's shape id and fat AABB, so
 the CPU filtering callback does not dereference the CPU dynamic tree for query
 metadata. When device leaf update and refit succeed, CPU proxy bookkeeping
-consumes enlarged flat results directly in their deterministic packed order;
-it skips the enlarged-body bit-set reduction and the second body/shape-list
-walk. The CPU tree is still enlarged for public queries and fallback safety.
+consumes a stable GPU-compacted 32-byte record only for each enlarged shape.
+A 256-lane hierarchical scan preserves packed shape order across blocks. This
+skips the full-result rescan, enlarged-body bit-set reduction, and second
+body/shape-list walk. The CPU tree is still enlarged for public queries and
+fallback safety.
 The first unexpectedly dense call may submit one write-only retry after growing
 the persistent candidate buffer; the steady path submits and waits once. CPU
 consumption then reuses the complete upstream callback for moved-proxy
@@ -130,7 +132,7 @@ paths, not yet the final performance architecture.
 | Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
 | Narrow phase and manifolds | CPU |
 | Contact preparation and impulse storage | CPU |
-| Body and awake-shape finalization | Experimental Metal kernels; resident bounds feed tree refit while CPU still applies flat bookkeeping results and retains CCD/topology |
+| Body and awake-shape finalization | Experimental Metal kernels; resident bounds feed tree refit and enlarged shapes are stably compacted, while CPU still applies the full flat result for public AABBs and retains CCD/topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
 | Double-precision world positions | VF64 exact add plus directed narrowing produces conservative far-world AABBs on Metal |
 | Cross-platform bit determinism | CPU only; Metal is tolerance-equivalent |

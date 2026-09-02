@@ -32,6 +32,9 @@ typedef struct b3MetalProfile
 	uint64_t finalizationFallbackCount;
 	uint64_t shapeDispatchCount;
 	uint64_t shapeFallbackCount;
+	uint64_t shapeCompactDispatchCount;
+	int lastShapeResultCount;
+	int lastEnlargedShapeResultCount;
 	uint64_t pairDispatchCount;
 	uint64_t pairFallbackCount;
 	uint64_t pairTreeUploadCount;

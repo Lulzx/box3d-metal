@@ -26,6 +26,8 @@ with deterministic on-device candidate compaction, while retaining CPU filtering
 and contact creation. Tree snapshots remain in persistent Metal storage;
 ordinary awake-shape motion updates leaves and refits internal bounds on-device,
 while topology changes and unsupported CPU mutations invalidate the snapshot.
+Enlarged proxy bookkeeping consumes a stable GPU-compacted subset rather than
+rescanning every shape result or walking body shape lists again.
 Double-precision worlds use VF64 software binary64 for exact world translation
 and directed float AABB narrowing on Metal. The stages remain off by default;
 CPU shape bookkeeping/readback is still a regression, while GPU tree traversal

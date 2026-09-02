@@ -163,6 +163,16 @@ typedef struct b3MetalShapeAABBResult
 	float fatUpperX, fatUpperY, fatUpperZ;
 } b3MetalShapeAABBResult;
 
+// Stable GPU compaction of the enlarged subset. This is deliberately sufficient
+// for broad-phase proxy bookkeeping without reading the full per-shape result.
+typedef struct b3MetalEnlargedShapeResult
+{
+	int shapeId;
+	int proxyKey;
+	float lowerX, lowerY, lowerZ;
+	float upperX, upperY, upperZ;
+} b3MetalEnlargedShapeResult;
+
 // Constraint softness
 typedef struct b3Softness
 {
@@ -232,6 +242,8 @@ typedef struct b3StepContext
 	const b3MetalFinalizeResult* metalFinalizeResults;
 	const b3MetalShapeAABBResult* metalShapeResults;
 	int metalShapeResultCount;
+	const b3MetalEnlargedShapeResult* metalEnlargedShapeResults;
+	int metalEnlargedShapeResultCount;
 	bool metalStatesResident;
 	bool metalTreeRefitEligible;
 	bool metalTreeRefit;
