@@ -96,7 +96,8 @@ int main( void )
 			"prior_impulse_bytes,resident_pair_moves,enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,"
 			"last_pair_move_upload_bytes,pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,"
 			"last_pair_cpu_filter_candidates,last_pair_direct_create_candidates,pair_contact_seed_dispatches,"
-			"pair_record_traversal_bypasses,last_pair_contact_seed_count,last_pair_contact_seed_bytes\n" );
+			"pair_record_traversal_bypasses,last_pair_contact_seed_count,last_pair_contact_seed_bytes,"
+			"pair_private_scratch_dispatches,last_pair_raw_shared_bytes\n" );
 	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
 	{
 		int contactCount = requestedCount > 0 ? requestedCount : counts[testIndex];
@@ -121,7 +122,7 @@ int main( void )
 		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
 		uint64_t priorImpulseBytes = (uint64_t)profile.lastResidentConvexConstraintCount * 1696;
 		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%"
-				"llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%llu,%d,%d,%d,%llu,%llu,%d,%llu\n",
+				"llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%llu,%d,%d,%d,%llu,%llu,%d,%llu,%llu,%llu\n",
 				contactCount, repeats, cpuMs, gpuMs, cpuMs / gpuMs, (unsigned long long)profile.contactPrepareDispatchCount,
 				(unsigned long long)profile.contactPrepareDeviceRefreshCount,
 				(unsigned long long)profile.contactCollisionBypassCount, (unsigned long long)profile.contactCollisionCpuCount,
@@ -157,7 +158,9 @@ int main( void )
 				profile.lastPairDirectCreateCount,
 				(unsigned long long)profile.pairContactSeedDispatchCount,
 				(unsigned long long)profile.pairRecordTraversalBypassCount,
-				profile.lastPairContactSeedCount, (unsigned long long)profile.lastPairContactSeedBytes );
+				profile.lastPairContactSeedCount, (unsigned long long)profile.lastPairContactSeedBytes,
+				(unsigned long long)profile.pairPrivateScratchDispatchCount,
+				(unsigned long long)profile.lastPairRawSharedBytes );
 		b3DestroyWorld( gpuWorld );
 	}
 	return 0;
