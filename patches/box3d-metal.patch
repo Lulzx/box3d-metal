@@ -1049,10 +1049,10 @@ index 0000000..9f2dcfa
 +}
 diff --git a/benchmark/metal_resident_contacts.c b/benchmark/metal_resident_contacts.c
 new file mode 100644
-index 0000000..5a37bb1
+index 0000000..a465241
 --- /dev/null
 +++ b/benchmark/metal_resident_contacts.c
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,127 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -1129,7 +1129,8 @@ index 0000000..5a37bb1
 +	printf( "# operation=whole_world_resident_sphere_contacts substeps=4 workers=%d timing=wall_clock_step\n", workerCount );
 +	printf( "contacts,repeats,cpu_ms,gpu_ms,speedup,prepare_dispatches,device_prepare_refreshes,collision_bypasses,cpu_collision_"
 +			"contacts,last_collision_exceptions,manifold_exception_bytes,input_packs,input_reuses,last_input_bytes,coverage_"
-+			"bypasses,state_walk_bypasses,last_state_clear_bytes,hit_clear_bypasses,last_hit_clear_bytes,manifold_syncs,"
++			"bypasses,state_walk_bypasses,last_state_clear_bytes,hit_clear_bypasses,last_hit_clear_bytes,awake_island_clear_"
++			"bypasses,last_awake_island_clear_bytes,manifold_syncs,"
 +			"schedule_packs,schedule_reuses,store_bypasses,event_syncs,public_syncs,index_bytes,prior_stream_bytes,impulse_bytes,"
 +			"prior_impulse_bytes\n" );
 +	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
@@ -1154,7 +1155,7 @@ index 0000000..5a37bb1
 +		b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 +		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
 +		uint64_t priorImpulseBytes = (uint64_t)profile.lastResidentConvexConstraintCount * 1696;
-+		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%"
++		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%"
 +				"llu,%llu,%llu,%llu,%llu,%llu\n",
 +				contactCount, repeats, cpuMs, gpuMs, cpuMs / gpuMs, (unsigned long long)profile.contactPrepareDispatchCount,
 +				(unsigned long long)profile.contactPrepareDeviceRefreshCount,
@@ -1167,6 +1168,8 @@ index 0000000..5a37bb1
 +				(unsigned long long)profile.lastContactStateBitSetBytes,
 +				(unsigned long long)profile.contactHitEventBitSetClearBypassCount,
 +				(unsigned long long)profile.lastContactHitEventBitSetBytes,
++				(unsigned long long)profile.awakeIslandBitSetClearBypassCount,
++				(unsigned long long)profile.lastAwakeIslandBitSetBytes,
 +				(unsigned long long)profile.contactManifoldSyncCount,
 +				(unsigned long long)profile.contactSchedulePackCount, (unsigned long long)profile.contactScheduleReuseCount,
 +				(unsigned long long)profile.contactImpulseStoreBypassCount,
@@ -1298,6 +1301,59 @@ index 0000000..858c342
 +	}
 +	return 0;
 +}
+diff --git a/docs/benchmarks/m4-pro-awake-island-bitset-bypass-2026-09-02.md b/docs/benchmarks/m4-pro-awake-island-bitset-bypass-2026-09-02.md
+new file mode 100644
+index 0000000..dd2ac23
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-awake-island-bitset-bypass-2026-09-02.md
+@@ -0,0 +1,47 @@
++# M4 Pro awake-island bitset bypass — 2026-09-02
++
++## Scope
++
++Body finalization previously cleared one awake-island bitset per worker and
++wrote an island bit for every awake body even when world sleeping was disabled.
++The sleep stage is not entered in that mode, so none of that scratch state is
++observable or consumed.
++
++Sleep-disabled worlds now skip the bitset clear, per-body island lookup, island
++bit write, and split-candidate bookkeeping. Sleep-enabled worlds retain the
++original path. This does not remove the remaining CPU body finalization walk:
++body transforms, move events, transient flags, force reset, and CCD decisions
++are still materialized on the CPU.
++
++## Differential evidence
++
++The 81-contact CPU/Metal differential ran four sleep-disabled finalization
++phases. All four reported `awakeIslandBitSetClearBypassCount`, with
++`lastAwakeIslandBitSetBytes` equal to zero. Its existing transform and velocity
++errors remained within tolerance.
++
++A dedicated sleep-enabled fixture kept the body awake, recorded zero bypasses,
++and cleared a nonzero eight-byte island bitset. This proves the original sleep
++path remains active when its result is consumed.
++
++The complete non-Metal Release, float Metal debug, AddressSanitizer, and
++UndefinedBehaviorSanitizer suites passed. Float and double/VF64
++warning-as-error focused suites passed, as did focused double/VF64 UBSan.
++
++## Structural harness evidence
++
++The loaded-host Release resident-contact harness reported:
++
++| Contacts | Finalization phases | Awake-island clear bypasses | Latest clear bytes |
++| ---: | ---: | ---: | ---: |
++| 512 | 9 | 9 | 0 |
++| 8,192 | 9 | 9 | 0 |
++
++The rows are structural evidence only: a concurrent Python process held one CPU
++core and the load average remained unsuitable for timing claims.
++
++## Next boundary
++
++The next larger finalization boundary is device authority for body transforms
++and compact move events. That is required before the shared body-finalization
++result stream and the remaining CPU body traversal can be removed safely.
 diff --git a/docs/benchmarks/m4-pro-capsule-narrow-phase-2026-09-02.md b/docs/benchmarks/m4-pro-capsule-narrow-phase-2026-09-02.md
 new file mode 100644
 index 0000000..bb2756a
@@ -3596,10 +3652,10 @@ index 0000000..1e74458
 +needed before the shared narrow-phase streams can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..11d5235
+index 0000000..d51eab3
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,448 @@
+@@ -0,0 +1,456 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -3724,6 +3780,14 @@ index 0000000..11d5235
 +fallback count, and last GPU execution time. `b3World_DisableMetal` releases the
 +resources. `minimumBodyCount` is deliberately caller-controlled until benchmark
 +coverage establishes stable defaults across Apple GPU families.
++
++Body finalization also avoids awake-island scratch traffic when world sleeping
++is disabled. In that mode no later stage consumes the per-worker island bitsets,
++so finalization neither clears them nor performs the per-body island lookup and
++bit write. `awakeIslandBitSetClearBypassCount` and
++`lastAwakeIslandBitSetBytes` expose this boundary. Sleep-enabled worlds retain
++Erin's original clear, deterministic union, split-candidate reduction, and
++reverse island traversal unchanged.
 +
 +An independently opt-in pair stage copies Erin's existing static, kinematic,
 +and dynamic tree topology into persistent shared Metal buffers. A monotonic
@@ -4064,10 +4128,10 @@ index 2e82590..cd49acf 100644
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000..ea8baff
+index 0000000..9e2f69f
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,174 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -4150,6 +4214,12 @@ index 0000000..ea8baff
 +	/// Hit-event bitset bytes cleared on the latest solver phase. An empty
 +	/// compact resident event list reports zero unless Metal falls back.
 +	uint64_t lastContactHitEventBitSetBytes;
++	/// Finalization phases that skipped all per-worker awake-island bitset
++	/// clears and writes because world sleeping was disabled.
++	uint64_t awakeIslandBitSetClearBypassCount;
++	/// Awake-island bitset bytes cleared on the latest finalization phase.
++	/// Sleep-disabled worlds report zero.
++	uint64_t lastAwakeIslandBitSetBytes;
 +	/// Individual resident manifolds materialized into the CPU mirror on a
 +	/// public, debug, snapshot, route-change, or solver-fallback boundary.
 +	uint64_t contactManifoldSyncCount;
@@ -12190,7 +12260,7 @@ index 0000000..a4424e5
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..7d5813b 100644
+index 29c13c7..271266b 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -12244,7 +12314,7 @@ index 29c13c7..7d5813b 100644
  	// Detach any recording before teardown. The user owns and frees the recording buffer.
  	b3StopRecordingInternal( world );
  
-@@ -538,12 +557,201 @@ int b3GetWorldCount( void )
+@@ -538,12 +557,203 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -12385,6 +12455,8 @@ index 29c13c7..7d5813b 100644
 +	profile.lastContactStateBitSetBytes = world->metalLastContactStateBitSetBytes;
 +	profile.contactHitEventBitSetClearBypassCount = world->metalContactHitEventBitSetClearBypassCount;
 +	profile.lastContactHitEventBitSetBytes = world->metalLastContactHitEventBitSetBytes;
++	profile.awakeIslandBitSetClearBypassCount = world->metalAwakeIslandBitSetClearBypassCount;
++	profile.lastAwakeIslandBitSetBytes = world->metalLastAwakeIslandBitSetBytes;
 +	profile.contactManifoldSyncCount = world->metalContactManifoldSyncCount;
 +	profile.contactImpulseStoreBypassCount = world->metalContactImpulseStoreBypassCount;
 +	profile.contactImpulseEventSyncCount = world->metalContactImpulseEventSyncCount;
@@ -12447,7 +12519,7 @@ index 29c13c7..7d5813b 100644
  // Used to hide the random-access latency of contact lookups while we work on an
  // earlier index.
  static inline void b3PrefetchContact( const b3Contact* contact )
-@@ -582,18 +790,69 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -582,18 +792,69 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  	const int contactPrefetchDistance = 4;
  	int prefetchEnd = endIndex - contactPrefetchDistance;
  
@@ -12518,7 +12590,7 @@ index 29c13c7..7d5813b 100644
  
  		b3Shape* shapeA = shapes + contact->shapeIdA;
  		b3Shape* shapeB = shapes + contact->shapeIdB;
-@@ -653,8 +912,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -653,8 +914,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		// Contact recycling optimization. Please cite this library if you use this optimization.
  		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
  		// However, this allows larger relative motion and has fewer tuning parameters (just one).
@@ -12530,7 +12602,7 @@ index 29c13c7..7d5813b 100644
  		{
  			// The scalar part of b3InvMulQuat is just the quaternion dot product.
  			// cos(relative_angle/2) = scalar(conj(q1) * q2) = dot(q1, q2)
-@@ -741,9 +1001,103 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -741,9 +1003,103 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
  		contact->flags |= b3_relativeTransformValid;
  
@@ -12637,7 +12709,7 @@ index 29c13c7..7d5813b 100644
  
  		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
  		if ( bucketIndex > 0 )
-@@ -814,6 +1168,32 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
+@@ -814,6 +1170,32 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
  	}
  }
  
@@ -12670,7 +12742,7 @@ index 29c13c7..7d5813b 100644
  // Narrow-phase collision
  static void b3Collide( b3StepContext* context )
  {
-@@ -825,12 +1205,17 @@ static void b3Collide( b3StepContext* context )
+@@ -825,12 +1207,17 @@ static void b3Collide( b3StepContext* context )
  
  	// Gather contacts from all the graph colors into a single array for easier parallel-for
  	int touchingCount = 0;
@@ -12688,7 +12760,7 @@ index 29c13c7..7d5813b 100644
  
  	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
  	int nonTouchingCount = awakeSet->contactIndices.count;
-@@ -843,55 +1228,119 @@ static void b3Collide( b3StepContext* context )
+@@ -843,55 +1230,119 @@ static void b3Collide( b3StepContext* context )
  		return;
  	}
  
@@ -12839,7 +12911,7 @@ index 29c13c7..7d5813b 100644
  	contactIndices = NULL;
  
  	// Serially update contact state
-@@ -900,8 +1349,10 @@ static void b3Collide( b3StepContext* context )
+@@ -900,8 +1351,10 @@ static void b3Collide( b3StepContext* context )
  
  	int satMultiplier = context->dt > 0.0f ? 1 : 0;
  
@@ -12852,7 +12924,7 @@ index 29c13c7..7d5813b 100644
  	world->satCallCount = satMultiplier * world->taskContexts.data[0].satCallCount;
  	world->satCacheHitCount = satMultiplier * world->taskContexts.data[0].satCacheHitCount;
  	memcpy( world->manifoldCounts, world->taskContexts.data[0].manifoldCounts,
-@@ -909,7 +1360,8 @@ static void b3Collide( b3StepContext* context )
+@@ -909,7 +1362,8 @@ static void b3Collide( b3StepContext* context )
  
  	for ( int i = 1; i < world->workerCount; ++i )
  	{
@@ -12862,7 +12934,7 @@ index 29c13c7..7d5813b 100644
  		world->satCallCount += world->taskContexts.data[i].satCallCount;
  		world->satCacheHitCount += world->taskContexts.data[i].satCacheHitCount;
  		for ( int j = 0; j < B3_CONTACT_MANIFOLD_COUNT_BUCKETS; ++j )
-@@ -932,7 +1384,8 @@ static void b3Collide( b3StepContext* context )
+@@ -932,7 +1386,8 @@ static void b3Collide( b3StepContext* context )
  	uint16_t worldId = world->worldId;
  
  	// Process contact state changes. Iterate over set bits
@@ -12872,7 +12944,7 @@ index 29c13c7..7d5813b 100644
  	{
  		uint64_t bits = bitSet->bits[k];
  		while ( bits != 0 )
-@@ -1027,6 +1480,12 @@ static void b3Collide( b3StepContext* context )
+@@ -1027,6 +1482,12 @@ static void b3Collide( b3StepContext* context )
  	b3ValidateSolverSets( world );
  	b3ValidateContacts( world );
  
@@ -12885,7 +12957,7 @@ index 29c13c7..7d5813b 100644
  	b3TracyCZoneEnd( contact_state );
  	b3TracyCZoneEnd( collide );
  }
-@@ -1039,6 +1498,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1500,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -12908,7 +12980,7 @@ index 29c13c7..7d5813b 100644
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -1440,7 +1915,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1440,7 +1917,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  				b3WorldTransform transform = { bodySim->center, bodySim->transform.q };
  				draw->DrawTransformFcn( transform, draw->context );
  
@@ -12917,7 +12989,7 @@ index 29c13c7..7d5813b 100644
  				{
  					b3Vec3 offset = { 0.05f, 0.05f, 0.05f };
  					b3Pos p = b3TransformWorldPoint( transform, offset );
-@@ -1517,6 +1992,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1517,6 +1994,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  					// avoid double draw
  					if ( b3GetBit( &world->debugContactSet, contactId ) == false )
  					{
@@ -12929,7 +13001,7 @@ index 29c13c7..7d5813b 100644
  						b3Body* bodyA = b3Array_Get( world->bodies, contact->edges[0].bodyId );
  						b3BodySim* bodySimA = b3GetBodySim( world, bodyA );
  						b3Body* bodyB = b3Array_Get( world->bodies, contact->edges[1].bodyId );
-@@ -2125,6 +2605,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
+@@ -2125,6 +2607,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
  	B3_REC( world, WorldSetContactRecycleDistance, worldId, recycleDistance );
  
  	world->contactRecycleDistance = b3ClampFloat( recycleDistance, 0.0f, FLT_MAX );
@@ -12937,7 +13009,7 @@ index 29c13c7..7d5813b 100644
  }
  
  float b3World_GetContactRecycleDistance( b3WorldId worldId )
-@@ -2259,6 +2740,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
+@@ -2259,6 +2742,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
  	}
  
  	world->frictionCallback = callback != NULL ? callback : b3DefaultFrictionCallback;
@@ -12948,7 +13020,7 @@ index 29c13c7..7d5813b 100644
  }
  
  void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* callback )
-@@ -2270,6 +2755,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
+@@ -2270,6 +2757,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
  	}
  
  	world->restitutionCallback = callback != NULL ? callback : b3DefaultRestitutionCallback;
@@ -12959,7 +13031,7 @@ index 29c13c7..7d5813b 100644
  }
  
  void b3World_SetWorkerCount( b3WorldId worldId, int count )
-@@ -2312,6 +2801,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
+@@ -2312,6 +2803,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
  	}
  
  	b3StartRecordingIntoBuffer( world, recording );
@@ -12967,7 +13039,7 @@ index 29c13c7..7d5813b 100644
  }
  
  void b3World_StopRecording( b3WorldId worldId )
-@@ -2323,6 +2813,7 @@ void b3World_StopRecording( b3WorldId worldId )
+@@ -2323,6 +2815,7 @@ void b3World_StopRecording( b3WorldId worldId )
  	}
  
  	b3StopRecordingInternal( world );
@@ -12975,7 +13047,7 @@ index 29c13c7..7d5813b 100644
  }
  
  void b3World_DumpMemoryStats( b3WorldId worldId )
-@@ -3313,6 +3804,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
+@@ -3313,6 +3806,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
  	}
  	world->preSolveFcn = fcn;
  	world->preSolveContext = context;
@@ -12983,7 +13055,7 @@ index 29c13c7..7d5813b 100644
  }
  
  void b3World_SetGravity( b3WorldId worldId, b3Vec3 gravity )
-@@ -3473,6 +3965,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +3967,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -12996,7 +13068,7 @@ index 29c13c7..7d5813b 100644
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8..46a2554 100644
+index 8bd3df8..27a1be0 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
 @@ -108,6 +108,7 @@ typedef struct b3TaskContext
@@ -13007,7 +13079,7 @@ index 8bd3df8..46a2554 100644
  
  	b3DebugPoint points[B3_DEBUG_POINT_CAPACITY];
  	int pointCount;
-@@ -266,6 +267,91 @@ typedef struct b3World
+@@ -266,6 +267,93 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
@@ -13040,6 +13112,8 @@ index 8bd3df8..46a2554 100644
 +	uint64_t metalLastContactStateBitSetBytes;
 +	uint64_t metalContactHitEventBitSetClearBypassCount;
 +	uint64_t metalLastContactHitEventBitSetBytes;
++	uint64_t metalAwakeIslandBitSetClearBypassCount;
++	uint64_t metalLastAwakeIslandBitSetBytes;
 +	uint64_t metalContactManifoldSyncCount;
 +	uint64_t metalContactManifoldGeneration;
 +	uint64_t metalContactInputRevision;
@@ -13099,7 +13173,7 @@ index 8bd3df8..46a2554 100644
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -288,6 +374,17 @@ typedef struct b3World
+@@ -288,6 +376,17 @@ typedef struct b3World
  	bool inUse;
  } b3World;
  
@@ -13117,7 +13191,7 @@ index 8bd3df8..46a2554 100644
  b3World* b3GetUnlockedWorldFromId( b3WorldId id );
  b3World* b3GetWorldFromId( b3WorldId id );
  
-@@ -347,4 +444,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +446,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
@@ -13290,7 +13364,7 @@ index ed76dd4..86b87cb 100644
  	float density;
  	float explosionScale;
 diff --git a/src/solver.c b/src/solver.c
-index d8aace0..5250894 100644
+index d8aace0..b5d8631 100644
 --- a/src/solver.c
 +++ b/src/solver.c
 @@ -19,6 +19,9 @@
@@ -13303,7 +13377,15 @@ index d8aace0..5250894 100644
  
  #include <limits.h>
  #include <stddef.h>
-@@ -692,8 +695,6 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+@@ -681,7 +684,6 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+ 
+ 	b3TaskContext* taskContext = world->taskContexts.data + workerIndex;
+ 	b3BitSet* enlargedSimBitSet = &taskContext->enlargedSimBitSet;
+-	b3BitSet* awakeIslandBitSet = &taskContext->awakeIslandBitSet;
+ 
+ 	const float speculativeScalar = B3_SPECULATIVE_DISTANCE;
+ 
+@@ -692,8 +694,6 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
  
  		b3Vec3 v = state->linearVelocity;
  		b3Vec3 w = state->angularVelocity;
@@ -13312,7 +13394,7 @@ index d8aace0..5250894 100644
  
  		if ( b3IsValidVec3( v ) == false || b3IsValidVec3( w ) == false )
  		{
-@@ -704,28 +705,50 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+@@ -704,28 +704,50 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
  		B3_ASSERT( b3IsValidVec3( v ) );
  		B3_ASSERT( b3IsValidVec3( w ) );
  
@@ -13380,23 +13462,59 @@ index d8aace0..5250894 100644
  
  		// cache miss here, however I need the shape list below
  		b3Body* body = bodies + sim->bodyId;
-@@ -790,9 +813,12 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+@@ -790,33 +812,40 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
  			body->sleepTime += timeStep;
  		}
  
 -		// Update world space inverse inertia tensor.
 -		b3Matrix3 rotationMatrix = b3MakeMatrixFromQuat( sim->transform.q );
 -		sim->invInertiaWorld = b3MulMM( b3MulMM( rotationMatrix, sim->invInertiaLocal ), b3Transpose( rotationMatrix ) );
+-
+-		// Any single body in an island can keep it awake
+-		b3Island* island = b3Array_Get( world->islands, body->islandId );
+-		if ( body->sleepTime < B3_TIME_TO_SLEEP )
 +		if ( metalResult == NULL )
-+		{
+ 		{
+-			// keep island awake
+-			int islandIndex = island->localIndex;
+-			b3SetBit( awakeIslandBitSet, islandIndex );
 +			// Update world space inverse inertia tensor.
 +			b3Matrix3 rotationMatrix = b3MakeMatrixFromQuat( sim->transform.q );
 +			sim->invInertiaWorld = b3MulMM( b3MulMM( rotationMatrix, sim->invInertiaLocal ), b3Transpose( rotationMatrix ) );
-+		}
- 
- 		// Any single body in an island can keep it awake
- 		b3Island* island = b3Array_Get( world->islands, body->islandId );
-@@ -816,7 +842,7 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+ 		}
+-		else if ( island->constraintRemoveCount > 0 )
++
++		if ( enableSleep )
+ 		{
+-			// Body wants to sleep but its island needs splitting first. Track the sleepiest candidate.
+-			// Break sleep time ties using the island id to ensure determinism. The cross worker reduction
+-			// breaks ties the same way.
+-			if ( body->sleepTime > taskContext->splitSleepTime ||
+-				 ( body->sleepTime == taskContext->splitSleepTime && body->islandId > taskContext->splitIslandId ) )
++			// Any single body in an island can keep it awake. Sleep-disabled worlds do not
++			// consume this bitset, so avoid the island lookup and cache-line write entirely.
++			b3Island* island = b3Array_Get( world->islands, body->islandId );
++			if ( body->sleepTime < B3_TIME_TO_SLEEP )
+ 			{
+-				// pick the sleepiest candidate
+-				taskContext->splitIslandId = body->islandId;
+-				taskContext->splitSleepTime = body->sleepTime;
++				// keep island awake
++				int islandIndex = island->localIndex;
++				b3SetBit( &taskContext->awakeIslandBitSet, islandIndex );
++			}
++			else if ( island->constraintRemoveCount > 0 )
++			{
++				// Body wants to sleep but its island needs splitting first. Track the sleepiest candidate.
++				// Break sleep time ties using the island id to ensure determinism. The cross worker reduction
++				// breaks ties the same way.
++				if ( body->sleepTime > taskContext->splitSleepTime ||
++					 ( body->sleepTime == taskContext->splitSleepTime && body->islandId > taskContext->splitIslandId ) )
++				{
++					// pick the sleepiest candidate
++					taskContext->splitIslandId = body->islandId;
++					taskContext->splitSleepTime = body->sleepTime;
++				}
  			}
  		}
  
@@ -13405,7 +13523,7 @@ index d8aace0..5250894 100644
  		b3WorldTransform transform = sim->transform;
  		bool isFast = ( sim->flags & b3_isFast ) != 0;
  		int shapeId = body->headShapeId;
-@@ -833,7 +859,7 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+@@ -833,7 +862,7 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
  				// Bit-set to keep the move array sorted
  				b3SetBit( enlargedSimBitSet, simIndex );
  			}
@@ -13414,7 +13532,7 @@ index d8aace0..5250894 100644
  			{
  				b3AABB aabb = b3ComputeFatShapeAABB( shape, transform, speculativeScalar );
  				shape->aabb = aabb;
-@@ -859,6 +885,47 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+@@ -859,6 +888,47 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
  	b3TracyCZoneEnd( finalize_bodies );
  }
  
@@ -13462,7 +13580,7 @@ index d8aace0..5250894 100644
  typedef struct b3BlockDim
  {
  	// number of items per block (except last block)
-@@ -974,7 +1041,10 @@ static void b3ExecuteBlock( b3SolverStage* stage, b3StepContext* context, b3Solv
+@@ -974,7 +1044,10 @@ static void b3ExecuteBlock( b3SolverStage* stage, b3StepContext* context, b3Solv
  			break;
  
  		case b3_stagePrepareWideContacts:
@@ -13474,7 +13592,7 @@ index d8aace0..5250894 100644
  			break;
  
  		case b3_stagePrepareContacts:
-@@ -1148,6 +1218,303 @@ static void b3ExecuteMainStage( b3SolverStage* stage, b3StepContext* context, ui
+@@ -1148,6 +1221,303 @@ static void b3ExecuteMainStage( b3SolverStage* stage, b3StepContext* context, ui
  	}
  }
  
@@ -13778,7 +13896,7 @@ index d8aace0..5250894 100644
  // Parallel solver task
  static void b3SolverTask( void* taskContext )
  {
-@@ -1231,6 +1598,26 @@ static void b3SolverTask( void* taskContext )
+@@ -1231,6 +1601,26 @@ static void b3SolverTask( void* taskContext )
  
  		int graphSyncIndex = 1;
  		int subStepCount = context->subStepCount;
@@ -13805,7 +13923,7 @@ index d8aace0..5250894 100644
  		for ( int subStepIndex = 0; subStepIndex < subStepCount; ++subStepIndex )
  		{
  			// stageIndex restarted each iteration
-@@ -1240,21 +1627,42 @@ static void b3SolverTask( void* taskContext )
+@@ -1240,21 +1630,42 @@ static void b3SolverTask( void* taskContext )
  			// Integrate velocities
  			syncBits = ( bodySyncIndex << 16 ) | iterationStageIndex;
  			B3_ASSERT( stages[iterationStageIndex].type == b3_stageIntegrateVelocities );
@@ -13852,7 +13970,7 @@ index d8aace0..5250894 100644
  				iterationStageIndex += 1;
  			}
  			graphSyncIndex += 1;
-@@ -1266,14 +1674,26 @@ static void b3SolverTask( void* taskContext )
+@@ -1266,14 +1677,26 @@ static void b3SolverTask( void* taskContext )
  			for ( int j = 0; j < ITERATIONS; ++j )
  			{
  				// Overflow constraints have lower priority. Typically these are dynamic-vs-dynamic.
@@ -13882,7 +14000,7 @@ index d8aace0..5250894 100644
  					iterationStageIndex += 1;
  				}
  				graphSyncIndex += 1;
-@@ -1284,7 +1704,22 @@ static void b3SolverTask( void* taskContext )
+@@ -1284,7 +1707,22 @@ static void b3SolverTask( void* taskContext )
  			// Integrate positions
  			B3_ASSERT( stages[iterationStageIndex].type == b3_stageIntegratePositions );
  			syncBits = ( bodySyncIndex << 16 ) | iterationStageIndex;
@@ -13906,7 +14024,7 @@ index d8aace0..5250894 100644
  			iterationStageIndex += 1;
  			bodySyncIndex += 1;
  
-@@ -1294,14 +1729,26 @@ static void b3SolverTask( void* taskContext )
+@@ -1294,14 +1732,26 @@ static void b3SolverTask( void* taskContext )
  			useBias = false;
  			for ( int j = 0; j < RELAX_ITERATIONS; ++j )
  			{
@@ -13936,7 +14054,7 @@ index d8aace0..5250894 100644
  					iterationStageIndex += 1;
  				}
  				graphSyncIndex += 1;
-@@ -1317,14 +1764,26 @@ static void b3SolverTask( void* taskContext )
+@@ -1317,14 +1767,26 @@ static void b3SolverTask( void* taskContext )
  		// Restitution
  		for ( int iteration = 0; iteration < B3_RESTITUTION_ITERATIONS; ++iteration )
  		{
@@ -13965,7 +14083,7 @@ index d8aace0..5250894 100644
  				iterStageIndex += 1;
  			}
  			graphSyncIndex += 1;
-@@ -1439,12 +1898,23 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1439,12 +1901,23 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  {
  	// Only count steps that advance the simulation
  	world->stepIndex += 1;
@@ -13990,7 +14108,7 @@ index d8aace0..5250894 100644
  		return;
  	}
  
-@@ -1462,6 +1932,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1462,6 +1935,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  		stepContext->sims = awakeSet->bodySims.data;
  		stepContext->states = awakeSet->bodyStates.data;
@@ -14005,7 +14123,7 @@ index d8aace0..5250894 100644
  
  		// count contacts, joints, and colors
  		int activeColorCount = 0;
-@@ -1502,6 +1980,9 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1502,6 +1983,9 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  		// c is the active color index
  		int wideContactCount = 0;
@@ -14015,7 +14133,7 @@ index d8aace0..5250894 100644
  		int contactCount = 0;
  		int manifoldCount = 0;
  		int jointCount = 0;
-@@ -1524,6 +2005,27 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1524,6 +2008,27 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			int colorWideConstraintCount =
  				colorConvexContactCount > 0 ? ( ( colorConvexContactCount - 1 ) >> B3_SIMD_SHIFT ) + 1 : 0;
  			wideContactCount += colorWideConstraintCount;
@@ -14043,7 +14161,7 @@ index d8aace0..5250894 100644
  			colorWideContactCounts[c] = colorWideConstraintCount;
  
  			colorContactCounts[c] = colorContactCount;
-@@ -1548,6 +2050,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1548,6 +2053,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			c += 1;
  		}
  		activeColorCount = c;
@@ -14058,7 +14176,7 @@ index d8aace0..5250894 100644
  
  		// Prepare and store run as one flat parallel-for over the entire wide constraint range,
  		// partitioned into uniformly sized blocks. Color info is consulted inside the task via
-@@ -1557,14 +2067,26 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1557,14 +2070,26 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3BlockDim jointPrepareDim = b3ComputeBlockCount( jointCount, minJointsPerBlock, maxBlockCount );
  
  		int wideContactByteCount = b3GetWideContactConstraintByteCount();
@@ -14092,7 +14210,7 @@ index d8aace0..5250894 100644
  		int overflowCount = overflow->contacts.count;
  		int overflowManifoldCount = 0;
  		for ( int i = 0; i < overflowCount; ++i )
-@@ -1573,10 +2095,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1573,10 +2098,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			overflowManifoldCount += overflow->contacts.data[i].manifoldCount;
  		}
  
@@ -14135,7 +14253,7 @@ index d8aace0..5250894 100644
  
  		// Build the span table for the flat prepare/store parallel-for while I slice the
  		// wide constraint buffer across colors. One entry per active color plus a sentinel
-@@ -1798,9 +2348,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1798,9 +2351,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		stepContext->wideContactCount = wideContactCount;
  		stepContext->manifoldConstraints = manifoldConstraints;
  		stepContext->contactConstraints = contactConstraints;
@@ -14151,7 +14269,7 @@ index d8aace0..5250894 100644
  		b3AtomicStoreU32( &stepContext->atomicSyncBits, 0 );
  		b3AtomicStoreInt( &stepContext->mainClaimed, 0 );
  
-@@ -1812,11 +2368,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1812,11 +2371,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  		int jointIdCapacity = b3GetIdCapacity( &world->jointIdPool );
  		int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
@@ -14170,7 +14288,7 @@ index d8aace0..5250894 100644
  			taskContext->hasHitEvents = false;
  
  			workerContext[i].context = stepContext;
-@@ -1866,6 +2428,19 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1866,6 +2431,19 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		world->splitIslandId = B3_NULL_INDEX;
  
  		world->profile.constraints = b3GetMillisecondsAndReset( &constraintTicks );
@@ -14190,8 +14308,36 @@ index d8aace0..5250894 100644
  		b3TracyCZoneEnd( solve_constraints );
  
  		b3TracyCZoneNC( update_transforms, "Update Transforms", b3_colorMediumSeaGreen, true );
-@@ -1884,7 +2459,24 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1878,13 +2456,49 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+ 			b3TaskContext* taskContext = world->taskContexts.data + i;
+ 			b3Array_Clear( taskContext->sensorHits );
+ 			b3SetBitCountAndClear( &taskContext->enlargedSimBitSet, awakeBodyCount );
+-			b3SetBitCountAndClear( &taskContext->awakeIslandBitSet, awakeIslandCount );
+-			taskContext->splitIslandId = B3_NULL_INDEX;
+-			taskContext->splitSleepTime = 0.0f;
++			if ( world->enableSleep )
++			{
++				b3SetBitCountAndClear( &taskContext->awakeIslandBitSet, awakeIslandCount );
++				taskContext->splitIslandId = B3_NULL_INDEX;
++				taskContext->splitSleepTime = 0.0f;
++			}
++		}
++#if defined( BOX3D_METAL )
++		if ( world->metalContext != NULL )
++		{
++			if ( world->enableSleep )
++			{
++				uint64_t blockCount = ( (uint64_t)awakeIslandCount + 63u ) / 64u;
++				world->metalLastAwakeIslandBitSetBytes =
++					blockCount * sizeof( uint64_t ) * (uint64_t)world->workerCount;
++			}
++			else
++			{
++				world->metalAwakeIslandBitSetClearBypassCount += 1;
++				world->metalLastAwakeIslandBitSetBytes = 0;
++			}
  		}
++#endif
  
  		// Finalize bodies. Must happen after the constraint solver and after island splitting.
 +#if defined( BOX3D_METAL )
@@ -14215,7 +14361,7 @@ index d8aace0..5250894 100644
  
  		// Free in reverse order
  		b3StackFree( &world->stack, graphBlocks );
-@@ -1893,11 +2485,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1893,11 +2507,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3StackFree( &world->stack, convexBlocks );
  		b3StackFree( &world->stack, bodyBlocks );
  		b3StackFree( &world->stack, stages );
@@ -14238,7 +14384,7 @@ index d8aace0..5250894 100644
  
  		world->profile.transforms = b3GetMilliseconds( transformTicks );
  		b3TracyCZoneEnd( update_transforms );
-@@ -2083,25 +2681,50 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2083,25 +2703,50 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			world->activeTaskCount -= 1;
  		}
  
@@ -14265,7 +14411,7 @@ index d8aace0..5250894 100644
 +		// scan all shape results, or traverse body shape lists a second time.
 +#if defined( BOX3D_METAL )
 +		if ( stepContext->metalTreeRefit )
- 		{
++		{
 +			b3BroadPhase* broadPhase = &world->broadPhase;
 +			for ( int resultIndex = 0; resultIndex < stepContext->metalEnlargedShapeResultCount; ++resultIndex )
 +			{
@@ -14283,7 +14429,7 @@ index d8aace0..5250894 100644
 +		}
 +		else
 +#endif
-+		{
+ 		{
 +			// Gather bits for all sim bodies that have enlarged AABBs.
 +			b3BitSet* enlargedBodyBitSet = &world->taskContexts.data[0].enlargedSimBitSet;
 +			for ( int i = 1; i < world->workerCount; ++i )
@@ -14301,7 +14447,7 @@ index d8aace0..5250894 100644
  			b3Body* bodyArray = world->bodies.data;
  			b3BodySim* bodySimArray = awakeSet->bodySims.data;
  			b3Shape* shapeArray = world->shapes.data;
-@@ -2113,24 +2736,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2113,24 +2758,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  				{
  					uint32_t ctz = b3CTZ64( word );
  					uint32_t bodySimIndex = 64 * k + ctz;
@@ -14326,7 +14472,7 @@ index d8aace0..5250894 100644
  							shapeId = shape->nextShapeId;
  						}
  					}
-@@ -2139,21 +2753,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2139,21 +2775,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  						while ( shapeId != B3_NULL_INDEX )
  						{
  							b3Shape* shape = shapeArray + shapeId;
@@ -14348,7 +14494,7 @@ index d8aace0..5250894 100644
  					word = word & ( word - 1 );
  				}
  			}
-@@ -2178,7 +2785,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2178,7 +2807,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  		// Serially enlarge broad-phase proxies for bullet shapes
  		b3BroadPhase* broadPhase = &world->broadPhase;
@@ -14356,7 +14502,7 @@ index d8aace0..5250894 100644
  
  		// Fast array access is important here
  		b3Body* bodyArray = world->bodies.data;
-@@ -2219,12 +2825,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2219,12 +2847,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  				int proxyKey = shape->proxyKey;
  				int proxyId = B3_PROXY_ID( proxyKey );
@@ -14371,7 +14517,7 @@ index d8aace0..5250894 100644
  
  				shapeId = shape->nextShapeId;
  			}
-@@ -2234,6 +2841,18 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2234,6 +2863,18 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3TracyCZoneEnd( bullets );
  	}
  
@@ -14629,10 +14775,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..064b5f6
+index 0000000..208cf42
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,3326 @@
+@@ -0,0 +1,3359 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -15084,6 +15230,33 @@ index 0000000..064b5f6
 +	free( reference );
 +	free( sims );
 +	free( states );
++	return 0;
++}
++
++static int MetalAwakeIslandBitSetTest( void )
++{
++	b3WorldDef worldDef = b3DefaultWorldDef();
++	worldDef.gravity = b3Vec3_zero;
++	b3WorldId worldId = b3CreateWorld( &worldDef );
++	ENSURE( b3World_EnableMetal( worldId, 1 ) );
++
++	b3BodyDef bodyDef = b3DefaultBodyDef();
++	bodyDef.type = b3_dynamicBody;
++	bodyDef.linearVelocity = (b3Vec3){ 1.0f, 0.0f, 0.0f };
++	b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
++	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
++	b3ShapeDef shapeDef = b3DefaultShapeDef();
++	b3CreateSphereShape( bodyId, &shapeDef, &sphere );
++
++	b3World_Step( worldId, 1.0f / 60.0f, 1 );
++	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
++	ENSURE( b3Body_IsAwake( bodyId ) );
++	ENSURE( profile.awakeIslandBitSetClearBypassCount == 0 );
++	ENSURE( profile.lastAwakeIslandBitSetBytes > 0 );
++	printf( "    awake island sleepEnabled clearBytes=%llu bypasses=0\n",
++			(unsigned long long)profile.lastAwakeIslandBitSetBytes );
++
++	b3DestroyWorld( worldId );
 +	return 0;
 +}
 +
@@ -16131,7 +16304,8 @@ index 0000000..064b5f6
 +	}
 +	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 +	printf( "    resident contact prepare contacts=%d dispatches=%llu deviceRefreshes=%llu collisionCpu=%llu lastExceptions=%llu "
-+			"inputs=%llu/%llu/%llu coverage=%llu stateWalks=%llu/%llu hitClears=%llu/%llu schedule=%llu/%llu indexBytes=%llu "
++			"inputs=%llu/%llu/%llu coverage=%llu stateWalks=%llu/%llu hitClears=%llu/%llu awakeIslandClears=%llu/%llu "
++			"schedule=%llu/%llu indexBytes=%llu "
 +			"legacyBytes=%zu "
 +			"impulseBytes=%llu legacyImpulseBytes=%zu transformError=%.3g velocityError=%.3g\n",
 +			count, (unsigned long long)profile.contactPrepareDispatchCount,
@@ -16143,6 +16317,8 @@ index 0000000..064b5f6
 +			(unsigned long long)profile.lastContactStateBitSetBytes,
 +			(unsigned long long)profile.contactHitEventBitSetClearBypassCount,
 +			(unsigned long long)profile.lastContactHitEventBitSetBytes,
++			(unsigned long long)profile.awakeIslandBitSetClearBypassCount,
++			(unsigned long long)profile.lastAwakeIslandBitSetBytes,
 +			(unsigned long long)profile.contactSchedulePackCount,
 +			(unsigned long long)profile.contactScheduleReuseCount, (unsigned long long)profile.lastContactPrepareIndexBytes,
 +			(size_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * 144,
@@ -16165,6 +16341,8 @@ index 0000000..064b5f6
 +	ENSURE( profile.lastContactStateBitSetBytes == 0 );
 +	ENSURE( profile.contactHitEventBitSetClearBypassCount == 4 );
 +	ENSURE( profile.lastContactHitEventBitSetBytes == 0 );
++	ENSURE( profile.awakeIslandBitSetClearBypassCount == 4 );
++	ENSURE( profile.lastAwakeIslandBitSetBytes == 0 );
 +	b3Counters cpuCounters = b3World_GetCounters( cpuWorld );
 +	b3Counters gpuCounters = b3World_GetCounters( gpuWorld );
 +	ENSURE( cpuCounters.satCallCount == gpuCounters.satCallCount );
@@ -17930,6 +18108,7 @@ index 0000000..064b5f6
 +	RUN_SUBTEST( MetalPositionIntegrationTest );
 +	RUN_SUBTEST( MetalFusedIntegrationTest );
 +	RUN_SUBTEST( MetalFinalizationTest );
++	RUN_SUBTEST( MetalAwakeIslandBitSetTest );
 +	RUN_SUBTEST( MetalConvexManifoldTest );
 +	RUN_SUBTEST( MetalResidentSolverOwnershipTest );
 +	RUN_SUBTEST( MetalContactMaterialCallbackExceptionTest );
