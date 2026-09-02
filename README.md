@@ -53,9 +53,12 @@ The same scatter writes active finalized records into a private table indexed
 by Box3D contact id. This adds no steady-path readback or dispatch; explicit
 table staging exists only for validation and fallback diagnostics.
 Transient per-contact ownership now carries that authority through persistence,
-callbacks, and topology into solver setup. SIMD-wide coverage is published only
-when every colored convex contact is resident-authoritative; recycling and mixed
-CPU/GPU sets fail closed. CPU contact preparation is still active in this checkpoint.
+and topology into solver setup. Pre-solve callbacks remain CPU-owned. When every
+colored convex contact is resident-authoritative and no convex overflow exists,
+a Metal kernel now prepares Erin's SIMD-wide contact constraints in the existing
+solver command buffer. The CPU still packs a 144-byte persistence/material
+record per lane; mixed, recycled, callback, overflow, and unsupported routes
+fail closed, including explicit CPU prepare-on-fallback recovery.
 
 ## Quick start
 
@@ -133,7 +136,9 @@ scatter, again publishing correctness rather than loaded-host timing.
 The resident manifold-table checkpoint establishes stable contact-id addressing
 under the same correctness-only timing boundary.
 The solver-ownership checkpoint establishes the fail-closed preparation gate;
-it adds no speedup claim and does not yet skip CPU preparation.
+the resident contact-preparation checkpoint now uses it to skip CPU preparation
+arithmetic for complete supported sets. It adds no loaded-host speedup claim;
+CPU contact traversal and the 144-byte metadata stream remain.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

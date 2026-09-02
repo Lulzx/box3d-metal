@@ -85,6 +85,13 @@ Direct primitive tests separately cover packed state and integration kernels.
 - Ordered mixed-joint overflow.
 - Supported joints attached to static bodies.
 - Unsupported revolute-joint fallback.
+- Resident preparation over 81 independent convex contacts: 64 sphere pairs
+  plus 17 parallel capsule pairs, covering SIMD tails, two-point manifolds,
+  friction, rolling resistance, tangent velocity, restitution, and warm start.
+- Prepare-on-fallback recovery when a resident contact shares a world with an
+  unsupported revolute joint.
+- Pre-solve callback invocation excludes the contact from resident preparation
+  authority without producing a fallback count.
 
 ## Recorded error maxima
 
@@ -97,6 +104,7 @@ Direct primitive tests separately cover packed state and integration kernels.
 | Filtered pair candidates | 1,905/1,905 exact, including order |
 | Sphere/capsule/compact-hull manifold geometry | 1.79e-7 float and VF64 double |
 | End-to-end applied manifold | 2.34e-7 float; 2.19e-7 VF64 double |
+| Resident convex preparation | 5.96e-8 transform, 3.58e-7 velocity float; 9.36e-8 transform, 3.58e-7 velocity VF64 double |
 | Distance joint plus contacts | 4.66e-10 |
 | Convex friction contacts | 4.77e-7 transform, 3.98e-6 velocity |
 | Convex restitution | 1.19e-7 transform, 2.38e-7 velocity |
@@ -159,6 +167,11 @@ unchanged.
 The resident body-transform checkpoint again passed the complete matrix after
 moving float/VF64 transforms out of contact records. Teleport, solved-step, and
 replay-seek invalidation are fail-closed; oracle errors remain unchanged.
+
+The resident contact-preparation checkpoint passed the portable CPU suite,
+float and double/VF64 warning-as-error Metal suites, full AddressSanitizer and
+float UndefinedBehaviorSanitizer suites, and focused double/VF64
+UndefinedBehaviorSanitizer Metal suite.
 
 ## What the tests do not prove
 

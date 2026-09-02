@@ -22,6 +22,7 @@ evaluation order differs.
 | Parallel joints | Soft alignment, torque limiting, static/dynamic bodies |
 | Supported contact/joint overflow | Serial GPU execution in deterministic upstream order |
 | Mixed distance/parallel colors and overflow | Supported with type-dense buffers and ordered descriptors |
+| Resident convex contact preparation | Complete colored sets prepared from the private contact-id table; CPU recovery on later solver fallback |
 | Experimental broad phase | Resident leaf update/refit plus built-in filtered candidates in exact CPU visitation order |
 | Experimental narrow phase | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere local geometry; primitive records and deduplicated compact hull streams are retained across revision-stable dispatches |
 
@@ -34,7 +35,7 @@ The following remain CPU work:
 - unsupported narrow-phase pairs, speculative/high-aspect hull-sphere GJK, and
   manifold state application; per-contact eligibility/id validation and ordered
   manifold-result consumption;
-- contact and joint preparation;
+- mesh, joint, callback, mixed/recycled convex, and convex-overflow preparation;
 - events, islands, sleeping, and CCD;
 - recording, queries, topology mutation, and public API calls;
 - filter, motor, prismatic, revolute, spherical, weld, and wheel joint solving;
@@ -46,11 +47,14 @@ on Metal. Telemetry distinguishes these routes.
 
 ## Geometry and contact coverage
 
-GPU kernels consume prepared convex-wide and scalar mesh constraints rather
-than shape geometry. Consequently the supported contact solve can cover
-contacts originating from Box3D's convex and mesh/height-field collision paths,
-provided preparation selected a supported representation and no unsupported
-overflow form is present. Collision detection itself remains CPU-side.
+The convex solver consumes constraints prepared on Metal when every colored
+contact owns a current private-table result and no callback or convex overflow
+exception exists. Normal and identity remain device-private; the CPU still
+packs a 144-byte persistence/material record per lane. Other convex constraints
+and all scalar mesh constraints arrive CPU-prepared. The supported contact solve
+can therefore cover contacts originating from both accelerated convex pairs and
+Box3D's CPU convex/mesh/height-field collision paths. Collision detection is
+partially accelerated only for the experimental narrow-phase pairs listed above.
 
 Body and awake-shape finalization have an experimental, separately opt-in Metal
 path for rotation, origin offset, motion/sleep metrics, world-space inverse

@@ -12,14 +12,15 @@ command buffer per world step and retains body state across substeps.
 For a supported constrained world, one command buffer performs:
 
 1. Force, damping, gyroscopic velocity integration, and velocity limits.
-2. Optional warm starting for overflow and each active graph color.
-3. Biased velocity iterations for joints and contacts.
-4. Position and quaternion integration.
-5. Unbiased relaxation iterations.
-6. Restitution for eligible contacts.
-7. Optionally, body and awake-shape finalization using the resident solver state.
-8. Optional resident tree-leaf updates plus deterministic internal refit.
-9. One synchronization followed by CPU impulse storage and topology work.
+2. Optional resident convex contact preparation.
+3. Optional warm starting for overflow and each active graph color.
+4. Biased velocity iterations for joints and contacts.
+5. Position and quaternion integration.
+6. Unbiased relaxation iterations.
+7. Restitution for eligible contacts.
+8. Optionally, body and awake-shape finalization using the resident solver state.
+9. Optional resident tree-leaf updates plus deterministic internal refit.
+10. One synchronization followed by CPU impulse storage and topology work.
 
 Pair generation is currently a separate experimental command sequence. Metal
 retains the existing three dynamic-tree node arrays, counts candidates per moved
@@ -47,8 +48,10 @@ still use the independent Metal position stage if they meet the threshold.
   streams so their fields do not widen the default integration record.
 - Double builds carry absolute center bits through VF64 exact binary64 addition
   and directed float narrowing; local shape geometry remains float by design.
-- Convex and mesh contact preparation writes directly into persistent shared
-  Metal allocations; no redundant constraint upload/readback is performed.
+- CPU convex and mesh contact preparation writes directly into persistent
+  shared Metal allocations. Complete resident convex sets instead use a Metal
+  preparation kernel; the CPU still packs a 144-byte persistence/material
+  input per contact lane.
 - Distance and parallel joints are packed into compact type-dense records and
   only their accumulated solver state is unpacked after the command buffer.
 - Capacities grow geometrically and buffers are reused.
@@ -214,8 +217,20 @@ only for contacts marked eligible in the current successful dispatch.
 That authority now survives into solver setup explicitly. Each collision worker
 clears a transient ownership bit before overlap and recycling decisions, then
 sets it only after a resident result passes through Box3D persistence, material,
-callback, and topology handling. Solver setup counts marked contact ids in graph
-color order and exposes SIMD-wide coverage only when every colored convex contact
-is resident-table authoritative. Mixed and recycled sets therefore retain CPU
-preparation without staging the private table. This is the fail-closed gate for
-the next preparation kernel; it does not yet skip CPU preparation.
+and topology handling. Pre-solve callback contacts remain CPU-owned. Solver
+setup counts marked contact ids in graph-color order and exposes SIMD-wide
+coverage only when every colored convex contact is resident-table authoritative
+and no convex overflow exists.
+
+That gate drives a Metal preparation kernel at the front of the existing solver
+command buffer. It reads normal and identity from the private contact-id table
+and writes the established 1,696-byte SIMD-wide constraint ABI. A 144-byte
+shared record per lane carries CPU-owned persistence anchors, warm-start
+impulses, materials, tangent velocity, body indices, and manifold identity. The
+kernel computes Erin's tangent frame, softness, normal/tangent/twist/rolling
+masses, friction centers, lever arms, relative velocities, and projected
+warm-start impulses. Mixed, recycled, callback, overflow, stale, or malformed
+sets fail closed. If another unsupported constraint rejects the Metal solver
+after CPU preparation was skipped, Box3D reruns convex preparation before the
+CPU solver fallback. CPU graph-color traversal and metadata packing remain the
+next residency boundary.

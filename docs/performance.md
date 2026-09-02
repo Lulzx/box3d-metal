@@ -70,6 +70,13 @@ far-world CPU-oracle containment. No new whole-world number is accepted because 
 loads contaminated the available host. The earlier crossover remains evidence
 for the traversal architecture, not a benchmark of the current scan.
 
+The resident contact-preparation checkpoint removes CPU preparation arithmetic
+for complete supported colored convex sets and sources normal/identity from the
+private contact-id table in the existing solver command buffer. It deliberately
+adds no new whole-world timing from the loaded host. The CPU still traverses the
+colored contacts and packs a 144-byte persistence/material record per lane, so
+this is a correctness and ownership checkpoint rather than a speedup claim.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.
