@@ -114,6 +114,11 @@ typedef struct b3MetalDispatchStats
 	int pairContactSeedCount;
 	int pairContactSeedDispatchCount;
 	uint64_t pairContactSeedSharedBytes;
+	// Common pair plans keep their raw traversal scratch private and expose only
+	// the compact seed stream. Residual compound/custom plans retain shared raw
+	// records and candidates for CPU filtering.
+	int pairPrivateScratchDispatchCount;
+	uint64_t pairRawSharedBytes;
 	int pairCpuFilterCandidateCount;
 	int pairDirectCandidateCount;
 } b3MetalDispatchStats;
@@ -171,8 +176,11 @@ bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, 
 // Traverse the existing Box3D dynamic trees and compact candidate ranges on
 // Metal. Per-move records and candidates preserve move-array and tree traversal
 // order. Zero-exception plans within the 16-candidates-per-move commit bound also
-// expose a flat contactSeeds stream in exact CPU commit order; residual custom
-// and compound plans continue to expose the complete record/candidate stream.
+// expose a flat contactSeeds stream in exact CPU commit order while raw records,
+// candidates, and scan blocks remain private (records/candidates return NULL).
+// Residual custom and compound plans continue to expose the complete shared
+// record/candidate stream. Exceptionally dense direct plans materialize that
+// stream to preserve the legacy traversal limit.
 // Returns false before exposing results if the bounded Metal traversal cannot
 // represent the step.
 bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* world, const int* moveArray, int moveCount,

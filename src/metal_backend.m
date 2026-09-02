@@ -147,13 +147,20 @@ struct b3MetalContext
 	NSUInteger pairRecordCapacity;
 	id<MTLBuffer> pairCandidateBuffer;
 	NSUInteger pairCandidateCapacity;
+	id<MTLBuffer> pairPrivateRecordBuffer;
+	NSUInteger pairPrivateRecordCapacity;
+	id<MTLBuffer> pairPrivateCandidateBuffer;
+	NSUInteger pairPrivateCandidateCapacity;
 	id<MTLBuffer> pairSummaryBuffer;
 	id<MTLBuffer> pairBlockBuffer;
 	NSUInteger pairBlockCapacity;
+	id<MTLBuffer> pairPrivateBlockBuffer;
+	NSUInteger pairPrivateBlockCapacity;
 	id<MTLBuffer> pairCpuFilterMoveBuffer;
 	NSUInteger pairCpuFilterMoveCapacity;
 	id<MTLBuffer> pairContactSeedBuffer;
 	NSUInteger pairContactSeedCapacity;
+	bool pairShapeMayRequireCpuFiltering;
 	id<MTLBuffer> convexManifoldInputBuffer;
 	NSUInteger convexManifoldInputCapacity;
 	int convexManifoldInputCount;
@@ -1036,6 +1043,7 @@ static const char* b3_metalSource =
 	"  record.ux=q.ux;record.uy=q.uy;record.uz=q.uz;\n"
 	"  if(q.child1>=p.shapeCount||shapes[q.child1].bodyId<0){record.flags=16u;records[i]=record;return;}\n"
 	"  PairShape queryShape=shapes[q.child1];\n"
+	"  if((queryShape.type&pair_type_mask)==1u){record.flags=32u;records[i]=record;return;}\n"
 	"  if(queryType==2) {\n"
 	"    query_pair_tree(nodes,moved,shapes,pairSet,filterSet,p.filterCapacity,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root1,p.offset1,1,key,queryType,p.movedEpoch,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags,cpuFilter);\n"
 	"    query_pair_tree(nodes,moved,shapes,pairSet,filterSet,p.filterCapacity,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root0,p.offset0,0,key,queryType,p.movedEpoch,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags,cpuFilter);\n"
@@ -2204,8 +2212,11 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->pairSetBuffer release];
 	[context->pairRecordBuffer release];
 	[context->pairCandidateBuffer release];
+	[context->pairPrivateRecordBuffer release];
+	[context->pairPrivateCandidateBuffer release];
 	[context->pairSummaryBuffer release];
 	[context->pairBlockBuffer release];
+	[context->pairPrivateBlockBuffer release];
 	[context->pairCpuFilterMoveBuffer release];
 	[context->pairContactSeedBuffer release];
 	[context->convexManifoldInputBuffer release];
@@ -2622,7 +2633,7 @@ static bool b3MetalEnsureShapeCapacity( b3MetalContext* context, NSUInteger inpu
 
 static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveBytes, NSUInteger treeBytes,
 	NSUInteger movedBytes, NSUInteger shapeBytes, NSUInteger setBytes, NSUInteger recordBytes, NSUInteger candidateBytes,
-	NSUInteger blockBytes, NSUInteger contactSeedBytes )
+	NSUInteger blockBytes, NSUInteger contactSeedBytes, bool privateScratch )
 {
 	if ( context->pairSummaryBuffer == nil )
 	{
@@ -2640,7 +2651,7 @@ static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveB
 		context->pairMoveBuffer = buffer;
 		context->pairMoveCapacity = capacity;
 	}
-	if ( context->pairCpuFilterMoveCapacity < moveBytes )
+	if ( privateScratch == false && context->pairCpuFilterMoveCapacity < moveBytes )
 	{
 		NSUInteger capacity = context->pairCpuFilterMoveCapacity > 0 ? context->pairCpuFilterMoveCapacity : 4096;
 		while ( capacity < moveBytes ) capacity *= 2;
@@ -2695,7 +2706,17 @@ static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveB
 		context->pairSetCapacity = capacity;
 		context->pairSetRevision = UINT64_MAX;
 	}
-	if ( context->pairRecordCapacity < recordBytes )
+	if ( privateScratch && context->pairPrivateRecordCapacity < recordBytes )
+	{
+		NSUInteger capacity = context->pairPrivateRecordCapacity > 0 ? context->pairPrivateRecordCapacity : 4096;
+		while ( capacity < recordBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModePrivate];
+		if ( buffer == nil ) return false;
+		[context->pairPrivateRecordBuffer release];
+		context->pairPrivateRecordBuffer = buffer;
+		context->pairPrivateRecordCapacity = capacity;
+	}
+	else if ( privateScratch == false && context->pairRecordCapacity < recordBytes )
 	{
 		NSUInteger capacity = context->pairRecordCapacity > 0 ? context->pairRecordCapacity : 4096;
 		while ( capacity < recordBytes ) capacity *= 2;
@@ -2705,7 +2726,17 @@ static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveB
 		context->pairRecordBuffer = buffer;
 		context->pairRecordCapacity = capacity;
 	}
-	if ( context->pairBlockCapacity < blockBytes )
+	if ( privateScratch && context->pairPrivateBlockCapacity < blockBytes )
+	{
+		NSUInteger capacity = context->pairPrivateBlockCapacity > 0 ? context->pairPrivateBlockCapacity : 4096;
+		while ( capacity < blockBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModePrivate];
+		if ( buffer == nil ) return false;
+		[context->pairPrivateBlockBuffer release];
+		context->pairPrivateBlockBuffer = buffer;
+		context->pairPrivateBlockCapacity = capacity;
+	}
+	else if ( privateScratch == false && context->pairBlockCapacity < blockBytes )
 	{
 		NSUInteger capacity = context->pairBlockCapacity > 0 ? context->pairBlockCapacity : 4096;
 		while ( capacity < blockBytes ) capacity *= 2;
@@ -2716,7 +2747,17 @@ static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveB
 		context->pairBlockCapacity = capacity;
 	}
 	candidateBytes = candidateBytes > 0 ? candidateBytes : sizeof( b3MetalPairCandidate );
-	if ( context->pairCandidateCapacity < candidateBytes )
+	if ( privateScratch && context->pairPrivateCandidateCapacity < candidateBytes )
+	{
+		NSUInteger capacity = context->pairPrivateCandidateCapacity > 0 ? context->pairPrivateCandidateCapacity : 4096;
+		while ( capacity < candidateBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModePrivate];
+		if ( buffer == nil ) return false;
+		[context->pairPrivateCandidateBuffer release];
+		context->pairPrivateCandidateBuffer = buffer;
+		context->pairPrivateCandidateCapacity = capacity;
+	}
+	else if ( privateScratch == false && context->pairCandidateCapacity < candidateBytes )
 	{
 		NSUInteger capacity = context->pairCandidateCapacity > 0 ? context->pairCandidateCapacity : 4096;
 		while ( capacity < candidateBytes ) capacity *= 2;
@@ -4212,6 +4253,22 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 		int shapeCount = world->shapes.count;
 		if ( shapeCount <= 0 || (NSUInteger)shapeCount > NSUIntegerMax / sizeof( b3MetalPairShape ) ) return false;
 		NSUInteger shapeBytes = (NSUInteger)shapeCount * sizeof( b3MetalPairShape );
+		bool pairShapeMayRequireCpuFiltering = context->pairShapeMayRequireCpuFiltering;
+		if ( context->pairShapeBuffer == nil || context->pairShapeRevision != world->metalPairShapeRevision )
+		{
+			pairShapeMayRequireCpuFiltering = false;
+			for ( int shapeIndex = 0; shapeIndex < shapeCount; ++shapeIndex )
+			{
+				const b3Shape* shape = world->shapes.data + shapeIndex;
+				if ( shape->id != B3_NULL_INDEX &&
+					( shape->type == b3_compoundShape || ( shape->flags & b3_enableCustomFiltering ) != 0 ) )
+				{
+					pairShapeMayRequireCpuFiltering = true;
+					break;
+				}
+			}
+		}
+		bool privatePairScratch = pairShapeMayRequireCpuFiltering == false;
 		uint32_t pairSetCapacity = broadPhase->pairSet.capacity;
 		if ( pairSetCapacity == 0 || ( pairSetCapacity & ( pairSetCapacity - 1 ) ) != 0 ||
 			 (NSUInteger)pairSetCapacity > NSUIntegerMax / sizeof( b3SetItem ) ) return false;
@@ -4226,7 +4283,7 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 		if ( initialCandidateCount > NSUIntegerMax / sizeof( b3MetalPairCandidate ) ) return false;
 		NSUInteger initialCandidateBytes = (NSUInteger)initialCandidateCount * sizeof( b3MetalPairCandidate );
 		if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, movedBytes, shapeBytes, setBytes, recordBytes,
-			 initialCandidateBytes, blockBytes, contactSeedBytes ) == false )
+			 initialCandidateBytes, blockBytes, contactSeedBytes, privatePairScratch ) == false )
 		{
 			return false;
 		}
@@ -4262,6 +4319,7 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 					.maskBits = shape->filter.maskBits,
 				};
 			}
+			context->pairShapeMayRequireCpuFiltering = pairShapeMayRequireCpuFiltering;
 			context->pairShapeRevision = world->metalPairShapeRevision;
 			if ( stats != NULL ) stats->metadataUploadCount = 1;
 		}
@@ -4318,7 +4376,9 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 			movedEpoch, useResidentMoves ? 1u : 0u, context->pairFilterSetItemCapacity, 0, 0, 0,
 		};
 		_Static_assert( sizeof( params ) == 64, "Metal pair parameter ABI changed" );
-		uint64_t availableCandidateCount64 = context->pairCandidateCapacity / sizeof( b3MetalPairCandidate );
+		NSUInteger pairCandidateCapacity =
+			privatePairScratch ? context->pairPrivateCandidateCapacity : context->pairCandidateCapacity;
+		uint64_t availableCandidateCount64 = pairCandidateCapacity / sizeof( b3MetalPairCandidate );
 		uint32_t availableCandidateCount = availableCandidateCount64 < UINT32_MAX
 			? (uint32_t)availableCandidateCount64 : UINT32_MAX;
 		struct
@@ -4326,6 +4386,10 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 			uint32_t moveCount, candidateCapacity, candidateLimit, padding;
 		} prefixParams = { (uint32_t)moveCount, availableCandidateCount, candidateLimit, 0 };
 		_Static_assert( sizeof( prefixParams ) == 16, "Metal pair-prefix parameter ABI changed" );
+		id<MTLBuffer> pairRecordBuffer = privatePairScratch ? context->pairPrivateRecordBuffer : context->pairRecordBuffer;
+		id<MTLBuffer> pairCandidateBuffer =
+			privatePairScratch ? context->pairPrivateCandidateBuffer : context->pairCandidateBuffer;
+		id<MTLBuffer> pairBlockBuffer = privatePairScratch ? context->pairPrivateBlockBuffer : context->pairBlockBuffer;
 
 		id<MTLComputePipelineState> pairPipeline = context->pairCandidatesPipeline;
 		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
@@ -4343,8 +4407,8 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 		[encoder setComputePipelineState:pairPipeline];
 		[encoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
 		[encoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
-		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
-		[encoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
+		[encoder setBuffer:pairRecordBuffer offset:0 atIndex:2];
+		[encoder setBuffer:pairCandidateBuffer offset:0 atIndex:3];
 		[encoder setBytes:&params length:sizeof( params ) atIndex:4];
 		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
 		[encoder setBuffer:context->pairMovedBuffer offset:0 atIndex:6];
@@ -4356,21 +4420,21 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
 		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 		[encoder setComputePipelineState:context->pairScanBlocksPipeline];
-		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
-		[encoder setBuffer:context->pairBlockBuffer offset:0 atIndex:1];
+		[encoder setBuffer:pairRecordBuffer offset:0 atIndex:0];
+		[encoder setBuffer:pairBlockBuffer offset:0 atIndex:1];
 		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
 		[encoder dispatchThreadgroups:MTLSizeMake( pairBlockCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( 256, 1, 1 )];
 		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 		[encoder setComputePipelineState:context->pairPrefixPipeline];
-		[encoder setBuffer:context->pairBlockBuffer offset:0 atIndex:0];
+		[encoder setBuffer:pairBlockBuffer offset:0 atIndex:0];
 		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:1];
 		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
 		[encoder dispatchThreads:MTLSizeMake( 1, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( 1, 1, 1 )];
 		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 		[encoder setComputePipelineState:context->pairAddOffsetsPipeline];
-		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
-		[encoder setBuffer:context->pairBlockBuffer offset:0 atIndex:1];
+		[encoder setBuffer:pairRecordBuffer offset:0 atIndex:0];
+		[encoder setBuffer:pairBlockBuffer offset:0 atIndex:1];
 		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
 		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->pairAddOffsetsPipeline ), 1, 1 )];
@@ -4379,8 +4443,8 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 		[encoder setComputePipelineState:pairPipeline];
 		[encoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
 		[encoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
-		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
-		[encoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
+		[encoder setBuffer:pairRecordBuffer offset:0 atIndex:2];
+		[encoder setBuffer:pairCandidateBuffer offset:0 atIndex:3];
 		[encoder setBytes:&params length:sizeof( params ) atIndex:4];
 		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
 		[encoder setBuffer:context->pairMovedBuffer offset:0 atIndex:6];
@@ -4392,20 +4456,23 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
 		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 		[encoder setComputePipelineState:context->pairContactSeedsPipeline];
-		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
-		[encoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:1];
+		[encoder setBuffer:pairRecordBuffer offset:0 atIndex:0];
+		[encoder setBuffer:pairCandidateBuffer offset:0 atIndex:1];
 		[encoder setBuffer:context->pairContactSeedBuffer offset:0 atIndex:2];
 		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:3];
 		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:4];
 		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->pairContactSeedsPipeline ), 1, 1 )];
 		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
-		[encoder setComputePipelineState:context->pairCompactCpuFilterPipeline];
-		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
-		[encoder setBuffer:context->pairCpuFilterMoveBuffer offset:0 atIndex:1];
-		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
-		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
-			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->pairCompactCpuFilterPipeline ), 1, 1 )];
+		if ( privatePairScratch == false )
+		{
+			[encoder setComputePipelineState:context->pairCompactCpuFilterPipeline];
+			[encoder setBuffer:pairRecordBuffer offset:0 atIndex:0];
+			[encoder setBuffer:context->pairCpuFilterMoveBuffer offset:0 atIndex:1];
+			[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
+			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
+				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->pairCompactCpuFilterPipeline ), 1, 1 )];
+		}
 		[encoder endEncoding];
 		[commandBuffer commit];
 		[commandBuffer waitUntilCompleted];
@@ -4424,7 +4491,8 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 			}
 			NSUInteger candidateBytes = (NSUInteger)summary->totalCount * sizeof( b3MetalPairCandidate );
 			if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, movedBytes, shapeBytes, setBytes, recordBytes, candidateBytes,
-					 blockBytes, contactSeedBytes ) == false ) return false;
+					 blockBytes, contactSeedBytes, privatePairScratch ) == false ) return false;
+			pairCandidateBuffer = privatePairScratch ? context->pairPrivateCandidateBuffer : context->pairCandidateBuffer;
 			summary = context->pairSummaryBuffer.contents;
 			summary->flags = 0;
 			summary->writeFlags = 0;
@@ -4434,8 +4502,8 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 			[retryEncoder setComputePipelineState:pairPipeline];
 			[retryEncoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
 			[retryEncoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
-			[retryEncoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
-			[retryEncoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
+			[retryEncoder setBuffer:pairRecordBuffer offset:0 atIndex:2];
+			[retryEncoder setBuffer:pairCandidateBuffer offset:0 atIndex:3];
 			[retryEncoder setBytes:&params length:sizeof( params ) atIndex:4];
 			[retryEncoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
 			[retryEncoder setBuffer:context->pairMovedBuffer offset:0 atIndex:6];
@@ -4447,8 +4515,8 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
 			[retryEncoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 			[retryEncoder setComputePipelineState:context->pairContactSeedsPipeline];
-			[retryEncoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
-			[retryEncoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:1];
+			[retryEncoder setBuffer:pairRecordBuffer offset:0 atIndex:0];
+			[retryEncoder setBuffer:pairCandidateBuffer offset:0 atIndex:1];
 			[retryEncoder setBuffer:context->pairContactSeedBuffer offset:0 atIndex:2];
 			[retryEncoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:3];
 			[retryEncoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:4];
@@ -4467,12 +4535,40 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 		if ( summary->flags != 0 || summary->writeFlags != 0 || summary->totalCount > INT32_MAX ||
 			 summary->cpuFilterMoveCount > (uint32_t)moveCount ||
 			 (uint64_t)summary->cpuFilterCandidateCount + (uint64_t)summary->directCandidateCount != summary->totalCount ) return false;
+		if ( privatePairScratch && ( summary->cpuFilterMoveCount != 0 || summary->cpuFilterCandidateCount != 0 ) ) return false;
 		bool compactSeedPlan = summary->cpuFilterMoveCount == 0 && summary->totalCount <= compactCandidateLimit64;
+		bool materializedPrivateScratch = false;
+		if ( privatePairScratch && compactSeedPlan == false )
+		{
+			// Preserve the legacy <=64 candidates-per-move capability for unusually
+			// dense direct plans. This is an explicit escape hatch: the common <=16
+			// route never allocates or exposes raw shared traversal storage.
+			if ( summary->totalCount > NSUIntegerMax / sizeof( b3MetalPairCandidate ) ) return false;
+			NSUInteger candidateBytes = (NSUInteger)summary->totalCount * sizeof( b3MetalPairCandidate );
+			if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, movedBytes, shapeBytes, setBytes, recordBytes,
+					 candidateBytes, blockBytes, contactSeedBytes, false ) == false ) return false;
+			id<MTLCommandBuffer> copyCommand = [context->queue commandBuffer];
+			id<MTLBlitCommandEncoder> copyEncoder = [copyCommand blitCommandEncoder];
+			if ( copyCommand == nil || copyEncoder == nil ) return false;
+			[copyEncoder copyFromBuffer:pairRecordBuffer sourceOffset:0 toBuffer:context->pairRecordBuffer
+				destinationOffset:0 size:recordBytes];
+			if ( candidateBytes > 0 )
+			{
+				[copyEncoder copyFromBuffer:pairCandidateBuffer sourceOffset:0 toBuffer:context->pairCandidateBuffer
+					destinationOffset:0 size:candidateBytes];
+			}
+			[copyEncoder endEncoding];
+			[copyCommand commit];
+			[copyCommand waitUntilCompleted];
+			if ( copyCommand.status != MTLCommandBufferStatusCompleted ) return false;
+			materializedPrivateScratch = true;
+			if ( stats != NULL ) stats->commandBufferCount += 1;
+		}
 
-		*recordsOut = context->pairRecordBuffer.contents;
-		*candidatesOut = context->pairCandidateBuffer.contents;
+		*recordsOut = privatePairScratch && materializedPrivateScratch == false ? NULL : context->pairRecordBuffer.contents;
+		*candidatesOut = privatePairScratch && materializedPrivateScratch == false ? NULL : context->pairCandidateBuffer.contents;
 		*candidateCountOut = (int)summary->totalCount;
-		*cpuFilterMovesOut = context->pairCpuFilterMoveBuffer.contents;
+		*cpuFilterMovesOut = privatePairScratch ? NULL : context->pairCpuFilterMoveBuffer.contents;
 		*cpuFilterMoveCountOut = (int)summary->cpuFilterMoveCount;
 		if ( compactSeedPlan )
 		{
@@ -4492,6 +4588,9 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 			stats->pairContactSeedDispatchCount = compactSeedPlan && summary->totalCount > 0 ? 1 : 0;
 			stats->pairContactSeedSharedBytes = compactSeedPlan
 				? summary->totalCount * sizeof( b3MetalPairContactSeed ) : 0;
+			stats->pairPrivateScratchDispatchCount = privatePairScratch ? 1 : 0;
+			stats->pairRawSharedBytes = privatePairScratch && materializedPrivateScratch == false
+				? 0 : recordBytes + summary->totalCount * sizeof( b3MetalPairCandidate );
 			stats->pairCpuFilterCandidateCount = (int)summary->cpuFilterCandidateCount;
 			stats->pairDirectCandidateCount = (int)summary->directCandidateCount;
 		}
