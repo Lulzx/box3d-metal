@@ -60,3 +60,9 @@ callbacks, events, contact creation, and topology also remain CPU-owned. The
 next narrow-phase residency cut is a persistent transform/primitive table and
 direct manifold storage; broader hull coverage still requires the general GJK
 simplex and SAT/clipping paths.
+
+The follow-on
+[`resident shape-geometry checkpoint`](m4-pro-resident-shape-geometry-2026-09-02.md)
+moves sphere/capsule endpoints and radii into the same shape-indexed registry
+and reduces the contact input to 120 bytes. Body transforms and manifold
+results remain the next ownership boundaries.

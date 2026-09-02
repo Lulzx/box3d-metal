@@ -493,13 +493,15 @@ static int MetalConvexManifoldTest( void )
 #else
 	const float base = 0.0f;
 #endif
+	b3ShapeId firstSphereShape = b3_nullShapeId;
 	for ( int i = 0; i < pairCount; ++i )
 	{
 		b3BodyDef bodyDef = b3DefaultBodyDef();
 		bodyDef.type = b3_staticBody;
 		bodyDef.position = (b3Pos){ base, 0.0, 4.0 * i };
 		b3BodyId bodyA = b3CreateBody( worldId, &bodyDef );
-		b3CreateSphereShape( bodyA, &shapeDef, &sphereA );
+		b3ShapeId sphereShape = b3CreateSphereShape( bodyA, &shapeDef, &sphereA );
+		if ( i == 0 ) firstSphereShape = sphereShape;
 		bodyDef.type = b3_dynamicBody;
 		bodyDef.position = (b3Pos){ base + 0.72, 0.08, 4.0 * i - 0.04 };
 		bodyDef.rotation = b3MakeQuatFromAxisAngle( b3Normalize( (b3Vec3){ 0.3f, 0.8f, -0.2f } ), 0.15f * (float)( i % 3 ) );
@@ -789,7 +791,7 @@ static int MetalConvexManifoldTest( void )
 	ENSURE( profile.narrowPhaseGeometryReuseCount >= 2 );
 	ENSURE( profile.lastNarrowPhaseHullShapeCount == 8 );
 	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 1 );
-	printf( "    resident hull geometry uploads=%llu reuses=%llu shapes=%d unique=%d inputBytes=184\n",
+	printf( "    resident shape geometry uploads=%llu reuses=%llu hullShapes=%d uniqueHulls=%d inputBytes=120\n",
 		(unsigned long long)profile.narrowPhaseGeometryUploadCount,
 		(unsigned long long)profile.narrowPhaseGeometryReuseCount, profile.lastNarrowPhaseHullShapeCount,
 		profile.lastNarrowPhaseUniqueHullCount );
@@ -808,6 +810,14 @@ static int MetalConvexManifoldTest( void )
 	printf( "    resident hull mutation uploads=%llu shapes=%d unique=%d rebuild=yes\n",
 		(unsigned long long)profile.narrowPhaseGeometryUploadCount, profile.lastNarrowPhaseHullShapeCount,
 		profile.lastNarrowPhaseUniqueHullCount );
+	b3Sphere replacementSphere = sphereA;
+	replacementSphere.center.x += 0.01f;
+	b3Shape_SetSphere( firstSphereShape, &replacementSphere );
+	b3World_Step( worldId, 0.0f, 1 );
+	profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.narrowPhaseGeometryUploadCount == 3 );
+	printf( "    resident primitive mutation uploads=%llu rebuild=yes\n",
+		(unsigned long long)profile.narrowPhaseGeometryUploadCount );
 	b3DestroyWorld( worldId );
 	return 0;
 }
