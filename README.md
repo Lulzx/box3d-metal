@@ -65,6 +65,13 @@ steps, the manifold scatter refreshes the record directly with current indices,
 finalized anchors and materials, prior contact-scope impulses, persistence, and
 normal warm starts. Recycling, pre-solve, and custom material callbacks remain
 CPU-written exceptions.
+Once a stable touching contact has a generation-current device-refreshed
+preparation record, the collision worker bypasses CPU manifold application and
+keeps the finalized private contact-ID table authoritative. Public/debug/
+snapshot consumers, sleep transitions, Metal disable, and CPU solver fallback
+materialize the lazy CPU mirror by contact ID and generation. Fast/CCD,
+hit-event, recording, callback, first-touch, and topology-changing contacts
+remain CPU exceptions.
 Solver submission bulk-copies only a deterministic four-byte ID schedule per
 SIMD lane and no longer dereferences contacts to repack those records. Mixed,
 recycled, callback, overflow, and unsupported routes fail closed, including
@@ -187,6 +194,11 @@ each of three post-seed steps (243 refreshes), while custom material callbacks
 report zero. It removes steady-state CPU table writes, not the compact shared
 result stream or CPU topology traversal; the 512-contact smoke remains a
 documented `0.118x` regression.
+The collision-bypass checkpoint then skips all 243 stable CPU manifold
+applications with zero geometry synchronizations. Explicit public, fallback,
+sleep, and disable boundaries materialize the lazy mirror safely. A five-sample
+512-contact Release median remains a documented `0.071x` regression because
+the compact 160-byte shared stream and flat CPU collision walk still exist.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.
