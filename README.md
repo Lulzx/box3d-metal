@@ -15,6 +15,8 @@ dynamic trees and performs deterministic candidate compaction on Metal,
 preserving upstream candidate order before the unchanged CPU filtering/contact
 callback. Unchanged tree snapshots remain in persistent Metal storage, while
 supported shape motion now updates leaves and refits internal bounds on-device.
+Enlarged proxy bookkeeping consumes a stable GPU-compacted subset rather than
+rescanning every result or walking body shape lists again.
 Topology changes and unsupported CPU mutations invalidate the snapshot.
 Double-precision worlds use VF64 exact software binary64 translation and
 directed float narrowing for conservative far-world AABBs. Both stages remain

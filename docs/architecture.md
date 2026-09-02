@@ -118,8 +118,9 @@ first call grows the buffer and submits one write-only retry. Supported moving
 worlds reuse the resident topology; raw candidates still return to the CPU. It
 Each per-move record now carries the resident query leaf's shape id and fat
 AABB, so CPU filtering no longer dereferences the CPU tree for query metadata.
-After a successful device refit, enlarged results are consumed directly in
-their deterministic packed order; the enlarged-body bit-set merge and second
-body/shape-list walk are skipped. The CPU tree is still enlarged for public
-queries and fallback safety, so this remains a measured step toward residency,
-not yet a device-resident broad phase.
+After a successful device refit, a 256-lane hierarchical scan stably compacts
+one 32-byte record per enlarged shape. Proxy bookkeeping consumes only that
+deterministic subset, skipping the full-result rescan, enlarged-body bit-set
+merge, and second body/shape-list walk. The CPU still applies the complete
+64-byte result in parallel for public AABBs and fallback safety, so this remains
+a measured step toward residency, not yet a device-resident broad phase.

@@ -44,6 +44,7 @@ for review.
 - [Awake-shape AABB finalization](benchmarks/m4-pro-shape-finalization-2026-09-02.md)
 - [GPU pair generation](benchmarks/m4-pro-pair-generation-2026-09-02.md)
 - [On-device pair compaction](benchmarks/m4-pro-pair-prefix-2026-09-02.md)
+- [Enlarged-shape compaction](benchmarks/m4-pro-shape-compaction-2026-09-02.md)
 
 ## Repository map
 

@@ -8,8 +8,9 @@
 - Manifold and constraint preparation remain CPU-side.
 - Body and awake-shape finalization have an experimental Metal path, but the CPU
   still consumes flat shape results and owns tree mutation, sleeping/island
-  mutation, events, and CCD. Successful resident refits now bypass the CPU
-  enlarged-body reduction and body/shape-list traversal.
+  mutation, events, and CCD. Successful resident refits now use a stable
+  enlarged-only GPU stream and bypass the full-result rescan, CPU enlarged-body
+  reduction, and body/shape-list traversal during proxy bookkeeping.
 - Only distance and parallel joints stay in the GPU-resident constraint graph.
 - Constraint joint records are packed/unpacked each step.
 - Body state crosses the CPU/GPU ownership boundary once per world step.
