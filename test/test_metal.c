@@ -494,12 +494,14 @@ static int MetalConvexManifoldTest( void )
 	const float base = 0.0f;
 #endif
 	b3ShapeId firstSphereShape = b3_nullShapeId;
+	b3BodyId firstSphereBody = b3_nullBodyId;
 	for ( int i = 0; i < pairCount; ++i )
 	{
 		b3BodyDef bodyDef = b3DefaultBodyDef();
 		bodyDef.type = b3_staticBody;
 		bodyDef.position = (b3Pos){ base, 0.0, 4.0 * i };
 		b3BodyId bodyA = b3CreateBody( worldId, &bodyDef );
+		if ( i == 0 ) firstSphereBody = bodyA;
 		b3ShapeId sphereShape = b3CreateSphereShape( bodyA, &shapeDef, &sphereA );
 		if ( i == 0 ) firstSphereShape = sphereShape;
 		bodyDef.type = b3_dynamicBody;
@@ -789,11 +791,15 @@ static int MetalConvexManifoldTest( void )
 	ENSURE( profile.narrowPhaseFallbackCount == 0 );
 	ENSURE( profile.narrowPhaseGeometryUploadCount == 1 );
 	ENSURE( profile.narrowPhaseGeometryReuseCount >= 2 );
+	ENSURE( profile.narrowPhaseTransformUploadCount == 1 );
+	ENSURE( profile.narrowPhaseTransformReuseCount >= 2 );
 	ENSURE( profile.lastNarrowPhaseHullShapeCount == 8 );
 	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 1 );
-	printf( "    resident shape geometry uploads=%llu reuses=%llu hullShapes=%d uniqueHulls=%d inputBytes=120\n",
+	printf( "    resident narrow inputs geometry=%llu/%llu transforms=%llu/%llu hullShapes=%d uniqueHulls=%d inputBytes=16\n",
 		(unsigned long long)profile.narrowPhaseGeometryUploadCount,
-		(unsigned long long)profile.narrowPhaseGeometryReuseCount, profile.lastNarrowPhaseHullShapeCount,
+		(unsigned long long)profile.narrowPhaseGeometryReuseCount,
+		(unsigned long long)profile.narrowPhaseTransformUploadCount,
+		(unsigned long long)profile.narrowPhaseTransformReuseCount, profile.lastNarrowPhaseHullShapeCount,
 		profile.lastNarrowPhaseUniqueHullCount );
 	ENSURE( maxApplyError <= 5.0e-5f );
 
@@ -818,6 +824,19 @@ static int MetalConvexManifoldTest( void )
 	ENSURE( profile.narrowPhaseGeometryUploadCount == 3 );
 	printf( "    resident primitive mutation uploads=%llu rebuild=yes\n",
 		(unsigned long long)profile.narrowPhaseGeometryUploadCount );
+	b3Body_SetTransform( firstSphereBody, (b3Pos){ base + 0.01, 0.0, 0.0 }, b3Quat_identity );
+	b3World_Step( worldId, 0.0f, 1 );
+	profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.narrowPhaseTransformUploadCount == 2 );
+	ENSURE( profile.narrowPhaseGeometryUploadCount == 3 );
+	printf( "    resident transform mutation uploads=%llu geometryStable=yes rebuild=yes\n",
+		(unsigned long long)profile.narrowPhaseTransformUploadCount );
+	for ( int step = 0; step < 3; ++step ) b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.narrowPhaseTransformUploadCount == 4 );
+	ENSURE( profile.narrowPhaseGeometryUploadCount == 3 );
+	printf( "    resident transform cadence solvedSteps=3 uploads=%llu geometryStable=yes\n",
+		(unsigned long long)profile.narrowPhaseTransformUploadCount );
 	b3DestroyWorld( worldId );
 	return 0;
 }

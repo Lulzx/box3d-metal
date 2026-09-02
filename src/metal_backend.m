@@ -135,6 +135,11 @@ struct b3MetalContext
 	NSUInteger convexShapeGeometryCapacity;
 	int convexShapeGeometryCount;
 	uint64_t convexShapeGeometryRevision;
+	id<MTLBuffer> convexBodyTransformBuffer;
+	NSUInteger convexBodyTransformCapacity;
+	int convexBodyTransformCount;
+	uint64_t convexBodyTransformStepIndex;
+	uint64_t convexBodyTransformRevision;
 	id<MTLBuffer> contactConstraintBuffer;
 	NSUInteger contactConstraintCapacity;
 	id<MTLBuffer> meshContactBuffer;
@@ -221,13 +226,16 @@ typedef struct b3MetalConvexManifoldInput
 {
 	uint32_t eligible;
 	uint32_t shapeIdA, shapeIdB, padding;
-	float qAX, qAY, qAZ, qAW;
-	float qBX, qBY, qBZ, qBW;
-	float positionAX, positionAY, positionAZ;
-	float positionBX, positionBY, positionBZ;
-	uint64_t positionAXBits, positionAYBits, positionAZBits;
-	uint64_t positionBXBits, positionBYBits, positionBZBits;
 } b3MetalConvexManifoldInput;
+
+typedef struct b3MetalBodyTransform
+{
+	float qx, qy, qz, qw;
+	float px, py, pz;
+	uint32_t supported;
+	uint64_t pxBits, pyBits, pzBits;
+	uint64_t padding;
+} b3MetalBodyTransform;
 
 typedef struct b3MetalHullTriangle
 {
@@ -242,7 +250,8 @@ typedef struct b3MetalFloat4
 typedef struct b3MetalShapeGeometry
 {
 	float point1X, point1Y, point1Z, radius;
-	float point2X, point2Y, point2Z, padding1;
+	float point2X, point2Y, point2Z;
+	int32_t bodyId;
 	uint32_t pointOffset, pointCount;
 	uint32_t planeOffset, planeCount;
 	uint32_t triangleOffset, triangleCount;
@@ -265,7 +274,8 @@ _Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI 
 _Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
 _Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
 _Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed" );
-_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 120, "Metal convex-manifold input ABI changed" );
+_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 16, "Metal convex-manifold input ABI changed" );
+_Static_assert( sizeof( b3MetalBodyTransform ) == 64, "Metal body-transform ABI changed" );
 _Static_assert( sizeof( b3MetalConvexManifoldResult ) == 80, "Metal convex-manifold result ABI changed" );
 _Static_assert( sizeof( b3MetalHullTriangle ) == 16, "Metal hull-triangle ABI changed" );
 _Static_assert( sizeof( b3MetalFloat4 ) == 16, "Metal float4 ABI changed" );
@@ -411,15 +421,14 @@ static const char* b3_metalSource =
 	"struct PairPrefixParams { uint moveCount,candidateCapacity,candidateLimit,padding; };\n"
 	"struct ConvexManifoldInput {\n"
 	"  uint eligible,shapeIdA,shapeIdB,padding;\n"
-	"  float qAX,qAY,qAZ,qAW,qBX,qBY,qBZ,qBW; float positionAX,positionAY,positionAZ,positionBX,positionBY,positionBZ;\n"
-	"  ulong positionAXBits,positionAYBits,positionAZBits,positionBXBits,positionBYBits,positionBZBits;\n"
 	"};\n"
+	"struct BodyTransform { float qx,qy,qz,qw,px,py,pz; uint supported; ulong pxBits,pyBits,pzBits,padding; };\n"
 	"struct HullTriangle { uint index1,index2,index3,face; };\n"
-	"struct ShapeGeometry { float point1X,point1Y,point1Z,radius; float point2X,point2Y,point2Z,padding1;\n"
+	"struct ShapeGeometry { float point1X,point1Y,point1Z,radius; float point2X,point2Y,point2Z; int bodyId;\n"
 	"  uint pointOffset,pointCount,planeOffset,planeCount,triangleOffset,triangleCount,type,supported; };\n"
 	"struct ConvexManifoldResult { uint eligible,touching,pointCount,padding1; float nx,ny,nz,padding2;\n"
 	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,padding3,padding4; };\n"
-	"struct ConvexManifoldParams { uint contactCount; float linearSlop,speculativeDistance,padding; };\n"
+	"struct ConvexManifoldParams { uint contactCount; float linearSlop,speculativeDistance; uint bodyCount; };\n"
 	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
 	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
 	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
@@ -859,20 +868,24 @@ static const char* b3_metalSource =
 	"                                const device float4* hullPlanes [[buffer(4)]],\n"
 	"                                const device HullTriangle* hullTriangles [[buffer(5)]],\n"
 	"                                const device ShapeGeometry* shapeGeometry [[buffer(6)]],\n"
+	"                                const device BodyTransform* bodyTransforms [[buffer(7)]],\n"
 	"                                uint i [[thread_position_in_grid]]) {\n"
 	"  if(i>=p.contactCount)return; ConvexManifoldInput in=inputs[i]; ConvexManifoldResult out={};\n"
 	"  if(in.eligible==0u){results[i]=out;return;} out.eligible=1u;\n"
-	"  float3 d;\n"
-	"#if defined(B3_DOUBLE_PRECISION)\n"
-	"  d=float3(b3_vf64_difference(in.positionBXBits,in.positionAXBits),\n"
-	"           b3_vf64_difference(in.positionBYBits,in.positionAYBits),\n"
-	"           b3_vf64_difference(in.positionBZBits,in.positionAZBits));\n"
-	"#else\n"
-	"  d=float3(in.positionBX-in.positionAX,in.positionBY-in.positionAY,in.positionBZ-in.positionAZ);\n"
-	"#endif\n"
 	"  ShapeGeometry geometryA=shapeGeometry[in.shapeIdA],geometryB=shapeGeometry[in.shapeIdB];\n"
-	"  if(geometryA.supported==0u||geometryB.supported==0u){out.eligible=0u;results[i]=out;return;}\n"
-	"  float4 qA=float4(in.qAX,in.qAY,in.qAZ,in.qAW),qB=float4(in.qBX,in.qBY,in.qBZ,in.qBW);\n"
+	"  if(geometryA.supported==0u||geometryB.supported==0u||geometryA.bodyId<0||geometryB.bodyId<0||\n"
+	"     uint(geometryA.bodyId)>=p.bodyCount||uint(geometryB.bodyId)>=p.bodyCount){out.eligible=0u;results[i]=out;return;}\n"
+	"  BodyTransform transformA=bodyTransforms[geometryA.bodyId],transformB=bodyTransforms[geometryB.bodyId];\n"
+	"  if(transformA.supported==0u||transformB.supported==0u){out.eligible=0u;results[i]=out;return;}float3 d;\n"
+	"#if defined(B3_DOUBLE_PRECISION)\n"
+	"  d=float3(b3_vf64_difference(transformB.pxBits,transformA.pxBits),\n"
+	"           b3_vf64_difference(transformB.pyBits,transformA.pyBits),\n"
+	"           b3_vf64_difference(transformB.pzBits,transformA.pzBits));\n"
+	"#else\n"
+	"  d=float3(transformB.px-transformA.px,transformB.py-transformA.py,transformB.pz-transformA.pz);\n"
+	"#endif\n"
+	"  float4 qA=float4(transformA.qx,transformA.qy,transformA.qz,transformA.qw);\n"
+	"  float4 qB=float4(transformB.qx,transformB.qy,transformB.qz,transformB.qw);\n"
 	"  float3 relativePosition=inv_rotate(qA,d); float4 relativeRotation=quat_mul(float4(-qA.xyz,qA.w),qB);\n"
 	"  float3 a1=float3(geometryA.point1X,geometryA.point1Y,geometryA.point1Z),a2=float3(geometryA.point2X,geometryA.point2Y,geometryA.point2Z);\n"
 	"  float3 b1=rotate(relativeRotation,float3(geometryB.point1X,geometryB.point1Y,geometryB.point1Z))+relativePosition;\n"
@@ -1491,6 +1504,8 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		context->pairRefitPipeline = pairRefitPipeline;
 		context->convexManifoldPipeline = convexManifoldPipeline;
 		context->convexShapeGeometryRevision = UINT64_MAX;
+		context->convexBodyTransformStepIndex = UINT64_MAX;
+		context->convexBodyTransformRevision = UINT64_MAX;
 		context->warmStartContactsPipeline = warmStartPipeline;
 		context->solveContactsPipeline = solvePipeline;
 		context->restitutionContactsPipeline = restitutionPipeline;
@@ -1544,6 +1559,7 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->convexHullPlaneBuffer release];
 	[context->convexHullTriangleBuffer release];
 	[context->convexShapeGeometryBuffer release];
+	[context->convexBodyTransformBuffer release];
 	[context->contactConstraintBuffer release];
 	[context->meshContactBuffer release];
 	[context->meshManifoldBuffer release];
@@ -3276,6 +3292,7 @@ static bool b3MetalEnsureShapeGeometryRegistry( b3MetalContext* context, const b
 				.point2X = shape->sphere.center.x,
 				.point2Y = shape->sphere.center.y,
 				.point2Z = shape->sphere.center.z,
+				.bodyId = shape->bodyId,
 				.type = b3_sphereShape,
 				.supported = 1,
 			};
@@ -3291,13 +3308,18 @@ static bool b3MetalEnsureShapeGeometryRegistry( b3MetalContext* context, const b
 				.point2X = shape->capsule.center2.x,
 				.point2Y = shape->capsule.center2.y,
 				.point2Z = shape->capsule.center2.z,
+				.bodyId = shape->bodyId,
 				.type = b3_capsuleShape,
 				.supported = 1,
 			};
 			continue;
 		}
 		int uniqueIndex = shapeUniqueIndices[shapeIndex];
-		if ( uniqueIndex != B3_NULL_INDEX ) records[shapeIndex] = uniqueRecords[uniqueIndex];
+		if ( uniqueIndex != B3_NULL_INDEX )
+		{
+			records[shapeIndex] = uniqueRecords[uniqueIndex];
+			records[shapeIndex].bodyId = shape->bodyId;
+		}
 	}
 	B3_ASSERT( hullPointCursor == hullPointCount );
 	B3_ASSERT( hullPlaneCursor == hullPlaneCount );
@@ -3310,6 +3332,58 @@ static bool b3MetalEnsureShapeGeometryRegistry( b3MetalContext* context, const b
 	free( shapeUniqueIndices );
 	free( uniqueHulls );
 	free( uniqueRecords );
+	return true;
+}
+
+static bool b3MetalEnsureBodyTransformRegistry( b3MetalContext* context, const b3World* world )
+{
+	int bodyCount = world->bodies.count;
+	if ( context->convexBodyTransformStepIndex == world->stepIndex &&
+		 context->convexBodyTransformRevision == world->metalBodyTransformRevision &&
+		 context->convexBodyTransformCount == bodyCount )
+	{
+		( (b3World*)world )->metalNarrowPhaseTransformReuseCount += 1;
+		return true;
+	}
+	if ( bodyCount < 0 || (NSUInteger)bodyCount > NSUIntegerMax / sizeof( b3MetalBodyTransform ) ) return false;
+	NSUInteger bytes = (NSUInteger)bodyCount * sizeof( b3MetalBodyTransform );
+	bytes = bytes > sizeof( b3MetalBodyTransform ) ? bytes : sizeof( b3MetalBodyTransform );
+	if ( context->convexBodyTransformCapacity < bytes )
+	{
+		NSUInteger capacity = context->convexBodyTransformCapacity > 0 ? context->convexBodyTransformCapacity : 4096;
+		while ( capacity < bytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->convexBodyTransformBuffer release];
+		context->convexBodyTransformBuffer = buffer;
+		context->convexBodyTransformCapacity = capacity;
+	}
+	b3MetalBodyTransform* transforms = context->convexBodyTransformBuffer.contents;
+	memset( transforms, 0, (size_t)bodyCount * sizeof( b3MetalBodyTransform ) );
+	for ( int bodyIndex = 0; bodyIndex < bodyCount; ++bodyIndex )
+	{
+		const b3Body* body = world->bodies.data + bodyIndex;
+		if ( body->id != bodyIndex || body->setIndex == B3_NULL_INDEX ) continue;
+		b3WorldTransform transform = b3GetBodyTransformQuick( (b3World*)world, (b3Body*)body );
+		b3MetalBodyTransform* output = transforms + bodyIndex;
+		output->qx = transform.q.v.x;
+		output->qy = transform.q.v.y;
+		output->qz = transform.q.v.z;
+		output->qw = transform.q.s;
+		output->px = (float)transform.p.x;
+		output->py = (float)transform.p.y;
+		output->pz = (float)transform.p.z;
+		output->supported = 1;
+#if defined( BOX3D_DOUBLE_PRECISION )
+		memcpy( &output->pxBits, &transform.p.x, sizeof( uint64_t ) );
+		memcpy( &output->pyBits, &transform.p.y, sizeof( uint64_t ) );
+		memcpy( &output->pzBits, &transform.p.z, sizeof( uint64_t ) );
+#endif
+	}
+	context->convexBodyTransformCount = bodyCount;
+	context->convexBodyTransformStepIndex = world->stepIndex;
+	context->convexBodyTransformRevision = world->metalBodyTransformRevision;
+	( (b3World*)world )->metalNarrowPhaseTransformUploadCount += 1;
 	return true;
 }
 
@@ -3333,16 +3407,36 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 
 	@autoreleasepool
 	{
+		int candidateCount = 0;
+		for ( int i = 0; i < contactCount; ++i )
+		{
+			int contactIndex = contactIndices[i];
+			if ( contactIndex < 0 || contactIndex >= world->contacts.count ) return false;
+			const b3Contact* contact = world->contacts.data + contactIndex;
+			if ( contact->contactId != contactIndex || contact->shapeIdA < 0 || contact->shapeIdA >= world->shapes.count ||
+				 contact->shapeIdB < 0 || contact->shapeIdB >= world->shapes.count )
+			{
+				return false;
+			}
+			const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
+			const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
+			candidateCount += ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
+				( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
+				( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
+				b3MetalSupportsHullSphere( shapeA, shapeB );
+		}
+		if ( candidateCount == 0 ) return true;
+
 		NSUInteger inputBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldInput );
 		NSUInteger resultBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldResult );
 		if ( b3MetalEnsureShapeGeometryRegistry( context, world ) == false ||
+			 b3MetalEnsureBodyTransformRegistry( context, world ) == false ||
 			 b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes ) == false )
 		{
 			return false;
 		}
 		b3MetalConvexManifoldInput* inputs = context->convexManifoldInputBuffer.contents;
 		memset( inputs, 0, inputBytes );
-		int candidateCount = 0;
 		for ( int i = 0; i < contactCount; ++i )
 		{
 			int contactIndex = contactIndices[i];
@@ -3360,10 +3454,6 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 				( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
 				b3MetalSupportsHullSphere( shapeA, shapeB );
 			if ( eligible == false ) continue;
-			const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
-			const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
-			b3WorldTransform transformA = b3GetBodyTransformQuick( (b3World*)world, (b3Body*)bodyA );
-			b3WorldTransform transformB = b3GetBodyTransformQuick( (b3World*)world, (b3Body*)bodyB );
 			b3MetalConvexManifoldInput* input = inputs + i;
 			input->eligible = 1;
 			input->shapeIdA = (uint32_t)contact->shapeIdA;
@@ -3375,34 +3465,16 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 			}
 			const b3MetalShapeGeometry* geometry = context->convexShapeGeometryBuffer.contents;
 			if ( geometry[contact->shapeIdA].supported == 0 || geometry[contact->shapeIdB].supported == 0 ) return false;
-			input->qAX = transformA.q.v.x;
-			input->qAY = transformA.q.v.y;
-			input->qAZ = transformA.q.v.z;
-			input->qAW = transformA.q.s;
-			input->qBX = transformB.q.v.x;
-			input->qBY = transformB.q.v.y;
-			input->qBZ = transformB.q.v.z;
-			input->qBW = transformB.q.s;
-			input->positionAX = (float)transformA.p.x;
-			input->positionAY = (float)transformA.p.y;
-			input->positionAZ = (float)transformA.p.z;
-			input->positionBX = (float)transformB.p.x;
-			input->positionBY = (float)transformB.p.y;
-			input->positionBZ = (float)transformB.p.z;
-#if defined( BOX3D_DOUBLE_PRECISION )
-			memcpy( &input->positionAXBits, &transformA.p.x, sizeof( uint64_t ) );
-			memcpy( &input->positionAYBits, &transformA.p.y, sizeof( uint64_t ) );
-			memcpy( &input->positionAZBits, &transformA.p.z, sizeof( uint64_t ) );
-			memcpy( &input->positionBXBits, &transformB.p.x, sizeof( uint64_t ) );
-			memcpy( &input->positionBYBits, &transformB.p.y, sizeof( uint64_t ) );
-			memcpy( &input->positionBZBits, &transformB.p.z, sizeof( uint64_t ) );
-#endif
-			candidateCount += 1;
+			int bodyIdA = geometry[contact->shapeIdA].bodyId;
+			int bodyIdB = geometry[contact->shapeIdB].bodyId;
+			if ( bodyIdA < 0 || bodyIdA >= context->convexBodyTransformCount || bodyIdB < 0 ||
+				 bodyIdB >= context->convexBodyTransformCount ) return false;
+			const b3MetalBodyTransform* transforms = context->convexBodyTransformBuffer.contents;
+			if ( transforms[bodyIdA].supported == 0 || transforms[bodyIdB].supported == 0 ) return false;
 		}
-		if ( candidateCount == 0 ) return true;
 
-		struct { uint32_t contactCount; float linearSlop, speculativeDistance, padding; } params = {
-			(uint32_t)contactCount, B3_LINEAR_SLOP, B3_SPECULATIVE_DISTANCE, 0.0f,
+		struct { uint32_t contactCount; float linearSlop, speculativeDistance; uint32_t bodyCount; } params = {
+			(uint32_t)contactCount, B3_LINEAR_SLOP, B3_SPECULATIVE_DISTANCE, (uint32_t)context->convexBodyTransformCount,
 		};
 		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
 		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
@@ -3416,6 +3488,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		[encoder setBuffer:context->convexHullPlaneBuffer offset:0 atIndex:4];
 		[encoder setBuffer:context->convexHullTriangleBuffer offset:0 atIndex:5];
 		[encoder setBuffer:context->convexShapeGeometryBuffer offset:0 atIndex:6];
+		[encoder setBuffer:context->convexBodyTransformBuffer offset:0 atIndex:7];
 		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
 		[encoder endEncoding];

@@ -169,10 +169,17 @@ world-shape traversal and packing. Shape creation, destruction, or geometry muta
 this registry and the existing pair metadata revision; filter mutation currently
 over-invalidates the geometry registry as a conservative consequence of sharing
 that revision. Allocation, count, or hull validation failure rejects the Metal
-narrow-phase dispatch before any result is consumed. The 120-byte contact input
-contains two shape ids rather than per-contact primitive data or hull stream
-offsets; the MSL kernel loads both descriptors and geometry directly from the
-persistent Metal buffers.
+narrow-phase dispatch before any result is consumed. A separate body-id-indexed
+transform registry packs every live static/awake/sleeping body once for the
+collision phase. It is keyed by world step, explicit transform revision, and
+body-slot count. Same-step dispatches reuse it; body create/destroy/teleport or
+the next solved step rebuilds it. Double builds retain all three binary64 world
+position bit patterns and perform VF64 subtraction in the shader. Unsupported
+contact batches return before either registry is built.
+
+The 16-byte contact input contains eligibility and two shape ids rather than
+per-contact geometry or transforms; the MSL kernel follows shape-to-body ids to
+load both registries directly.
 
 Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 unsupported joint solution, continuous collision, events, and sleeping/island
@@ -274,6 +281,8 @@ recorded in
 The follow-on sphere/capsule residency and 120-byte input checkpoint is recorded
 in
 [`benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md`](benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md).
+The body-transform registry and 16-byte pair-record checkpoint is recorded in
+[`benchmarks/m4-pro-resident-body-transforms-2026-09-02.md`](benchmarks/m4-pro-resident-body-transforms-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

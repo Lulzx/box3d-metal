@@ -302,6 +302,10 @@ b3BodyId b3CreateBody( b3WorldId worldId, const b3BodyDef* def )
 
 	b3BodyId id = { bodyId + 1, world->worldId, body->generation };
 
+#if defined( BOX3D_METAL )
+	world->metalBodyTransformRevision += 1;
+#endif
+
 	world->locked = false;
 
 	B3_REC_CREATE( world, CreateBody, id, worldId, *def );
@@ -426,6 +430,10 @@ void b3DestroyBody( b3BodyId bodyId )
 	body->setIndex = B3_NULL_INDEX;
 	body->localIndex = B3_NULL_INDEX;
 	body->id = B3_NULL_INDEX;
+
+#if defined( BOX3D_METAL )
+	world->metalBodyTransformRevision += 1;
+#endif
 
 	b3ValidateSolverSets( world );
 
@@ -1114,6 +1122,10 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
 
 	bodySim->rotation0 = bodySim->transform.q;
 	bodySim->center0 = bodySim->center;
+
+#if defined( BOX3D_METAL )
+	world->metalBodyTransformRevision += 1;
+#endif
 
 	b3BroadPhase* broadPhase = &world->broadPhase;
 #if defined( BOX3D_METAL )

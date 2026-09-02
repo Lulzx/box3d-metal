@@ -1332,5 +1332,16 @@ bool b3DeserializeIntoShell( const uint8_t* data, int size, b3World* world, b3Re
 
 	b3DesNames( r, &world->names );
 
+#if defined( BOX3D_METAL )
+	if ( r->ok )
+	{
+		// A replay seek can restore an older step index into an existing world.
+		// Advance explicit revisions so resident narrow-phase tables cannot match
+		// a pre-seek key by coincidence.
+		world->metalPairShapeRevision += 1;
+		world->metalBodyTransformRevision += 1;
+	}
+#endif
+
 	return r->ok;
 }

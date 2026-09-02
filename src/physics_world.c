@@ -683,6 +683,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.narrowPhaseFallbackCount = world->metalNarrowPhaseFallbackCount;
 	profile.narrowPhaseGeometryUploadCount = world->metalNarrowPhaseGeometryUploadCount;
 	profile.narrowPhaseGeometryReuseCount = world->metalNarrowPhaseGeometryReuseCount;
+	profile.narrowPhaseTransformUploadCount = world->metalNarrowPhaseTransformUploadCount;
+	profile.narrowPhaseTransformReuseCount = world->metalNarrowPhaseTransformReuseCount;
 	profile.lastNarrowPhaseHullShapeCount = world->metalLastNarrowPhaseHullShapeCount;
 	profile.lastNarrowPhaseUniqueHullCount = world->metalLastNarrowPhaseUniqueHullCount;
 	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
