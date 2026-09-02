@@ -22,10 +22,10 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..f698866 100644
+index cfe16e4..2bd381a 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,198 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,202 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -53,8 +53,12 @@ index cfe16e4..f698866 100644
 +`collideConnected == false` joint; unrelated and collision-enabled joints stay
 +on the direct GPU plan. Zero-exception plans are flattened on-device into an
 +8-byte-per-contact seed stream in exact creation order, so the CPU does not walk
-+per-move query records or raw tree candidates. Contact topology creation remains
-+CPU-owned. Tree snapshots remain in persistent Metal storage;
++per-move query records or raw tree candidates. Their 52-byte query records,
++16-byte candidates, and scan blocks now stay in private Metal storage. Worlds
++containing compound or custom-filter shapes retain the shared residual path;
++unusually dense direct plans preserve the prior 64-candidates-per-move capability
++with an explicit private-to-shared materialization. Contact topology creation
++remains CPU-owned. Tree snapshots remain in persistent Metal storage;
 +ordinary awake-shape motion updates leaves and refits internal bounds on-device,
 +while topology changes and unsupported CPU mutations invalidate the snapshot.
 +Enlarged proxy bookkeeping remains in a private GPU-compacted stream rather
@@ -1082,10 +1086,10 @@ index 0000000..9f2dcfa
 +}
 diff --git a/benchmark/metal_resident_contacts.c b/benchmark/metal_resident_contacts.c
 new file mode 100644
-index 0000000..4f4673b
+index 0000000..06a3edc
 --- /dev/null
 +++ b/benchmark/metal_resident_contacts.c
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,167 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -1184,7 +1188,8 @@ index 0000000..4f4673b
 +			"prior_impulse_bytes,resident_pair_moves,enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,"
 +			"last_pair_move_upload_bytes,pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,"
 +			"last_pair_cpu_filter_candidates,last_pair_direct_create_candidates,pair_contact_seed_dispatches,"
-+			"pair_record_traversal_bypasses,last_pair_contact_seed_count,last_pair_contact_seed_bytes\n" );
++			"pair_record_traversal_bypasses,last_pair_contact_seed_count,last_pair_contact_seed_bytes,"
++			"pair_private_scratch_dispatches,last_pair_raw_shared_bytes\n" );
 +	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
 +	{
 +		int contactCount = requestedCount > 0 ? requestedCount : counts[testIndex];
@@ -1209,7 +1214,7 @@ index 0000000..4f4673b
 +		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
 +		uint64_t priorImpulseBytes = (uint64_t)profile.lastResidentConvexConstraintCount * 1696;
 +		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%"
-+				"llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%llu,%d,%d,%d,%llu,%llu,%d,%llu\n",
++				"llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%llu,%d,%d,%d,%llu,%llu,%d,%llu,%llu,%llu\n",
 +				contactCount, repeats, cpuMs, gpuMs, cpuMs / gpuMs, (unsigned long long)profile.contactPrepareDispatchCount,
 +				(unsigned long long)profile.contactPrepareDeviceRefreshCount,
 +				(unsigned long long)profile.contactCollisionBypassCount, (unsigned long long)profile.contactCollisionCpuCount,
@@ -1245,7 +1250,9 @@ index 0000000..4f4673b
 +				profile.lastPairDirectCreateCount,
 +				(unsigned long long)profile.pairContactSeedDispatchCount,
 +				(unsigned long long)profile.pairRecordTraversalBypassCount,
-+				profile.lastPairContactSeedCount, (unsigned long long)profile.lastPairContactSeedBytes );
++				profile.lastPairContactSeedCount, (unsigned long long)profile.lastPairContactSeedBytes,
++				(unsigned long long)profile.pairPrivateScratchDispatchCount,
++				(unsigned long long)profile.lastPairRawSharedBytes );
 +		b3DestroyWorld( gpuWorld );
 +	}
 +	return 0;
@@ -2189,7 +2196,7 @@ index 0000000..cb679be
 +`BOX3D_METAL_RESIDENT_CONTACT_REPEATS` select a focused point.
 diff --git a/docs/benchmarks/m4-pro-contact-seed-stream-2026-09-03.md b/docs/benchmarks/m4-pro-contact-seed-stream-2026-09-03.md
 new file mode 100644
-index 0000000..0ee4a66
+index 0000000..979ef5f
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-contact-seed-stream-2026-09-03.md
 @@ -0,0 +1,62 @@
@@ -2214,9 +2221,9 @@ index 0000000..0ee4a66
 +same records plus 16-byte raw candidates to create contacts. GPU summary fields
 +provide the direct and residual candidate totals. Custom callbacks, compound
 +children, dense plans, and dispatch failures retain the prior exact path or the
-+complete CPU oracle. Raw record and candidate buffers are still shared GPU
-+scratch in this checkpoint; this is a CPU-visible payload and traversal
-+reduction, not yet private raw-pair residency.
++complete CPU oracle. At this checkpoint raw record and candidate buffers were
++still shared GPU scratch. The subsequent private-scratch checkpoint removes
++that remaining CPU-visible allocation for eligible ordinary worlds.
 +
 +`b3CreateContact` remains serial and CPU-owned because it mutates the contact ID
 +pool and generations, two body edge lists, solver-set indices, the open-addressed
@@ -3690,6 +3697,77 @@ index 0000000..f9a8282
 +CPU-owned. The follow-on
 +[`manifold-finalization checkpoint`](m4-pro-manifold-finalization-2026-09-02.md)
 +fuses world-axis orientation into the compact scatter.
+diff --git a/docs/benchmarks/m4-pro-private-pair-scratch-2026-09-03.md b/docs/benchmarks/m4-pro-private-pair-scratch-2026-09-03.md
+new file mode 100644
+index 0000000..063e43f
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-private-pair-scratch-2026-09-03.md
+@@ -0,0 +1,65 @@
++# Private Metal pair-traversal scratch
++
++Date: 2026-09-03
++
++Host: Apple M4 Pro, 12 CPU cores, 16 GPU cores, 24 GB unified memory
++
++Build: Release, Metal enabled, 8 Box3D workers, 4 substeps
++
++## Boundary removed
++
++Ordinary worlds with no live compound or custom-filter shapes now allocate pair
++query records, raw candidates, and prefix-scan blocks with
++`MTLStorageModePrivate`. A compact plan exposes only the shared summary and the
++8-byte-per-contact seed stream consumed by deterministic CPU contact creation.
++The public profile reports one `pair_private_scratch_dispatches` event and
++`last_pair_raw_shared_bytes=0` for this route.
++
++For the benchmark's two moved shapes per contact, the private logical scratch is
++`52 * moves + 16 * candidates + 16 * ceil(moves / 256)`: 15,745,024 bytes
++(15.016 MiB) at 131,072 contacts and 31,490,048 bytes (30.031 MiB) at 262,144
++contacts. The only pair-plan result range read by the CPU is respectively the
++1 MiB or 2 MiB seed stream, plus the fixed summary. The reusable shared seed
++buffer remains provisioned for the `16 * moveCount` capacity, so these figures
++describe bytes produced and consumed, not total allocated shared capacity.
++
++Eligibility is cached by shape revision and fails closed for the whole world.
++Custom-filter and compound worlds retain the exact shared residual route. A
++zero-exception plan above `16 * moveCount` retains Box3D's historical
++`64 * moveCount` ceiling by explicitly blitting the private record and candidate
++ranges to shared storage. Compound query shapes are rejected by a hard shader
++gate before any partial plan is consumed.
++
++## Correctness evidence
++
++- The 620-move, 1,905-candidate traversal compares the private seed stream with
++  Erin's CPU dynamic-tree query order without dereferencing raw GPU scratch.
++- The exact 28-contact fixture and five randomized 48-body trials preserve
++  contact IDs, generations, body-edge topology, solver-set order, and pair-set
++  membership.
++- The mixed custom-filter, compound-target, and blocked-joint scene remains on
++  the shared residual route and preserves callback and compound-child order.
++- A 20-candidate single-move fixture proves dense private-to-shared
++  materialization reports 372 shared bytes, copies every candidate in CPU-tree
++  order, and reproduces the CPU oracle's historical 16-contact fixed-capacity
++  result exactly.
++- A moved compound-query fixture proves the Metal shader rejects the request
++  without exposing a partial plan. The existing validated CPU task does not
++  admit compound queries, so this is a hard unsupported boundary rather than a
++  claimed fallback path.
++
++## Whole-world measurements
++
++| Phase | Contacts | CPU | Metal | Speedup | Seeds | Seed bytes | Private dispatches | Raw shared bytes |
++| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
++| Steady | 131,072 | 13.147597 ms | 10.304973 ms | 1.276x | 131,072 | 1,048,576 | 1 | 0 |
++| Steady | 262,144 | 27.107237 ms | 23.828598 ms | 1.138x | 262,144 | 2,097,152 | 1 | 0 |
++| Cold first step | 131,072 | 77.459206 ms | 117.299873 ms | 0.660x | 131,072 | 1,048,576 | 1 | 0 |
++| Cold first step | 262,144 | 159.011169 ms | 223.790878 ms | 0.711x | 262,144 | 2,097,152 | 1 | 0 |
++
++The steady path remains GPU-faster, but the cold first step remains decisively
++CPU-faster because first-touch collision, manifold allocation, and deterministic
++contact topology are still CPU-owned. These are loaded-host snapshots rather
++than a controlled before/after timing comparison. The route counters and byte
++telemetry are the direct evidence: the raw shared pair stream is zero on both
++scales while exact topology and the 1/2 MiB seed boundary remain.
 diff --git a/docs/benchmarks/m4-pro-private-shape-results-2026-09-02.md b/docs/benchmarks/m4-pro-private-shape-results-2026-09-02.md
 new file mode 100644
 index 0000000..96eff9c
@@ -4911,10 +4989,10 @@ index 0000000..bf16de3
 +before that traversal and state readback can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..b1e4ce2
+index 0000000..e6eb217
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,623 @@
+@@ -0,0 +1,633 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -5203,8 +5281,15 @@ index 0000000..b1e4ce2
 +within the historical `16 * moveCount` bound, a final Metal kernel flattens the
 +ranges into 8-byte shape-id seeds in ascending-move, reverse-candidate order.
 +The CPU then reads only that flat stream, rather than scanning 52-byte records
-+and 16-byte raw candidates. The raw buffers remain shared GPU scratch in this
-+checkpoint; mixed custom/compound plans retain the record path. Deterministic contact creation and all coupled contact,
++and 16-byte raw candidates. In worlds without live compound or custom-filter
++shapes, those raw records, candidates, and prefix-scan blocks use
++`MTLStorageModePrivate`; only the summary and flat seed stream are CPU-visible.
++Eligibility is cached by shape revision and fails closed for the entire world.
++Mixed custom/compound plans retain the shared record path. A direct plan above
++the compact `16 * moveCount` bound but within the historical
++`64 * moveCount` capability is generated privately and then explicitly blitted
++to shared records for the legacy serial consumer. A compound query shape is a
++hard shader error rather than an unsafe residual record. Deterministic contact creation and all coupled contact,
 +body-edge, solver-set, pair-set, event, and island topology remain CPU-owned. Unsupported
 +threadgroup geometry, tree heights at or
 +above 63, shader stack overflow, changing counts, allocation failure, or more
@@ -5372,7 +5457,7 @@ index 0000000..b1e4ce2
 +| Distance joints, including spring, limit, and motor modes | GPU-resident across all substeps |
 +| Parallel joints | GPU-resident across all substeps |
 +| Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
-+| Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, candidate planning, exact blocked-joint body-pair rejection, residual-filter move compaction, and flat contact-seed emission. Zero-exception plans bypass CPU record/candidate traversal; custom/compound exceptions and deterministic contact topology creation remain CPU-owned |
++| Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, private raw candidate scratch for ordinary worlds, exact blocked-joint body-pair rejection, residual-filter move compaction, and flat contact-seed emission. Zero-exception plans expose only the summary and seed stream; custom/compound worlds, dense materialization, and deterministic contact topology creation retain explicit CPU-visible paths |
 +| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Ordered callback/topology/first-touch exceptions retain the CPU path. Lazy CPU mirrors synchronize only at explicit boundaries. CPU retains cold/revision packing, manifold allocation, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
 +| Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts a 112-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 +| Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
@@ -5520,6 +5605,9 @@ index 0000000..b1e4ce2
 +The compact contact-seed stream, exact-order differential, and cold/steady
 +whole-world measurements are recorded in
 +[`benchmarks/m4-pro-contact-seed-stream-2026-09-03.md`](benchmarks/m4-pro-contact-seed-stream-2026-09-03.md).
++Private raw pair scratch, dense materialization, compound-query gating, and the
++current cold/steady measurements are recorded in
++[`benchmarks/m4-pro-private-pair-scratch-2026-09-03.md`](benchmarks/m4-pro-private-pair-scratch-2026-09-03.md).
 +Fully resident convex-contact state, sim, shape-bound, and body-finalization
 +ownership is recorded in
 +[`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).
@@ -5554,10 +5642,10 @@ index 2e82590..cd49acf 100644
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000..29457ed
+index 0000000..dd95a0d
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,260 @@
+@@ -0,0 +1,266 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -5733,6 +5821,12 @@ index 0000000..29457ed
 +	uint64_t pairRecordTraversalBypassCount;
 +	int lastPairContactSeedCount;
 +	uint64_t lastPairContactSeedBytes;
++	/// Pair passes whose traversal executed with device-private raw records,
++	/// candidates, and scan blocks. Dense plans may subsequently materialize.
++	uint64_t pairPrivateScratchDispatchCount;
++	/// CPU-visible raw record and candidate bytes for the latest pair pass. Zero
++	/// on the compact private-scratch route.
++	uint64_t lastPairRawSharedBytes;
 +	uint64_t narrowPhaseDispatchCount;
 +	uint64_t narrowPhaseFallbackCount;
 +	uint64_t narrowPhaseGeometryUploadCount;
@@ -6246,7 +6340,7 @@ index f517e7b..f0265dc 100644
  
  b3WorldId b3Body_GetWorld( b3BodyId bodyId )
 diff --git a/src/broad_phase.c b/src/broad_phase.c
-index a369ca6..3b58433 100644
+index a369ca6..65095ca 100644
 --- a/src/broad_phase.c
 +++ b/src/broad_phase.c
 @@ -12,9 +12,21 @@
@@ -6531,7 +6625,7 @@ index a369ca6..3b58433 100644
  
  	if ( moveCount == 0 )
  	{
-@@ -409,27 +513,117 @@ void b3UpdateBroadPhasePairs( b3World* world )
+@@ -409,27 +513,119 @@ void b3UpdateBroadPhasePairs( b3World* world )
  	b3TracyCZoneNC( update_pairs, "Pairs", b3_colorMediumSlateBlue, true );
  
  	b3Stack* alloc = &world->stack;
@@ -6617,6 +6711,8 @@ index a369ca6..3b58433 100644
 +			world->metalLastPairDirectCreateCount = directMetalPlan ? directCreateCount : 0;
 +			world->metalLastPairContactSeedCount = contactSeedCount;
 +			world->metalLastPairContactSeedBytes = stats.pairContactSeedSharedBytes;
++			world->metalPairPrivateScratchDispatchCount += (uint64_t)stats.pairPrivateScratchDispatchCount;
++			world->metalLastPairRawSharedBytes = stats.pairRawSharedBytes;
 +			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
 +			usedMetalPairs = true;
 +		}
@@ -6660,7 +6756,7 @@ index a369ca6..3b58433 100644
  	{
  		world->userTreeTask = world->enqueueTaskFcn( &b3UpdateTreesTask, world, world->userTaskContext, "rebuild tree" );
  		world->taskCount += 1;
-@@ -442,11 +636,44 @@ void b3UpdateBroadPhasePairs( b3World* world )
+@@ -442,11 +638,44 @@ void b3UpdateBroadPhasePairs( b3World* world )
  	}
  
  	// Single-threaded work
@@ -6708,7 +6804,7 @@ index a369ca6..3b58433 100644
  		b3MovePair* pair = result->pairList;
  		while ( pair != NULL )
  		{
-@@ -481,10 +708,16 @@ void b3UpdateBroadPhasePairs( b3World* world )
+@@ -481,10 +710,16 @@ void b3UpdateBroadPhasePairs( b3World* world )
  	}
  	b3Array_Clear( bp->moveArray );
  
@@ -7723,10 +7819,10 @@ index f2d76c6..95b4ad8 100644
  	b3Body* bodyB = b3Array_Get( world->bodies, joint->edges[1].bodyId );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000..a552eb6
+index 0000000..bf16e0b
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,263 @@
+@@ -0,0 +1,271 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -7843,6 +7939,11 @@ index 0000000..a552eb6
 +	int pairContactSeedCount;
 +	int pairContactSeedDispatchCount;
 +	uint64_t pairContactSeedSharedBytes;
++	// Common pair plans keep their raw traversal scratch private and expose only
++	// the compact seed stream. Residual compound/custom plans retain shared raw
++	// records and candidates for CPU filtering.
++	int pairPrivateScratchDispatchCount;
++	uint64_t pairRawSharedBytes;
 +	int pairCpuFilterCandidateCount;
 +	int pairDirectCandidateCount;
 +} b3MetalDispatchStats;
@@ -7900,8 +8001,11 @@ index 0000000..a552eb6
 +// Traverse the existing Box3D dynamic trees and compact candidate ranges on
 +// Metal. Per-move records and candidates preserve move-array and tree traversal
 +// order. Zero-exception plans within the 16-candidates-per-move commit bound also
-+// expose a flat contactSeeds stream in exact CPU commit order; residual custom
-+// and compound plans continue to expose the complete record/candidate stream.
++// expose a flat contactSeeds stream in exact CPU commit order while raw records,
++// candidates, and scan blocks remain private (records/candidates return NULL).
++// Residual custom and compound plans continue to expose the complete shared
++// record/candidate stream. Exceptionally dense direct plans materialize that
++// stream to preserve the legacy traversal limit.
 +// Returns false before exposing results if the bounded Metal traversal cannot
 +// represent the step.
 +bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* world, const int* moveArray, int moveCount,
@@ -7992,10 +8096,10 @@ index 0000000..a552eb6
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..d5db527
+index 0000000..8998875
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,6355 @@
+@@ -0,0 +1,6458 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -8145,13 +8249,20 @@ index 0000000..d5db527
 +	NSUInteger pairRecordCapacity;
 +	id<MTLBuffer> pairCandidateBuffer;
 +	NSUInteger pairCandidateCapacity;
++	id<MTLBuffer> pairPrivateRecordBuffer;
++	NSUInteger pairPrivateRecordCapacity;
++	id<MTLBuffer> pairPrivateCandidateBuffer;
++	NSUInteger pairPrivateCandidateCapacity;
 +	id<MTLBuffer> pairSummaryBuffer;
 +	id<MTLBuffer> pairBlockBuffer;
 +	NSUInteger pairBlockCapacity;
++	id<MTLBuffer> pairPrivateBlockBuffer;
++	NSUInteger pairPrivateBlockCapacity;
 +	id<MTLBuffer> pairCpuFilterMoveBuffer;
 +	NSUInteger pairCpuFilterMoveCapacity;
 +	id<MTLBuffer> pairContactSeedBuffer;
 +	NSUInteger pairContactSeedCapacity;
++	bool pairShapeMayRequireCpuFiltering;
 +	id<MTLBuffer> convexManifoldInputBuffer;
 +	NSUInteger convexManifoldInputCapacity;
 +	int convexManifoldInputCount;
@@ -9034,6 +9145,7 @@ index 0000000..d5db527
 +	"  record.ux=q.ux;record.uy=q.uy;record.uz=q.uz;\n"
 +	"  if(q.child1>=p.shapeCount||shapes[q.child1].bodyId<0){record.flags=16u;records[i]=record;return;}\n"
 +	"  PairShape queryShape=shapes[q.child1];\n"
++	"  if((queryShape.type&pair_type_mask)==1u){record.flags=32u;records[i]=record;return;}\n"
 +	"  if(queryType==2) {\n"
 +	"    query_pair_tree(nodes,moved,shapes,pairSet,filterSet,p.filterCapacity,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root1,p.offset1,1,key,queryType,p.movedEpoch,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags,cpuFilter);\n"
 +	"    query_pair_tree(nodes,moved,shapes,pairSet,filterSet,p.filterCapacity,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root0,p.offset0,0,key,queryType,p.movedEpoch,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags,cpuFilter);\n"
@@ -10202,8 +10314,11 @@ index 0000000..d5db527
 +	[context->pairSetBuffer release];
 +	[context->pairRecordBuffer release];
 +	[context->pairCandidateBuffer release];
++	[context->pairPrivateRecordBuffer release];
++	[context->pairPrivateCandidateBuffer release];
 +	[context->pairSummaryBuffer release];
 +	[context->pairBlockBuffer release];
++	[context->pairPrivateBlockBuffer release];
 +	[context->pairCpuFilterMoveBuffer release];
 +	[context->pairContactSeedBuffer release];
 +	[context->convexManifoldInputBuffer release];
@@ -10620,7 +10735,7 @@ index 0000000..d5db527
 +
 +static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveBytes, NSUInteger treeBytes,
 +	NSUInteger movedBytes, NSUInteger shapeBytes, NSUInteger setBytes, NSUInteger recordBytes, NSUInteger candidateBytes,
-+	NSUInteger blockBytes, NSUInteger contactSeedBytes )
++	NSUInteger blockBytes, NSUInteger contactSeedBytes, bool privateScratch )
 +{
 +	if ( context->pairSummaryBuffer == nil )
 +	{
@@ -10638,7 +10753,7 @@ index 0000000..d5db527
 +		context->pairMoveBuffer = buffer;
 +		context->pairMoveCapacity = capacity;
 +	}
-+	if ( context->pairCpuFilterMoveCapacity < moveBytes )
++	if ( privateScratch == false && context->pairCpuFilterMoveCapacity < moveBytes )
 +	{
 +		NSUInteger capacity = context->pairCpuFilterMoveCapacity > 0 ? context->pairCpuFilterMoveCapacity : 4096;
 +		while ( capacity < moveBytes ) capacity *= 2;
@@ -10693,7 +10808,17 @@ index 0000000..d5db527
 +		context->pairSetCapacity = capacity;
 +		context->pairSetRevision = UINT64_MAX;
 +	}
-+	if ( context->pairRecordCapacity < recordBytes )
++	if ( privateScratch && context->pairPrivateRecordCapacity < recordBytes )
++	{
++		NSUInteger capacity = context->pairPrivateRecordCapacity > 0 ? context->pairPrivateRecordCapacity : 4096;
++		while ( capacity < recordBytes ) capacity *= 2;
++		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModePrivate];
++		if ( buffer == nil ) return false;
++		[context->pairPrivateRecordBuffer release];
++		context->pairPrivateRecordBuffer = buffer;
++		context->pairPrivateRecordCapacity = capacity;
++	}
++	else if ( privateScratch == false && context->pairRecordCapacity < recordBytes )
 +	{
 +		NSUInteger capacity = context->pairRecordCapacity > 0 ? context->pairRecordCapacity : 4096;
 +		while ( capacity < recordBytes ) capacity *= 2;
@@ -10703,7 +10828,17 @@ index 0000000..d5db527
 +		context->pairRecordBuffer = buffer;
 +		context->pairRecordCapacity = capacity;
 +	}
-+	if ( context->pairBlockCapacity < blockBytes )
++	if ( privateScratch && context->pairPrivateBlockCapacity < blockBytes )
++	{
++		NSUInteger capacity = context->pairPrivateBlockCapacity > 0 ? context->pairPrivateBlockCapacity : 4096;
++		while ( capacity < blockBytes ) capacity *= 2;
++		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModePrivate];
++		if ( buffer == nil ) return false;
++		[context->pairPrivateBlockBuffer release];
++		context->pairPrivateBlockBuffer = buffer;
++		context->pairPrivateBlockCapacity = capacity;
++	}
++	else if ( privateScratch == false && context->pairBlockCapacity < blockBytes )
 +	{
 +		NSUInteger capacity = context->pairBlockCapacity > 0 ? context->pairBlockCapacity : 4096;
 +		while ( capacity < blockBytes ) capacity *= 2;
@@ -10714,7 +10849,17 @@ index 0000000..d5db527
 +		context->pairBlockCapacity = capacity;
 +	}
 +	candidateBytes = candidateBytes > 0 ? candidateBytes : sizeof( b3MetalPairCandidate );
-+	if ( context->pairCandidateCapacity < candidateBytes )
++	if ( privateScratch && context->pairPrivateCandidateCapacity < candidateBytes )
++	{
++		NSUInteger capacity = context->pairPrivateCandidateCapacity > 0 ? context->pairPrivateCandidateCapacity : 4096;
++		while ( capacity < candidateBytes ) capacity *= 2;
++		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModePrivate];
++		if ( buffer == nil ) return false;
++		[context->pairPrivateCandidateBuffer release];
++		context->pairPrivateCandidateBuffer = buffer;
++		context->pairPrivateCandidateCapacity = capacity;
++	}
++	else if ( privateScratch == false && context->pairCandidateCapacity < candidateBytes )
 +	{
 +		NSUInteger capacity = context->pairCandidateCapacity > 0 ? context->pairCandidateCapacity : 4096;
 +		while ( capacity < candidateBytes ) capacity *= 2;
@@ -12210,6 +12355,22 @@ index 0000000..d5db527
 +		int shapeCount = world->shapes.count;
 +		if ( shapeCount <= 0 || (NSUInteger)shapeCount > NSUIntegerMax / sizeof( b3MetalPairShape ) ) return false;
 +		NSUInteger shapeBytes = (NSUInteger)shapeCount * sizeof( b3MetalPairShape );
++		bool pairShapeMayRequireCpuFiltering = context->pairShapeMayRequireCpuFiltering;
++		if ( context->pairShapeBuffer == nil || context->pairShapeRevision != world->metalPairShapeRevision )
++		{
++			pairShapeMayRequireCpuFiltering = false;
++			for ( int shapeIndex = 0; shapeIndex < shapeCount; ++shapeIndex )
++			{
++				const b3Shape* shape = world->shapes.data + shapeIndex;
++				if ( shape->id != B3_NULL_INDEX &&
++					( shape->type == b3_compoundShape || ( shape->flags & b3_enableCustomFiltering ) != 0 ) )
++				{
++					pairShapeMayRequireCpuFiltering = true;
++					break;
++				}
++			}
++		}
++		bool privatePairScratch = pairShapeMayRequireCpuFiltering == false;
 +		uint32_t pairSetCapacity = broadPhase->pairSet.capacity;
 +		if ( pairSetCapacity == 0 || ( pairSetCapacity & ( pairSetCapacity - 1 ) ) != 0 ||
 +			 (NSUInteger)pairSetCapacity > NSUIntegerMax / sizeof( b3SetItem ) ) return false;
@@ -12224,7 +12385,7 @@ index 0000000..d5db527
 +		if ( initialCandidateCount > NSUIntegerMax / sizeof( b3MetalPairCandidate ) ) return false;
 +		NSUInteger initialCandidateBytes = (NSUInteger)initialCandidateCount * sizeof( b3MetalPairCandidate );
 +		if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, movedBytes, shapeBytes, setBytes, recordBytes,
-+			 initialCandidateBytes, blockBytes, contactSeedBytes ) == false )
++			 initialCandidateBytes, blockBytes, contactSeedBytes, privatePairScratch ) == false )
 +		{
 +			return false;
 +		}
@@ -12260,6 +12421,7 @@ index 0000000..d5db527
 +					.maskBits = shape->filter.maskBits,
 +				};
 +			}
++			context->pairShapeMayRequireCpuFiltering = pairShapeMayRequireCpuFiltering;
 +			context->pairShapeRevision = world->metalPairShapeRevision;
 +			if ( stats != NULL ) stats->metadataUploadCount = 1;
 +		}
@@ -12316,7 +12478,9 @@ index 0000000..d5db527
 +			movedEpoch, useResidentMoves ? 1u : 0u, context->pairFilterSetItemCapacity, 0, 0, 0,
 +		};
 +		_Static_assert( sizeof( params ) == 64, "Metal pair parameter ABI changed" );
-+		uint64_t availableCandidateCount64 = context->pairCandidateCapacity / sizeof( b3MetalPairCandidate );
++		NSUInteger pairCandidateCapacity =
++			privatePairScratch ? context->pairPrivateCandidateCapacity : context->pairCandidateCapacity;
++		uint64_t availableCandidateCount64 = pairCandidateCapacity / sizeof( b3MetalPairCandidate );
 +		uint32_t availableCandidateCount = availableCandidateCount64 < UINT32_MAX
 +			? (uint32_t)availableCandidateCount64 : UINT32_MAX;
 +		struct
@@ -12324,6 +12488,10 @@ index 0000000..d5db527
 +			uint32_t moveCount, candidateCapacity, candidateLimit, padding;
 +		} prefixParams = { (uint32_t)moveCount, availableCandidateCount, candidateLimit, 0 };
 +		_Static_assert( sizeof( prefixParams ) == 16, "Metal pair-prefix parameter ABI changed" );
++		id<MTLBuffer> pairRecordBuffer = privatePairScratch ? context->pairPrivateRecordBuffer : context->pairRecordBuffer;
++		id<MTLBuffer> pairCandidateBuffer =
++			privatePairScratch ? context->pairPrivateCandidateBuffer : context->pairCandidateBuffer;
++		id<MTLBuffer> pairBlockBuffer = privatePairScratch ? context->pairPrivateBlockBuffer : context->pairBlockBuffer;
 +
 +		id<MTLComputePipelineState> pairPipeline = context->pairCandidatesPipeline;
 +		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
@@ -12341,8 +12509,8 @@ index 0000000..d5db527
 +		[encoder setComputePipelineState:pairPipeline];
 +		[encoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
 +		[encoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
-+		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
-+		[encoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
++		[encoder setBuffer:pairRecordBuffer offset:0 atIndex:2];
++		[encoder setBuffer:pairCandidateBuffer offset:0 atIndex:3];
 +		[encoder setBytes:&params length:sizeof( params ) atIndex:4];
 +		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
 +		[encoder setBuffer:context->pairMovedBuffer offset:0 atIndex:6];
@@ -12354,21 +12522,21 @@ index 0000000..d5db527
 +			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
 +		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 +		[encoder setComputePipelineState:context->pairScanBlocksPipeline];
-+		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
-+		[encoder setBuffer:context->pairBlockBuffer offset:0 atIndex:1];
++		[encoder setBuffer:pairRecordBuffer offset:0 atIndex:0];
++		[encoder setBuffer:pairBlockBuffer offset:0 atIndex:1];
 +		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
 +		[encoder dispatchThreadgroups:MTLSizeMake( pairBlockCount, 1, 1 )
 +			threadsPerThreadgroup:MTLSizeMake( 256, 1, 1 )];
 +		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 +		[encoder setComputePipelineState:context->pairPrefixPipeline];
-+		[encoder setBuffer:context->pairBlockBuffer offset:0 atIndex:0];
++		[encoder setBuffer:pairBlockBuffer offset:0 atIndex:0];
 +		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:1];
 +		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
 +		[encoder dispatchThreads:MTLSizeMake( 1, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( 1, 1, 1 )];
 +		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 +		[encoder setComputePipelineState:context->pairAddOffsetsPipeline];
-+		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
-+		[encoder setBuffer:context->pairBlockBuffer offset:0 atIndex:1];
++		[encoder setBuffer:pairRecordBuffer offset:0 atIndex:0];
++		[encoder setBuffer:pairBlockBuffer offset:0 atIndex:1];
 +		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
 +		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
 +			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->pairAddOffsetsPipeline ), 1, 1 )];
@@ -12377,8 +12545,8 @@ index 0000000..d5db527
 +		[encoder setComputePipelineState:pairPipeline];
 +		[encoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
 +		[encoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
-+		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
-+		[encoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
++		[encoder setBuffer:pairRecordBuffer offset:0 atIndex:2];
++		[encoder setBuffer:pairCandidateBuffer offset:0 atIndex:3];
 +		[encoder setBytes:&params length:sizeof( params ) atIndex:4];
 +		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
 +		[encoder setBuffer:context->pairMovedBuffer offset:0 atIndex:6];
@@ -12390,20 +12558,23 @@ index 0000000..d5db527
 +			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
 +		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 +		[encoder setComputePipelineState:context->pairContactSeedsPipeline];
-+		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
-+		[encoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:1];
++		[encoder setBuffer:pairRecordBuffer offset:0 atIndex:0];
++		[encoder setBuffer:pairCandidateBuffer offset:0 atIndex:1];
 +		[encoder setBuffer:context->pairContactSeedBuffer offset:0 atIndex:2];
 +		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:3];
 +		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:4];
 +		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
 +			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->pairContactSeedsPipeline ), 1, 1 )];
 +		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
-+		[encoder setComputePipelineState:context->pairCompactCpuFilterPipeline];
-+		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
-+		[encoder setBuffer:context->pairCpuFilterMoveBuffer offset:0 atIndex:1];
-+		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
-+		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
-+			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->pairCompactCpuFilterPipeline ), 1, 1 )];
++		if ( privatePairScratch == false )
++		{
++			[encoder setComputePipelineState:context->pairCompactCpuFilterPipeline];
++			[encoder setBuffer:pairRecordBuffer offset:0 atIndex:0];
++			[encoder setBuffer:context->pairCpuFilterMoveBuffer offset:0 atIndex:1];
++			[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
++			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
++				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->pairCompactCpuFilterPipeline ), 1, 1 )];
++		}
 +		[encoder endEncoding];
 +		[commandBuffer commit];
 +		[commandBuffer waitUntilCompleted];
@@ -12422,7 +12593,8 @@ index 0000000..d5db527
 +			}
 +			NSUInteger candidateBytes = (NSUInteger)summary->totalCount * sizeof( b3MetalPairCandidate );
 +			if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, movedBytes, shapeBytes, setBytes, recordBytes, candidateBytes,
-+					 blockBytes, contactSeedBytes ) == false ) return false;
++					 blockBytes, contactSeedBytes, privatePairScratch ) == false ) return false;
++			pairCandidateBuffer = privatePairScratch ? context->pairPrivateCandidateBuffer : context->pairCandidateBuffer;
 +			summary = context->pairSummaryBuffer.contents;
 +			summary->flags = 0;
 +			summary->writeFlags = 0;
@@ -12432,8 +12604,8 @@ index 0000000..d5db527
 +			[retryEncoder setComputePipelineState:pairPipeline];
 +			[retryEncoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
 +			[retryEncoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
-+			[retryEncoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
-+			[retryEncoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
++			[retryEncoder setBuffer:pairRecordBuffer offset:0 atIndex:2];
++			[retryEncoder setBuffer:pairCandidateBuffer offset:0 atIndex:3];
 +			[retryEncoder setBytes:&params length:sizeof( params ) atIndex:4];
 +			[retryEncoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
 +			[retryEncoder setBuffer:context->pairMovedBuffer offset:0 atIndex:6];
@@ -12445,8 +12617,8 @@ index 0000000..d5db527
 +				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
 +			[retryEncoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 +			[retryEncoder setComputePipelineState:context->pairContactSeedsPipeline];
-+			[retryEncoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
-+			[retryEncoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:1];
++			[retryEncoder setBuffer:pairRecordBuffer offset:0 atIndex:0];
++			[retryEncoder setBuffer:pairCandidateBuffer offset:0 atIndex:1];
 +			[retryEncoder setBuffer:context->pairContactSeedBuffer offset:0 atIndex:2];
 +			[retryEncoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:3];
 +			[retryEncoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:4];
@@ -12465,12 +12637,44 @@ index 0000000..d5db527
 +		if ( summary->flags != 0 || summary->writeFlags != 0 || summary->totalCount > INT32_MAX ||
 +			 summary->cpuFilterMoveCount > (uint32_t)moveCount ||
 +			 (uint64_t)summary->cpuFilterCandidateCount + (uint64_t)summary->directCandidateCount != summary->totalCount ) return false;
++		if ( privatePairScratch && ( summary->cpuFilterMoveCount != 0 || summary->cpuFilterCandidateCount != 0 ) ) return false;
 +		bool compactSeedPlan = summary->cpuFilterMoveCount == 0 && summary->totalCount <= compactCandidateLimit64;
++		bool materializedPrivateScratch = false;
++		if ( privatePairScratch && compactSeedPlan == false )
++		{
++			// Preserve the legacy <=64 candidates-per-move capability for unusually
++			// dense direct plans. This is an explicit escape hatch: the common <=16
++			// route never allocates or exposes raw shared traversal storage.
++			if ( summary->totalCount > NSUIntegerMax / sizeof( b3MetalPairCandidate ) ) return false;
++			NSUInteger candidateBytes = (NSUInteger)summary->totalCount * sizeof( b3MetalPairCandidate );
++			if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, movedBytes, shapeBytes, setBytes, recordBytes,
++					 candidateBytes, blockBytes, contactSeedBytes, false ) == false ) return false;
++			id<MTLCommandBuffer> copyCommand = [context->queue commandBuffer];
++			id<MTLBlitCommandEncoder> copyEncoder = [copyCommand blitCommandEncoder];
++			if ( copyCommand == nil || copyEncoder == nil ) return false;
++			[copyEncoder copyFromBuffer:pairRecordBuffer sourceOffset:0 toBuffer:context->pairRecordBuffer
++				destinationOffset:0 size:recordBytes];
++			if ( candidateBytes > 0 )
++			{
++				[copyEncoder copyFromBuffer:pairCandidateBuffer sourceOffset:0 toBuffer:context->pairCandidateBuffer
++					destinationOffset:0 size:candidateBytes];
++			}
++			[copyEncoder endEncoding];
++			[copyCommand commit];
++			[copyCommand waitUntilCompleted];
++			if ( copyCommand.status != MTLCommandBufferStatusCompleted ) return false;
++			materializedPrivateScratch = true;
++			if ( stats != NULL ) stats->commandBufferCount += 1;
++			if ( copyCommand.GPUEndTime >= copyCommand.GPUStartTime )
++			{
++				gpuMilliseconds += 1000.0 * ( copyCommand.GPUEndTime - copyCommand.GPUStartTime );
++			}
++		}
 +
-+		*recordsOut = context->pairRecordBuffer.contents;
-+		*candidatesOut = context->pairCandidateBuffer.contents;
++		*recordsOut = privatePairScratch && materializedPrivateScratch == false ? NULL : context->pairRecordBuffer.contents;
++		*candidatesOut = privatePairScratch && materializedPrivateScratch == false ? NULL : context->pairCandidateBuffer.contents;
 +		*candidateCountOut = (int)summary->totalCount;
-+		*cpuFilterMovesOut = context->pairCpuFilterMoveBuffer.contents;
++		*cpuFilterMovesOut = privatePairScratch ? NULL : context->pairCpuFilterMoveBuffer.contents;
 +		*cpuFilterMoveCountOut = (int)summary->cpuFilterMoveCount;
 +		if ( compactSeedPlan )
 +		{
@@ -12490,6 +12694,9 @@ index 0000000..d5db527
 +			stats->pairContactSeedDispatchCount = compactSeedPlan && summary->totalCount > 0 ? 1 : 0;
 +			stats->pairContactSeedSharedBytes = compactSeedPlan
 +				? summary->totalCount * sizeof( b3MetalPairContactSeed ) : 0;
++			stats->pairPrivateScratchDispatchCount = privatePairScratch ? 1 : 0;
++			stats->pairRawSharedBytes = privatePairScratch && materializedPrivateScratch == false
++				? 0 : recordBytes + summary->totalCount * sizeof( b3MetalPairCandidate );
 +			stats->pairCpuFilterCandidateCount = (int)summary->cpuFilterCandidateCount;
 +			stats->pairDirectCandidateCount = (int)summary->directCandidateCount;
 +		}
@@ -15492,7 +15699,7 @@ index 0000000..a4424e5
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..4067e09 100644
+index 29c13c7..1638982 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -15568,7 +15775,7 @@ index 29c13c7..4067e09 100644
  
  	b3DestroyStack( &world->stack );
  
-@@ -538,12 +565,317 @@ int b3GetWorldCount( void )
+@@ -538,12 +565,319 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -15836,6 +16043,8 @@ index 29c13c7..4067e09 100644
 +	profile.pairRecordTraversalBypassCount = world->metalPairRecordTraversalBypassCount;
 +	profile.lastPairContactSeedCount = world->metalLastPairContactSeedCount;
 +	profile.lastPairContactSeedBytes = world->metalLastPairContactSeedBytes;
++	profile.pairPrivateScratchDispatchCount = world->metalPairPrivateScratchDispatchCount;
++	profile.lastPairRawSharedBytes = world->metalLastPairRawSharedBytes;
 +	profile.narrowPhaseDispatchCount = world->metalNarrowPhaseDispatchCount;
 +	profile.narrowPhaseFallbackCount = world->metalNarrowPhaseFallbackCount;
 +	profile.narrowPhaseGeometryUploadCount = world->metalNarrowPhaseGeometryUploadCount;
@@ -15887,7 +16096,7 @@ index 29c13c7..4067e09 100644
  // Used to hide the random-access latency of contact lookups while we work on an
  // earlier index.
  static inline void b3PrefetchContact( const b3Contact* contact )
-@@ -582,18 +914,72 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -582,18 +916,72 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  	const int contactPrefetchDistance = 4;
  	int prefetchEnd = endIndex - contactPrefetchDistance;
  
@@ -15961,7 +16170,7 @@ index 29c13c7..4067e09 100644
  
  		b3Shape* shapeA = shapes + contact->shapeIdA;
  		b3Shape* shapeB = shapes + contact->shapeIdB;
-@@ -653,8 +1039,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -653,8 +1041,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		// Contact recycling optimization. Please cite this library if you use this optimization.
  		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
  		// However, this allows larger relative motion and has fewer tuning parameters (just one).
@@ -15973,7 +16182,7 @@ index 29c13c7..4067e09 100644
  		{
  			// The scalar part of b3InvMulQuat is just the quaternion dot product.
  			// cos(relative_angle/2) = scalar(conj(q1) * q2) = dot(q1, q2)
-@@ -728,6 +1115,14 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -728,6 +1117,14 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  						taskContext->manifoldCounts[bucketIndex - 1] += 1;
  					}
  
@@ -15988,7 +16197,7 @@ index 29c13c7..4067e09 100644
  					// Contact is recycled. This also skips updating other aspects of the contact
  					// such as material parameters.
  					continue;
-@@ -741,9 +1136,125 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -741,9 +1138,125 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
  		contact->flags |= b3_relativeTransformValid;
  
@@ -16117,7 +16326,7 @@ index 29c13c7..4067e09 100644
  
  		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
  		if ( bucketIndex > 0 )
-@@ -814,8 +1325,34 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
+@@ -814,8 +1327,34 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
  	}
  }
  
@@ -16153,7 +16362,7 @@ index 29c13c7..4067e09 100644
  {
  	b3World* world = context->world;
  
-@@ -825,12 +1362,17 @@ static void b3Collide( b3StepContext* context )
+@@ -825,12 +1364,17 @@ static void b3Collide( b3StepContext* context )
  
  	// Gather contacts from all the graph colors into a single array for easier parallel-for
  	int touchingCount = 0;
@@ -16171,7 +16380,7 @@ index 29c13c7..4067e09 100644
  
  	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
  	int nonTouchingCount = awakeSet->contactIndices.count;
-@@ -840,58 +1382,145 @@ static void b3Collide( b3StepContext* context )
+@@ -840,58 +1384,145 @@ static void b3Collide( b3StepContext* context )
  	if ( contactCount == 0 )
  	{
  		b3TracyCZoneEnd( collide );
@@ -16347,7 +16556,7 @@ index 29c13c7..4067e09 100644
  	contactIndices = NULL;
  
  	// Serially update contact state
-@@ -900,8 +1529,10 @@ static void b3Collide( b3StepContext* context )
+@@ -900,8 +1531,10 @@ static void b3Collide( b3StepContext* context )
  
  	int satMultiplier = context->dt > 0.0f ? 1 : 0;
  
@@ -16360,7 +16569,7 @@ index 29c13c7..4067e09 100644
  	world->satCallCount = satMultiplier * world->taskContexts.data[0].satCallCount;
  	world->satCacheHitCount = satMultiplier * world->taskContexts.data[0].satCacheHitCount;
  	memcpy( world->manifoldCounts, world->taskContexts.data[0].manifoldCounts,
-@@ -909,7 +1540,8 @@ static void b3Collide( b3StepContext* context )
+@@ -909,7 +1542,8 @@ static void b3Collide( b3StepContext* context )
  
  	for ( int i = 1; i < world->workerCount; ++i )
  	{
@@ -16370,7 +16579,7 @@ index 29c13c7..4067e09 100644
  		world->satCallCount += world->taskContexts.data[i].satCallCount;
  		world->satCacheHitCount += world->taskContexts.data[i].satCacheHitCount;
  		for ( int j = 0; j < B3_CONTACT_MANIFOLD_COUNT_BUCKETS; ++j )
-@@ -932,7 +1564,8 @@ static void b3Collide( b3StepContext* context )
+@@ -932,7 +1566,8 @@ static void b3Collide( b3StepContext* context )
  	uint16_t worldId = world->worldId;
  
  	// Process contact state changes. Iterate over set bits
@@ -16380,7 +16589,7 @@ index 29c13c7..4067e09 100644
  	{
  		uint64_t bits = bitSet->bits[k];
  		while ( bits != 0 )
-@@ -1027,8 +1660,17 @@ static void b3Collide( b3StepContext* context )
+@@ -1027,8 +1662,17 @@ static void b3Collide( b3StepContext* context )
  	b3ValidateSolverSets( world );
  	b3ValidateContacts( world );
  
@@ -16398,7 +16607,7 @@ index 29c13c7..4067e09 100644
  }
  
  void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
-@@ -1039,6 +1681,41 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1683,41 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -16440,7 +16649,7 @@ index 29c13c7..4067e09 100644
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -1055,6 +1732,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1055,6 +1734,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Prepare to capture events
  	// Ensure user does not access stale data if there is an early return
  	b3Array_Clear( world->bodyMoveEvents );
@@ -16451,7 +16660,7 @@ index 29c13c7..4067e09 100644
  	b3Array_Clear( world->sensorBeginEvents );
  	b3Array_Clear( world->contactBeginEvents );
  	b3Array_Clear( world->contactHitEvents );
-@@ -1131,7 +1812,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1131,7 +1814,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Narrow phase : update contacts
  	{
  		uint64_t collideTicks = b3GetTicks();
@@ -16465,7 +16674,7 @@ index 29c13c7..4067e09 100644
  		world->profile.collide = b3GetMilliseconds( collideTicks );
  	}
  
-@@ -1176,6 +1862,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1176,6 +1864,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  
  	if ( world->recording != NULL )
  	{
@@ -16486,7 +16695,7 @@ index 29c13c7..4067e09 100644
  		uint64_t hash = b3HashWorldState( world );
  		b3RecArgs_StateHash stateHash = { worldId, hash };
  		b3RecWrite_StateHash( world->recording, &stateHash );
-@@ -1440,7 +2140,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1440,7 +2142,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  				b3WorldTransform transform = { bodySim->center, bodySim->transform.q };
  				draw->DrawTransformFcn( transform, draw->context );
  
@@ -16495,7 +16704,7 @@ index 29c13c7..4067e09 100644
  				{
  					b3Vec3 offset = { 0.05f, 0.05f, 0.05f };
  					b3Pos p = b3TransformWorldPoint( transform, offset );
-@@ -1517,6 +2217,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1517,6 +2219,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  					// avoid double draw
  					if ( b3GetBit( &world->debugContactSet, contactId ) == false )
  					{
@@ -16507,7 +16716,7 @@ index 29c13c7..4067e09 100644
  						b3Body* bodyA = b3Array_Get( world->bodies, contact->edges[0].bodyId );
  						b3BodySim* bodySimA = b3GetBodySim( world, bodyA );
  						b3Body* bodyB = b3Array_Get( world->bodies, contact->edges[1].bodyId );
-@@ -1753,6 +2458,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
+@@ -1753,6 +2460,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
  		return (b3BodyEvents){ 0 };
  	}
  
@@ -16522,7 +16731,7 @@ index 29c13c7..4067e09 100644
  	int count = world->bodyMoveEvents.count;
  	b3BodyEvents events = { world->bodyMoveEvents.data, count };
  	return events;
-@@ -2125,6 +2838,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
+@@ -2125,6 +2840,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
  	B3_REC( world, WorldSetContactRecycleDistance, worldId, recycleDistance );
  
  	world->contactRecycleDistance = b3ClampFloat( recycleDistance, 0.0f, FLT_MAX );
@@ -16530,7 +16739,7 @@ index 29c13c7..4067e09 100644
  }
  
  float b3World_GetContactRecycleDistance( b3WorldId worldId )
-@@ -2259,6 +2973,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
+@@ -2259,6 +2975,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
  	}
  
  	world->frictionCallback = callback != NULL ? callback : b3DefaultFrictionCallback;
@@ -16541,7 +16750,7 @@ index 29c13c7..4067e09 100644
  }
  
  void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* callback )
-@@ -2270,6 +2988,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
+@@ -2270,6 +2990,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
  	}
  
  	world->restitutionCallback = callback != NULL ? callback : b3DefaultRestitutionCallback;
@@ -16552,7 +16761,7 @@ index 29c13c7..4067e09 100644
  }
  
  void b3World_SetWorkerCount( b3WorldId worldId, int count )
-@@ -2312,6 +3034,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
+@@ -2312,6 +3036,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
  	}
  
  	b3StartRecordingIntoBuffer( world, recording );
@@ -16560,7 +16769,7 @@ index 29c13c7..4067e09 100644
  }
  
  void b3World_StopRecording( b3WorldId worldId )
-@@ -2323,6 +3046,7 @@ void b3World_StopRecording( b3WorldId worldId )
+@@ -2323,6 +3048,7 @@ void b3World_StopRecording( b3WorldId worldId )
  	}
  
  	b3StopRecordingInternal( world );
@@ -16568,7 +16777,7 @@ index 29c13c7..4067e09 100644
  }
  
  void b3World_DumpMemoryStats( b3WorldId worldId )
-@@ -3313,6 +4037,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
+@@ -3313,6 +4039,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
  	}
  	world->preSolveFcn = fcn;
  	world->preSolveContext = context;
@@ -16576,7 +16785,7 @@ index 29c13c7..4067e09 100644
  }
  
  void b3World_SetGravity( b3WorldId worldId, b3Vec3 gravity )
-@@ -3445,6 +4170,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3445,6 +4172,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	}
  
  	B3_REC( world, WorldExplode, worldId, *explosionDef );
@@ -16588,7 +16797,7 @@ index 29c13c7..4067e09 100644
  
  	// Locked due to waking
  	world->locked = true;
-@@ -3457,6 +4187,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3457,6 +4189,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	b3AABB aabb = b3OffsetAABB( localBox, position );
  
  	b3DynamicTree_Query( world->broadPhase.trees + b3_dynamicBody, aabb, maskBits, false, ExplosionCallback, &explosionContext );
@@ -16596,7 +16805,7 @@ index 29c13c7..4067e09 100644
  
  	world->locked = false;
  }
-@@ -3473,6 +4204,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +4206,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -16608,7 +16817,7 @@ index 29c13c7..4067e09 100644
  }
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
-@@ -3637,7 +4373,15 @@ void b3ValidateSolverSets( b3World* world )
+@@ -3637,7 +4375,15 @@ void b3ValidateSolverSets( b3World* world )
  					uint32_t syncedFlags = body->flags & ~b3_bodyTransientFlags;
  					B3_ASSERT( ( bodySim->flags & syncedFlags ) == syncedFlags );
  
@@ -16626,7 +16835,7 @@ index 29c13c7..4067e09 100644
  					{
  						B3_ASSERT( ( bodyState->flags & syncedFlags ) == syncedFlags );
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8..e7da06e 100644
+index 8bd3df8..9600577 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
 @@ -10,6 +10,7 @@
@@ -16645,7 +16854,7 @@ index 8bd3df8..e7da06e 100644
  
  	b3DebugPoint points[B3_DEBUG_POINT_CAPACITY];
  	int pointCount;
-@@ -266,6 +268,136 @@ typedef struct b3World
+@@ -266,6 +268,138 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
@@ -16734,6 +16943,8 @@ index 8bd3df8..e7da06e 100644
 +	uint64_t metalPairRecordTraversalBypassCount;
 +	int metalLastPairContactSeedCount;
 +	uint64_t metalLastPairContactSeedBytes;
++	uint64_t metalPairPrivateScratchDispatchCount;
++	uint64_t metalLastPairRawSharedBytes;
 +	uint64_t metalPairShapeRevision;
 +	uint64_t metalPairFilterRevision;
 +	uint64_t metalContactMaterialRevision;
@@ -16782,7 +16993,7 @@ index 8bd3df8..e7da06e 100644
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -288,6 +420,78 @@ typedef struct b3World
+@@ -288,6 +422,78 @@ typedef struct b3World
  	bool inUse;
  } b3World;
  
@@ -16861,7 +17072,7 @@ index 8bd3df8..e7da06e 100644
  b3World* b3GetUnlockedWorldFromId( b3WorldId id );
  b3World* b3GetWorldFromId( b3WorldId id );
  
-@@ -347,4 +551,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +553,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
@@ -18717,10 +18928,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..6aa1f88
+index 0000000..6e38dd6
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,4289 @@
+@@ -0,0 +1,4446 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -18822,6 +19033,17 @@ index 0000000..6aa1f88
 +										   &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds,
 +										   &contactSeedCount, &stats ) );
 +	ENSURE( stats.treeUploadCount == 0 );
++	if ( records == NULL )
++	{
++		ENSURE( candidates == NULL );
++		ENSURE( cpuFilterMoves == NULL );
++		ENSURE( cpuFilterMoveCount == 0 );
++		ENSURE( contactSeeds != NULL );
++		ENSURE( contactSeedCount == candidateCount );
++		ENSURE( stats.pairPrivateScratchDispatchCount == 1 );
++		ENSURE( stats.pairRawSharedBytes == 0 );
++		return 0;
++	}
 +	int observedCpuFilterMoves = 0;
 +	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
 +	{
@@ -19895,6 +20117,11 @@ index 0000000..6aa1f88
 +	ENSURE( stats.pairRequiresCpuFiltering == 0 );
 +	ENSURE( contactSeeds != NULL );
 +	ENSURE( contactSeedCount == gpuCandidateCount );
++	ENSURE( gpuRecords == NULL );
++	ENSURE( gpuCandidates == NULL );
++	ENSURE( cpuFilterMoves == NULL );
++	ENSURE( stats.pairPrivateScratchDispatchCount == 1 );
++	ENSURE( stats.pairRawSharedBytes == 0 );
 +	ENSURE( stats.pairContactSeedCount == gpuCandidateCount );
 +	ENSURE( stats.pairContactSeedSharedBytes == (uint64_t)gpuCandidateCount * sizeof( b3MetalPairContactSeed ) );
 +	double initialGpuMilliseconds = stats.gpuMilliseconds;
@@ -19909,19 +20136,11 @@ index 0000000..6aa1f88
 +	ENSURE( cpuFilterMoveCount == 0 );
 +	ENSURE( contactSeeds != NULL );
 +	ENSURE( contactSeedCount == gpuCandidateCount );
-+	int seedIndex = 0;
-+	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
-+	{
-+		const b3MetalPairQueryRecord* record = gpuRecords + moveIndex;
-+		for ( uint32_t candidateIndex = record->count; candidateIndex-- > 0; )
-+		{
-+			const b3MetalPairCandidate* candidate = gpuCandidates + record->offset + candidateIndex;
-+			ENSURE( contactSeeds[seedIndex].shapeIndexA == candidate->shapeIndex );
-+			ENSURE( contactSeeds[seedIndex].shapeIndexB == record->queryShapeIndex );
-+			seedIndex += 1;
-+		}
-+	}
-+	ENSURE( seedIndex == contactSeedCount );
++	ENSURE( gpuRecords == NULL );
++	ENSURE( gpuCandidates == NULL );
++	ENSURE( cpuFilterMoves == NULL );
++	ENSURE( stats.pairPrivateScratchDispatchCount == 1 );
++	ENSURE( stats.pairRawSharedBytes == 0 );
 +	double steadyGpuMilliseconds = stats.gpuMilliseconds;
 +
 +	int cpuCapacity = bodyCount * bodyCount;
@@ -19941,15 +20160,7 @@ index 0000000..6aa1f88
 +		b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
 +		int proxyId = B3_PROXY_ID( proxyKey );
 +		b3AABB fatAABB = b3DynamicTree_GetAABB( broadPhase->trees + proxyType, proxyId );
-+		ENSURE( gpuRecords[moveIndex].queryShapeIndex ==
-+				(int)b3DynamicTree_GetUserData( broadPhase->trees + proxyType, proxyId ) );
-+		capture.queryShapeIndex = gpuRecords[moveIndex].queryShapeIndex;
-+		ENSURE( gpuRecords[moveIndex].lowerX == fatAABB.lowerBound.x );
-+		ENSURE( gpuRecords[moveIndex].lowerY == fatAABB.lowerBound.y );
-+		ENSURE( gpuRecords[moveIndex].lowerZ == fatAABB.lowerBound.z );
-+		ENSURE( gpuRecords[moveIndex].upperX == fatAABB.upperBound.x );
-+		ENSURE( gpuRecords[moveIndex].upperY == fatAABB.upperBound.y );
-+		ENSURE( gpuRecords[moveIndex].upperZ == fatAABB.upperBound.z );
++		capture.queryShapeIndex = (int)b3DynamicTree_GetUserData( broadPhase->trees + proxyType, proxyId );
 +		capture.count = 0;
 +		if ( proxyType == b3_dynamicBody )
 +		{
@@ -19964,15 +20175,12 @@ index 0000000..6aa1f88
 +		b3DynamicTree_Query( broadPhase->trees + b3_dynamicBody, fatAABB, B3_DEFAULT_MASK_BITS, false, CapturePairCandidate,
 +							 &capture );
 +
-+		ENSURE( gpuRecords[moveIndex].flags == 0 );
-+		ENSURE( gpuRecords[moveIndex].count == (uint32_t)capture.count );
 +		for ( int candidateIndex = 0; candidateIndex < capture.count; ++candidateIndex )
 +		{
 +			const b3MetalPairCandidate* cpu = cpuCandidates + candidateIndex;
-+			const b3MetalPairCandidate* gpu = gpuCandidates + gpuRecords[moveIndex].offset + candidateIndex;
-+			ENSURE( cpu->proxyId == gpu->proxyId );
-+			ENSURE( cpu->treeType == gpu->treeType );
-+			ENSURE( cpu->shapeIndex == gpu->shapeIndex );
++			const b3MetalPairContactSeed* seed = contactSeeds + totalCpuCount + capture.count - 1 - candidateIndex;
++			ENSURE( cpu->shapeIndex == seed->shapeIndexA );
++			ENSURE( capture.queryShapeIndex == seed->shapeIndexB );
 +		}
 +		totalCpuCount += capture.count;
 +	}
@@ -20100,6 +20308,8 @@ index 0000000..6aa1f88
 +	ENSURE( profile.lastPairContactSeedCount == bodyCount * ( bodyCount - 1 ) / 2 );
 +	ENSURE( profile.lastPairContactSeedBytes ==
 +			(uint64_t)( bodyCount * ( bodyCount - 1 ) / 2 ) * sizeof( b3MetalPairContactSeed ) );
++	ENSURE( profile.pairPrivateScratchDispatchCount == 1 );
++	ENSURE( profile.lastPairRawSharedBytes == 0 );
 +	printf( "    final pair plan contacts=%d direct=%d seedBytes=%llu recordTraversal=bypassed exactTopology=yes\n",
 +			cpu->broadPhase.pairSet.count, profile.lastPairDirectCreateCount,
 +			(unsigned long long)profile.lastPairContactSeedBytes );
@@ -20159,6 +20369,8 @@ index 0000000..6aa1f88
 +		ENSURE( profile.pairContactSeedDispatchCount == 1 );
 +		ENSURE( profile.pairRecordTraversalBypassCount == 1 );
 +		ENSURE( profile.lastPairContactSeedCount == cpu->broadPhase.pairSet.count );
++		ENSURE( profile.pairPrivateScratchDispatchCount == 1 );
++		ENSURE( profile.lastPairRawSharedBytes == 0 );
 +		b3DestroyWorld( gpuWorldId );
 +		b3DestroyWorld( cpuWorldId );
 +	}
@@ -20274,6 +20486,8 @@ index 0000000..6aa1f88
 +	ENSURE( profile.pairContactSeedDispatchCount == 0 );
 +	ENSURE( profile.pairRecordTraversalBypassCount == 0 );
 +	ENSURE( profile.lastPairContactSeedBytes == 0 );
++	ENSURE( profile.pairPrivateScratchDispatchCount == 0 );
++	ENSURE( profile.lastPairRawSharedBytes > 0 );
 +
 +	b3Joint_SetCollideConnected( cpuJoint, true );
 +	b3Joint_SetCollideConnected( gpuJoint, true );
@@ -20290,6 +20504,10 @@ index 0000000..6aa1f88
 +	ENSURE( profile.pairContactSeedDispatchCount == 1 );
 +	ENSURE( profile.pairRecordTraversalBypassCount == 1 );
 +	ENSURE( profile.lastPairContactSeedBytes == sizeof( b3MetalPairContactSeed ) );
++	// Eligibility is cached per shape revision and fails closed for the whole
++	// world while compound or custom-filter shapes remain live.
++	ENSURE( profile.pairPrivateScratchDispatchCount == 0 );
++	ENSURE( profile.lastPairRawSharedBytes > 0 );
 +	printf( "    final pair exceptions direct=1 filtered=3 callbacks=%d compoundChildren=2 jointMutation=device\n",
 +			cpuCapture.count );
 +
@@ -20647,6 +20865,154 @@ index 0000000..6aa1f88
 +	printf( "    existing pair filter contacts=1 suppressed=1 restored=%d uploads=stable\n", candidateCount );
 +
 +	b3DestroyWorld( worldId );
++	return 0;
++}
++
++static int MetalPrivatePairDenseMaterializationTest( void )
++{
++	b3WorldDef worldDef = b3DefaultWorldDef();
++	worldDef.gravity = b3Vec3_zero;
++	b3WorldId cpuWorldId = b3CreateWorld( &worldDef );
++	b3WorldId gpuWorldId = b3CreateWorld( &worldDef );
++	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
++	b3ShapeDef shapeDef = b3DefaultShapeDef();
++	b3BodyDef bodyDef = b3DefaultBodyDef();
++	const int targetCount = 20;
++	for ( int i = 0; i < targetCount; ++i )
++	{
++		b3BodyId cpuBody = b3CreateBody( cpuWorldId, &bodyDef );
++		b3BodyId gpuBody = b3CreateBody( gpuWorldId, &bodyDef );
++		b3CreateSphereShape( cpuBody, &shapeDef, &sphere );
++		b3CreateSphereShape( gpuBody, &shapeDef, &sphere );
++	}
++	// Drain the static insertion moves so the dense plan has one query and a
++	// deliberately greater-than-16 candidate list. Enable Metal afterward so
++	// this fixture begins with fresh private scratch.
++	b3World* cpuWorld = b3GetWorldFromId( cpuWorldId );
++	b3World* gpuWorld = b3GetWorldFromId( gpuWorldId );
++	b3UpdateBroadPhasePairs( cpuWorld );
++	b3UpdateBroadPhasePairs( gpuWorld );
++	ENSURE( b3World_EnableMetal( gpuWorldId, 1 ) );
++	ENSURE( b3World_SetMetalBroadPhase( gpuWorldId, true ) );
++	bodyDef.type = b3_dynamicBody;
++	bodyDef.enableSleep = false;
++	b3BodyId cpuVisitor = b3CreateBody( cpuWorldId, &bodyDef );
++	b3BodyId gpuVisitor = b3CreateBody( gpuWorldId, &bodyDef );
++	b3CreateSphereShape( cpuVisitor, &shapeDef, &sphere );
++	b3ShapeId visitorShape = b3CreateSphereShape( gpuVisitor, &shapeDef, &sphere );
++
++	b3BroadPhase* broadPhase = &gpuWorld->broadPhase;
++	ENSURE( broadPhase->moveArray.count == 1 );
++	const b3MetalPairQueryRecord* records = NULL;
++	const b3MetalPairCandidate* candidates = NULL;
++	const int* cpuFilterMoves = NULL;
++	const b3MetalPairContactSeed* contactSeeds = NULL;
++	int candidateCount = 0;
++	int cpuFilterMoveCount = 0;
++	int contactSeedCount = 0;
++	b3MetalDispatchStats stats = { 0 };
++	ENSURE( b3MetalGeneratePairCandidates( gpuWorld->metalContext, gpuWorld, broadPhase->moveArray.data, 1, &records,
++			&candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds, &contactSeedCount, &stats ) );
++	ENSURE( candidateCount == targetCount );
++	ENSURE( records != NULL );
++	ENSURE( candidates != NULL );
++	ENSURE( cpuFilterMoves == NULL );
++	ENSURE( cpuFilterMoveCount == 0 );
++	ENSURE( contactSeeds == NULL );
++	ENSURE( contactSeedCount == 0 );
++	ENSURE( stats.pairPrivateScratchDispatchCount == 1 );
++	// The 4 KiB minimum candidate allocation holds 256 records, so this path
++	// needs the traversal command plus the private-to-shared blit, not a retry.
++	ENSURE( stats.commandBufferCount == 2 );
++	ENSURE( stats.pairRawSharedBytes ==
++			sizeof( b3MetalPairQueryRecord ) + targetCount * sizeof( b3MetalPairCandidate ) );
++	ENSURE( records[0].count == targetCount );
++	b3MetalPairCandidate cpuCandidates[targetCount];
++	int visitorIndex = visitorShape.index1 - 1;
++	b3PairCandidateCapture capture = {
++		.world = gpuWorld,
++		.broadPhase = broadPhase,
++		.queryProxyKey = gpuWorld->shapes.data[visitorIndex].proxyKey,
++		.queryShapeIndex = visitorIndex,
++		.treeType = b3_staticBody,
++		.candidates = cpuCandidates,
++		.capacity = targetCount,
++	};
++	b3AABB queryAABB = {
++		.lowerBound = { records[0].lowerX, records[0].lowerY, records[0].lowerZ },
++		.upperBound = { records[0].upperX, records[0].upperY, records[0].upperZ },
++	};
++	b3DynamicTree_Query( broadPhase->trees + b3_staticBody, queryAABB, B3_DEFAULT_MASK_BITS, false,
++			CapturePairCandidate, &capture );
++	ENSURE( capture.count == targetCount );
++	for ( int i = 0; i < targetCount; ++i )
++	{
++		ENSURE( candidates[i].proxyId == cpuCandidates[i].proxyId );
++		ENSURE( candidates[i].treeType == cpuCandidates[i].treeType );
++		ENSURE( candidates[i].shapeIndex == cpuCandidates[i].shapeIndex );
++	}
++	b3UpdateBroadPhasePairs( cpuWorld );
++	b3UpdateBroadPhasePairs( gpuWorld );
++	ENSURE( ComparePairTopology( cpuWorld, gpuWorld ) == 0 );
++	ENSURE( broadPhase->pairSet.count == 16 );
++	printf( "    private dense materialization candidates=%d rawSharedBytes=%llu legacyContacts=16 exactTopology=yes\n",
++			candidateCount,
++			(unsigned long long)stats.pairRawSharedBytes );
++	b3DestroyWorld( gpuWorldId );
++	b3DestroyWorld( cpuWorldId );
++	return 0;
++}
++
++static int MetalCompoundPairQueryGateTest( void )
++{
++	b3WorldDef worldDef = b3DefaultWorldDef();
++	worldDef.gravity = b3Vec3_zero;
++	b3WorldId worldId = b3CreateWorld( &worldDef );
++	ENSURE( b3World_EnableMetal( worldId, 1 ) );
++	b3SurfaceMaterial material = b3DefaultSurfaceMaterial();
++	b3CompoundSphereDef child = {
++		.sphere = { .center = b3Vec3_zero, .radius = 0.5f },
++		.material = material,
++	};
++	b3CompoundDef compoundDef = { .spheres = &child, .sphereCount = 1 };
++	b3CompoundData* compound = b3CreateCompound( &compoundDef );
++	b3BodyDef bodyDef = b3DefaultBodyDef();
++	b3BodyId compoundBody = b3CreateBody( worldId, &bodyDef );
++	b3ShapeDef shapeDef = b3DefaultShapeDef();
++	b3ShapeId compoundShape = b3CreateBakedCompoundShape( compoundBody, &shapeDef, compound );
++	bodyDef.type = b3_dynamicBody;
++	bodyDef.enableSleep = false;
++	b3BodyId visitor = b3CreateBody( worldId, &bodyDef );
++	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
++	b3CreateSphereShape( visitor, &shapeDef, &sphere );
++
++	b3World* world = b3GetWorldFromId( worldId );
++	b3UpdateBroadPhasePairs( world );
++	b3Filter filter = b3Shape_GetFilter( compoundShape );
++	filter.groupIndex = 1;
++	b3Shape_SetFilter( compoundShape, filter, true );
++	ENSURE( world->broadPhase.moveArray.count == 1 );
++	const b3MetalPairQueryRecord* records = NULL;
++	const b3MetalPairCandidate* candidates = NULL;
++	const int* cpuFilterMoves = NULL;
++	const b3MetalPairContactSeed* contactSeeds = NULL;
++	int candidateCount = 0;
++	int cpuFilterMoveCount = 0;
++	int contactSeedCount = 0;
++	b3MetalDispatchStats stats = { 0 };
++	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, world->broadPhase.moveArray.data, 1, &records,
++			&candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds, &contactSeedCount,
++			&stats ) == false );
++	ENSURE( records == NULL );
++	ENSURE( candidates == NULL );
++	ENSURE( cpuFilterMoves == NULL );
++	ENSURE( contactSeeds == NULL );
++	ENSURE( candidateCount == 0 );
++	ENSURE( cpuFilterMoveCount == 0 );
++	ENSURE( contactSeedCount == 0 );
++	printf( "    compound pair query hardGate=closed partialPlanExposed=no\n" );
++	b3DestroyWorld( worldId );
++	b3DestroyCompound( compound );
 +	return 0;
 +}
 +
@@ -22993,6 +23359,8 @@ index 0000000..6aa1f88
 +	RUN_SUBTEST( MetalFinalPairFilterExceptionTest );
 +	RUN_SUBTEST( MetalJointPairRegistryTest );
 +	RUN_SUBTEST( MetalExistingPairFilterTest );
++	RUN_SUBTEST( MetalPrivatePairDenseMaterializationTest );
++	RUN_SUBTEST( MetalCompoundPairQueryGateTest );
 +	RUN_SUBTEST( MetalPairTraversalFallbackTest );
 +	RUN_SUBTEST( MetalShapeCompactionTest );
 +	RUN_SUBTEST( MetalShapeInputRegistryTest );
