@@ -81,13 +81,18 @@ coverage establishes stable defaults across Apple GPU families.
 
 An independently opt-in pair stage copies Erin's existing static, kinematic,
 and dynamic tree topology into persistent shared Metal buffers. A count pass
-traverses leaves in upstream stack order, the CPU assigns stable per-move
-offsets, and a second pass writes disjoint candidate ranges. CPU consumption
-then reuses the complete upstream callback for moved-proxy de-duplication,
-compound children, sensors, filters, joint collision overrides, and custom user
-filters. Tree heights at or above 63, shader stack overflow, changing counts,
-allocation failure, or more than 64 raw candidates per moved proxy on average
-fall back to the full CPU traversal before any partial result is consumed.
+traverses leaves in upstream stack order. A deterministic 256-lane hierarchical
+scan computes stable per-move offsets: SIMD subgroups scan each block, a short
+serial kernel prefixes block totals, and a parallel add applies block offsets.
+A final traversal writes disjoint candidate ranges in the same command buffer.
+The first unexpectedly dense call may submit one write-only retry after growing
+the persistent candidate buffer; the steady path submits and waits once. CPU
+consumption then reuses the complete upstream callback for moved-proxy
+de-duplication, compound children, sensors, filters, joint collision overrides,
+and custom user filters. Unsupported threadgroup geometry, tree heights at or
+above 63, shader stack overflow, changing counts, allocation failure, or more
+than 64 raw candidates per moved proxy on average fall back to the full CPU
+traversal before any partial result is consumed.
 
 Broad-phase tree mutation, narrow phase, contact and joint preparation,
 unsupported joint solution, continuous collision, events, and sleeping/island
@@ -167,3 +172,5 @@ The follow-on shape-AABB implementation and result-stream measurements are in
 [`benchmarks/m4-pro-shape-finalization-2026-09-02.md`](benchmarks/m4-pro-shape-finalization-2026-09-02.md).
 Experimental dynamic-tree traversal results are in
 [`benchmarks/m4-pro-pair-generation-2026-09-02.md`](benchmarks/m4-pro-pair-generation-2026-09-02.md).
+The follow-on on-device stable scan and compaction correctness checkpoint is in
+[`benchmarks/m4-pro-pair-prefix-2026-09-02.md`](benchmarks/m4-pro-pair-prefix-2026-09-02.md).

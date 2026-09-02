@@ -6,6 +6,20 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+static int ReadPositiveEnvironment( const char* name )
+{
+	const char* text = getenv( name );
+	if ( text == NULL ) return 0;
+	char* end = NULL;
+	long value = strtol( text, &end, 10 );
+	if ( end == text || *end != '\0' || value < 1 || value > INT32_MAX )
+	{
+		fprintf( stderr, "%s must be an integer in [1, %d]\n", name, INT32_MAX );
+		exit( 2 );
+	}
+	return (int)value;
+}
+
 static b3WorldId CreateBallisticWorld( int bodyCount, int workerCount, bool createShapes )
 {
 	b3WorldDef worldDef = b3DefaultWorldDef();
@@ -56,15 +70,19 @@ int main( void )
 	bool enableFinalization = getenv( "BOX3D_METAL_FINALIZATION" ) != NULL;
 	bool enableBroadPhase = getenv( "BOX3D_METAL_BROAD_PHASE" ) != NULL;
 	bool createShapes = getenv( "BOX3D_METAL_SHAPES" ) != NULL;
+	int selectedBodyCount = ReadPositiveEnvironment( "BOX3D_METAL_WORLD_COUNT" );
+	int selectedRepeats = ReadPositiveEnvironment( "BOX3D_METAL_WORLD_REPEATS" );
 	printf( "# operation=whole_world_unconstrained substeps=4 workers=%d timing=wall_clock_step metal_finalization=%s "
 		"metal_broad_phase=%s shapes=%s\n", workerCount, enableFinalization ? "on" : "off",
 		enableBroadPhase ? "on" : "off", createShapes ? "sphere_per_body" : "none" );
 	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,pair_kernel_ms,pair_dispatches,pair_fallbacks,speedup\n" );
 	const int counts[] = { 512, 2048, 8192, 32768, 131072, 524288 };
-	for ( int testIndex = 0; testIndex < (int)( sizeof( counts ) / sizeof( counts[0] ) ); ++testIndex )
+	int testCount = selectedBodyCount > 0 ? 1 : (int)( sizeof( counts ) / sizeof( counts[0] ) );
+	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
 	{
-		int bodyCount = counts[testIndex];
-		int repeats = bodyCount <= 8192 ? 80 : bodyCount <= 32768 ? 40 : bodyCount <= 131072 ? 16 : 6;
+		int bodyCount = selectedBodyCount > 0 ? selectedBodyCount : counts[testIndex];
+		int repeats = selectedRepeats > 0 ? selectedRepeats :
+			bodyCount <= 8192 ? 80 : bodyCount <= 32768 ? 40 : bodyCount <= 131072 ? 16 : 6;
 
 		b3WorldId cpuWorld = CreateBallisticWorld( bodyCount, workerCount, createShapes );
 		double cpuMs = TimeWorld( cpuWorld, repeats );

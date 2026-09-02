@@ -36,6 +36,9 @@ struct b3MetalContext
 	id<MTLComputePipelineState> finalizeBodiesPipeline;
 	id<MTLComputePipelineState> finalizeShapesPipeline;
 	id<MTLComputePipelineState> pairCandidatesPipeline;
+	id<MTLComputePipelineState> pairScanBlocksPipeline;
+	id<MTLComputePipelineState> pairPrefixPipeline;
+	id<MTLComputePipelineState> pairAddOffsetsPipeline;
 	id<MTLComputePipelineState> warmStartContactsPipeline;
 	id<MTLComputePipelineState> solveContactsPipeline;
 	id<MTLComputePipelineState> restitutionContactsPipeline;
@@ -71,6 +74,9 @@ struct b3MetalContext
 	NSUInteger pairRecordCapacity;
 	id<MTLBuffer> pairCandidateBuffer;
 	NSUInteger pairCandidateCapacity;
+	id<MTLBuffer> pairSummaryBuffer;
+	id<MTLBuffer> pairBlockBuffer;
+	NSUInteger pairBlockCapacity;
 	id<MTLBuffer> contactConstraintBuffer;
 	NSUInteger contactConstraintCapacity;
 	id<MTLBuffer> meshContactBuffer;
@@ -127,6 +133,21 @@ typedef struct b3MetalShapeInput
 	float fatUpperX, fatUpperY, fatUpperZ;
 } b3MetalShapeInput;
 
+typedef struct b3MetalPairSummary
+{
+	uint64_t totalCount;
+	uint32_t flags;
+	uint32_t writeFlags;
+} b3MetalPairSummary;
+
+typedef struct b3MetalPairBlock
+{
+	uint32_t sum;
+	uint32_t flags;
+	uint32_t offset;
+	uint32_t padding;
+} b3MetalPairBlock;
+
 _Static_assert( sizeof( b3MetalBodyProperties ) == 128, "Metal body property ABI changed" );
 _Static_assert( sizeof( b3MetalFinalizeProperties ) == 40, "Metal finalization-property ABI changed" );
 _Static_assert( sizeof( b3MetalFinalizeResult ) == 100, "Metal finalization-result ABI changed" );
@@ -139,6 +160,8 @@ _Static_assert( offsetof( b3TreeNode, parent ) == 40, "Metal tree-node ABI chang
 _Static_assert( offsetof( b3TreeNode, flags ) == 46, "Metal tree-node ABI changed" );
 _Static_assert( sizeof( b3MetalPairQueryRecord ) == 16, "Metal pair-record ABI changed" );
 _Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI changed" );
+_Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
+_Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintPointWide ) == 192, "Metal wide contact point ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintWide ) == 1696, "Metal wide contact ABI changed" );
 _Static_assert( sizeof( b3ManifoldConstraintPoint ) == 48, "Metal mesh contact-point ABI changed" );
@@ -269,7 +292,10 @@ static const char* b3_metalSource =
 	"};\n"
 	"struct PairQueryRecord { uint count,offset,flags,padding; };\n"
 	"struct PairCandidate { int proxyId,treeType,shapeIndex,padding; };\n"
+	"struct PairSummary { ulong totalCount; uint flags,writeFlags; };\n"
+	"struct PairBlock { uint sum,flags,offset,padding; };\n"
 	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates; };\n"
+	"struct PairPrefixParams { uint moveCount,candidateCapacity,candidateLimit,padding; };\n"
 	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
 	"struct ShapeParams { uint shapeCount; float extra; uint p0; uint p1; };\n"
 	"struct FusedParams {\n"
@@ -519,8 +545,10 @@ static const char* b3_metalSource =
 	"}\n"
 	"kernel void b3_pair_candidates(const device int* moves [[buffer(0)]],const device TreeNode* nodes [[buffer(1)]],\n"
 	"                               device PairQueryRecord* records [[buffer(2)]],device PairCandidate* candidates [[buffer(3)]],\n"
-	"                               constant PairParams& p [[buffer(4)]],uint i [[thread_position_in_grid]]) {\n"
+	"                               constant PairParams& p [[buffer(4)]],device PairSummary* summary [[buffer(5)]],\n"
+	"                               uint i [[thread_position_in_grid]]) {\n"
 	"  if(i>=p.moveCount) return; int key=moves[i];int queryType=key&3;int proxyId=key>>2;\n"
+	"  if(p.writeCandidates!=0u&&summary->flags!=0u) return;\n"
 	"  uint queryOffset=queryType==0?p.offset0:(queryType==1?p.offset1:p.offset2);\n"
 	"  TreeNode q=nodes[queryOffset+uint(proxyId)];float3 lo=float3(q.lx,q.ly,q.lz),hi=float3(q.ux,q.uy,q.uz);\n"
 	"  PairQueryRecord record=records[i];uint count=0u,flags=0u;thread int stack[64];\n"
@@ -531,6 +559,35 @@ static const char* b3_metalSource =
 	"  query_pair_tree(nodes,p.root2,p.offset2,2,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
 	"  if(p.writeCandidates==0u) record.count=count; else if(count!=record.count) flags|=2u;\n"
 	"  record.flags=flags;records[i]=record;\n"
+	"  if(p.writeCandidates!=0u&&flags!=0u) atomic_fetch_or_explicit((device atomic_uint*)&summary->writeFlags,8u,memory_order_relaxed);\n"
+	"}\n"
+	"kernel void b3_pair_scan_blocks(device PairQueryRecord* records [[buffer(0)]],device PairBlock* blocks [[buffer(1)]],\n"
+	"                                constant PairPrefixParams& p [[buffer(2)]],uint i [[thread_position_in_grid]],\n"
+	"                                uint threadIndex [[thread_index_in_threadgroup]],uint group [[threadgroup_position_in_grid]],\n"
+	"                                ushort lane [[thread_index_in_simdgroup]],ushort subgroup [[simdgroup_index_in_threadgroup]],\n"
+	"                                ushort simdWidth [[threads_per_simdgroup]]) {\n"
+	"  threadgroup uint subgroupTotals[32];threadgroup uint subgroupOffsets[32];threadgroup uint subgroupErrors[32];\n"
+	"  uint value=0u,error=0u;if(i<p.moveCount){PairQueryRecord r=records[i];value=r.count;error=r.flags;}\n"
+	"  uint localOffset=simd_prefix_exclusive_sum(value);uint subgroupTotal=simd_sum(value);uint subgroupError=simd_max(error);\n"
+	"  if(lane==0){subgroupTotals[subgroup]=subgroupTotal;subgroupErrors[subgroup]=subgroupError;}\n"
+	"  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+	"  if(threadIndex==0u){uint running=0u,flags=0u;uint subgroupCount=256u/uint(simdWidth);\n"
+	"    for(uint s=0u;s<subgroupCount;++s){subgroupOffsets[s]=running;running+=subgroupTotals[s];flags|=subgroupErrors[s];}\n"
+	"    PairBlock b;b.sum=running;b.flags=flags;b.offset=0u;b.padding=0u;blocks[group]=b;}\n"
+	"  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
+	"  if(i<p.moveCount){PairQueryRecord r=records[i];r.offset=localOffset+subgroupOffsets[subgroup];records[i]=r;}\n"
+	"}\n"
+	"kernel void b3_pair_prefix(device PairBlock* blocks [[buffer(0)]],device PairSummary* summary [[buffer(1)]],\n"
+	"                           constant PairPrefixParams& p [[buffer(2)]]) {\n"
+	"  ulong total=0ul;uint flags=0u;uint blockCount=(p.moveCount+255u)/256u;\n"
+	"  for(uint i=0u;i<blockCount;++i){PairBlock b=blocks[i];if(b.flags!=0u)flags|=1u;\n"
+	"    b.offset=uint(min(total,ulong(0xffffffffu)));blocks[i]=b;total+=ulong(b.sum);}\n"
+	"  if(total>ulong(p.candidateLimit))flags|=2u;if(total>ulong(p.candidateCapacity))flags|=4u;\n"
+	"  summary->totalCount=total;summary->flags=flags;summary->writeFlags=0u;\n"
+	"}\n"
+	"kernel void b3_pair_add_offsets(device PairQueryRecord* records [[buffer(0)]],const device PairBlock* blocks [[buffer(1)]],\n"
+	"                                constant PairPrefixParams& p [[buffer(2)]],uint i [[thread_position_in_grid]]) {\n"
+	"  if(i<p.moveCount){PairQueryRecord r=records[i];r.offset+=blocks[i/256u].offset;records[i]=r;}\n"
 	"}\n";
 #pragma clang diagnostic pop
 
@@ -873,6 +930,21 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			? [device newComputePipelineStateWithFunction:pairCandidatesFunction error:&error]
 			: nil;
 		[pairCandidatesFunction release];
+		id<MTLFunction> pairScanBlocksFunction = [library newFunctionWithName:@"b3_pair_scan_blocks"];
+		id<MTLComputePipelineState> pairScanBlocksPipeline = pairScanBlocksFunction != nil
+			? [device newComputePipelineStateWithFunction:pairScanBlocksFunction error:&error]
+			: nil;
+		[pairScanBlocksFunction release];
+		id<MTLFunction> pairPrefixFunction = [library newFunctionWithName:@"b3_pair_prefix"];
+		id<MTLComputePipelineState> pairPrefixPipeline = pairPrefixFunction != nil
+			? [device newComputePipelineStateWithFunction:pairPrefixFunction error:&error]
+			: nil;
+		[pairPrefixFunction release];
+		id<MTLFunction> pairAddOffsetsFunction = [library newFunctionWithName:@"b3_pair_add_offsets"];
+		id<MTLComputePipelineState> pairAddOffsetsPipeline = pairAddOffsetsFunction != nil
+			? [device newComputePipelineStateWithFunction:pairAddOffsetsFunction error:&error]
+			: nil;
+		[pairAddOffsetsFunction release];
 		[library release];
 
 		NSString* contactSource = [NSString stringWithUTF8String:b3_contactSource];
@@ -952,7 +1024,8 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		[solveJointOverflowFunction release];
 		[contactLibrary release];
 		if ( positionPipeline == nil || fusedPipeline == nil || finalizePipeline == nil || finalizeShapesPipeline == nil ||
-			 pairCandidatesPipeline == nil ||
+			 pairCandidatesPipeline == nil || pairScanBlocksPipeline == nil || pairPrefixPipeline == nil ||
+			 pairAddOffsetsPipeline == nil ||
 			 warmStartPipeline == nil || solvePipeline == nil ||
 			 restitutionPipeline == nil || warmStartMeshPipeline == nil || solveMeshPipeline == nil || restitutionMeshPipeline == nil ||
 			 warmStartOverflowPipeline == nil || solveOverflowPipeline == nil || restitutionOverflowPipeline == nil ||
@@ -965,6 +1038,9 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[finalizePipeline release];
 			[finalizeShapesPipeline release];
 			[pairCandidatesPipeline release];
+			[pairScanBlocksPipeline release];
+			[pairPrefixPipeline release];
+			[pairAddOffsetsPipeline release];
 			[warmStartPipeline release];
 			[solvePipeline release];
 			[restitutionPipeline release];
@@ -994,6 +1070,9 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[finalizePipeline release];
 			[finalizeShapesPipeline release];
 			[pairCandidatesPipeline release];
+			[pairScanBlocksPipeline release];
+			[pairPrefixPipeline release];
+			[pairAddOffsetsPipeline release];
 			[warmStartPipeline release];
 			[solvePipeline release];
 			[restitutionPipeline release];
@@ -1022,6 +1101,9 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		context->finalizeBodiesPipeline = finalizePipeline;
 		context->finalizeShapesPipeline = finalizeShapesPipeline;
 		context->pairCandidatesPipeline = pairCandidatesPipeline;
+		context->pairScanBlocksPipeline = pairScanBlocksPipeline;
+		context->pairPrefixPipeline = pairPrefixPipeline;
+		context->pairAddOffsetsPipeline = pairAddOffsetsPipeline;
 		context->warmStartContactsPipeline = warmStartPipeline;
 		context->solveContactsPipeline = solvePipeline;
 		context->restitutionContactsPipeline = restitutionPipeline;
@@ -1059,6 +1141,8 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->pairTreeBuffer release];
 	[context->pairRecordBuffer release];
 	[context->pairCandidateBuffer release];
+	[context->pairSummaryBuffer release];
+	[context->pairBlockBuffer release];
 	[context->contactConstraintBuffer release];
 	[context->meshContactBuffer release];
 	[context->meshManifoldBuffer release];
@@ -1070,6 +1154,9 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->finalizeBodiesPipeline release];
 	[context->finalizeShapesPipeline release];
 	[context->pairCandidatesPipeline release];
+	[context->pairScanBlocksPipeline release];
+	[context->pairPrefixPipeline release];
+	[context->pairAddOffsetsPipeline release];
 	[context->warmStartContactsPipeline release];
 	[context->solveContactsPipeline release];
 	[context->restitutionContactsPipeline release];
@@ -1226,8 +1313,14 @@ static bool b3MetalEnsureShapeCapacity( b3MetalContext* context, NSUInteger inpu
 #endif
 
 static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveBytes, NSUInteger treeBytes,
-	NSUInteger recordBytes, NSUInteger candidateBytes )
+	NSUInteger recordBytes, NSUInteger candidateBytes, NSUInteger blockBytes )
 {
+	if ( context->pairSummaryBuffer == nil )
+	{
+		context->pairSummaryBuffer =
+			[context->device newBufferWithLength:sizeof( b3MetalPairSummary ) options:MTLResourceStorageModeShared];
+		if ( context->pairSummaryBuffer == nil ) return false;
+	}
 	if ( context->pairMoveCapacity < moveBytes )
 	{
 		NSUInteger capacity = context->pairMoveCapacity > 0 ? context->pairMoveCapacity : 4096;
@@ -1257,6 +1350,16 @@ static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveB
 		[context->pairRecordBuffer release];
 		context->pairRecordBuffer = buffer;
 		context->pairRecordCapacity = capacity;
+	}
+	if ( context->pairBlockCapacity < blockBytes )
+	{
+		NSUInteger capacity = context->pairBlockCapacity > 0 ? context->pairBlockCapacity : 4096;
+		while ( capacity < blockBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->pairBlockBuffer release];
+		context->pairBlockBuffer = buffer;
+		context->pairBlockCapacity = capacity;
 	}
 	candidateBytes = candidateBytes > 0 ? candidateBytes : sizeof( b3MetalPairCandidate );
 	if ( context->pairCandidateCapacity < candidateBytes )
@@ -1995,6 +2098,12 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 		return false;
 	}
 	if ( moveCount == 0 ) return true;
+	NSUInteger scanExecutionWidth = context->pairScanBlocksPipeline.threadExecutionWidth;
+	if ( context->pairScanBlocksPipeline.maxTotalThreadsPerThreadgroup < 256 || scanExecutionWidth < 8 ||
+		 256 % scanExecutionWidth != 0 )
+	{
+		return false;
+	}
 
 	// The shader uses a 64-entry private stack. Refuse the route before dispatch
 	// whenever the current tree topology cannot be represented exactly.
@@ -2007,6 +2116,8 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 	{
 		NSUInteger moveBytes = (NSUInteger)moveCount * sizeof( int );
 		NSUInteger recordBytes = (NSUInteger)moveCount * sizeof( b3MetalPairQueryRecord );
+		NSUInteger pairBlockCount = ( (NSUInteger)moveCount + 255 ) / 256;
+		NSUInteger blockBytes = pairBlockCount * sizeof( b3MetalPairBlock );
 		uint32_t nodeOffsets[b3_bodyTypeCount] = { 0 };
 		uint64_t totalNodeCount = 0;
 		for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
@@ -2016,8 +2127,13 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 		}
 		if ( totalNodeCount > UINT32_MAX ) return false;
 		NSUInteger treeBytes = (NSUInteger)totalNodeCount * sizeof( b3TreeNode );
-		if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, recordBytes,
-				sizeof( b3MetalPairCandidate ) ) == false )
+		uint64_t candidateLimit64 = 64ull * (uint64_t)moveCount;
+		uint32_t candidateLimit = candidateLimit64 < INT32_MAX ? (uint32_t)candidateLimit64 : INT32_MAX;
+		uint64_t initialCandidateCount = 4ull * (uint64_t)moveCount;
+		if ( initialCandidateCount > candidateLimit ) initialCandidateCount = candidateLimit;
+		if ( initialCandidateCount > NSUIntegerMax / sizeof( b3MetalPairCandidate ) ) return false;
+		NSUInteger initialCandidateBytes = (NSUInteger)initialCandidateCount * sizeof( b3MetalPairCandidate );
+		if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, recordBytes, initialCandidateBytes, blockBytes ) == false )
 		{
 			return false;
 		}
@@ -2031,6 +2147,7 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 				(NSUInteger)tree->nodeCapacity * sizeof( b3TreeNode ) );
 		}
 		memset( context->pairRecordBuffer.contents, 0, recordBytes );
+		memset( context->pairSummaryBuffer.contents, 0, sizeof( b3MetalPairSummary ) );
 
 		struct
 		{
@@ -2041,71 +2158,107 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 			nodeOffsets[0], nodeOffsets[1], nodeOffsets[2], (uint32_t)moveCount, 0,
 		};
 		_Static_assert( sizeof( params ) == 32, "Metal pair parameter ABI changed" );
-
-		id<MTLComputePipelineState> pipeline = context->pairCandidatesPipeline;
-		id<MTLCommandBuffer> countCommand = [context->queue commandBuffer];
-		id<MTLComputeCommandEncoder> countEncoder = [countCommand computeCommandEncoder];
-		if ( countCommand == nil || countEncoder == nil ) return false;
-		[countEncoder setComputePipelineState:pipeline];
-		[countEncoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
-		[countEncoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
-		[countEncoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
-		[countEncoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
-		[countEncoder setBytes:&params length:sizeof( params ) atIndex:4];
-		[countEncoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
-			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
-		[countEncoder endEncoding];
-		[countCommand commit];
-		[countCommand waitUntilCompleted];
-		if ( countCommand.status != MTLCommandBufferStatusCompleted ) return false;
-
-		double gpuMilliseconds = countCommand.GPUEndTime >= countCommand.GPUStartTime
-			? 1000.0 * ( countCommand.GPUEndTime - countCommand.GPUStartTime ) : 0.0;
-		b3MetalPairQueryRecord* records = context->pairRecordBuffer.contents;
-		uint64_t totalCandidateCount = 0;
-		uint64_t candidateLimit = 64ull * (uint64_t)moveCount;
-		for ( int i = 0; i < moveCount; ++i )
+		uint64_t availableCandidateCount64 = context->pairCandidateCapacity / sizeof( b3MetalPairCandidate );
+		uint32_t availableCandidateCount = availableCandidateCount64 < UINT32_MAX
+			? (uint32_t)availableCandidateCount64 : UINT32_MAX;
+		struct
 		{
-			if ( records[i].flags != 0 ) return false;
-			records[i].offset = (uint32_t)totalCandidateCount;
-			totalCandidateCount += records[i].count;
-			if ( totalCandidateCount > candidateLimit || totalCandidateCount > INT32_MAX ) return false;
-		}
+			uint32_t moveCount, candidateCapacity, candidateLimit, padding;
+		} prefixParams = { (uint32_t)moveCount, availableCandidateCount, candidateLimit, 0 };
+		_Static_assert( sizeof( prefixParams ) == 16, "Metal pair-prefix parameter ABI changed" );
 
-		NSUInteger candidateBytes = (NSUInteger)totalCandidateCount * sizeof( b3MetalPairCandidate );
-		if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, recordBytes, candidateBytes ) == false ) return false;
-		records = context->pairRecordBuffer.contents;
-		if ( totalCandidateCount > 0 )
+		id<MTLComputePipelineState> pairPipeline = context->pairCandidatesPipeline;
+		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
+		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+		if ( commandBuffer == nil || encoder == nil ) return false;
+		[encoder setComputePipelineState:pairPipeline];
+		[encoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
+		[encoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
+		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
+		[encoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
+		[encoder setBytes:&params length:sizeof( params ) atIndex:4];
+		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
+		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
+			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
+		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+		[encoder setComputePipelineState:context->pairScanBlocksPipeline];
+		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
+		[encoder setBuffer:context->pairBlockBuffer offset:0 atIndex:1];
+		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
+		[encoder dispatchThreadgroups:MTLSizeMake( pairBlockCount, 1, 1 )
+			threadsPerThreadgroup:MTLSizeMake( 256, 1, 1 )];
+		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+		[encoder setComputePipelineState:context->pairPrefixPipeline];
+		[encoder setBuffer:context->pairBlockBuffer offset:0 atIndex:0];
+		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:1];
+		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
+		[encoder dispatchThreads:MTLSizeMake( 1, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( 1, 1, 1 )];
+		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+		[encoder setComputePipelineState:context->pairAddOffsetsPipeline];
+		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
+		[encoder setBuffer:context->pairBlockBuffer offset:0 atIndex:1];
+		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
+		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
+			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->pairAddOffsetsPipeline ), 1, 1 )];
+		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+		params.writeCandidates = 1;
+		[encoder setComputePipelineState:pairPipeline];
+		[encoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
+		[encoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
+		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
+		[encoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
+		[encoder setBytes:&params length:sizeof( params ) atIndex:4];
+		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
+		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
+			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
+		[encoder endEncoding];
+		[commandBuffer commit];
+		[commandBuffer waitUntilCompleted];
+		if ( commandBuffer.status != MTLCommandBufferStatusCompleted ) return false;
+		if ( stats != NULL ) stats->commandBufferCount = 1;
+
+		double gpuMilliseconds = commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime
+			? 1000.0 * ( commandBuffer.GPUEndTime - commandBuffer.GPUStartTime ) : 0.0;
+		b3MetalPairSummary* summary = context->pairSummaryBuffer.contents;
+		if ( summary->flags == 4u )
 		{
-			params.writeCandidates = 1;
-			id<MTLCommandBuffer> writeCommand = [context->queue commandBuffer];
-			id<MTLComputeCommandEncoder> writeEncoder = [writeCommand computeCommandEncoder];
-			if ( writeCommand == nil || writeEncoder == nil ) return false;
-			[writeEncoder setComputePipelineState:pipeline];
-			[writeEncoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
-			[writeEncoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
-			[writeEncoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
-			[writeEncoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
-			[writeEncoder setBytes:&params length:sizeof( params ) atIndex:4];
-			[writeEncoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
-				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
-			[writeEncoder endEncoding];
-			[writeCommand commit];
-			[writeCommand waitUntilCompleted];
-			if ( writeCommand.status != MTLCommandBufferStatusCompleted ) return false;
-			if ( writeCommand.GPUEndTime >= writeCommand.GPUStartTime )
+			if ( summary->totalCount > candidateLimit ||
+				summary->totalCount > NSUIntegerMax / sizeof( b3MetalPairCandidate ) )
 			{
-				gpuMilliseconds += 1000.0 * ( writeCommand.GPUEndTime - writeCommand.GPUStartTime );
+				return false;
 			}
-			for ( int i = 0; i < moveCount; ++i )
+			NSUInteger candidateBytes = (NSUInteger)summary->totalCount * sizeof( b3MetalPairCandidate );
+			if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, recordBytes, candidateBytes, blockBytes ) == false ) return false;
+			summary = context->pairSummaryBuffer.contents;
+			summary->flags = 0;
+			summary->writeFlags = 0;
+			id<MTLCommandBuffer> retryCommand = [context->queue commandBuffer];
+			id<MTLComputeCommandEncoder> retryEncoder = [retryCommand computeCommandEncoder];
+			if ( retryCommand == nil || retryEncoder == nil ) return false;
+			[retryEncoder setComputePipelineState:pairPipeline];
+			[retryEncoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
+			[retryEncoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
+			[retryEncoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
+			[retryEncoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
+			[retryEncoder setBytes:&params length:sizeof( params ) atIndex:4];
+			[retryEncoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
+			[retryEncoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
+				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
+			[retryEncoder endEncoding];
+			[retryCommand commit];
+			[retryCommand waitUntilCompleted];
+			if ( retryCommand.status != MTLCommandBufferStatusCompleted ) return false;
+			if ( stats != NULL ) stats->commandBufferCount = 2;
+			if ( retryCommand.GPUEndTime >= retryCommand.GPUStartTime )
 			{
-				if ( records[i].flags != 0 ) return false;
+				gpuMilliseconds += 1000.0 * ( retryCommand.GPUEndTime - retryCommand.GPUStartTime );
 			}
 		}
+		if ( summary->flags != 0 || summary->writeFlags != 0 || summary->totalCount > INT32_MAX ) return false;
 
-		*recordsOut = records;
+		*recordsOut = context->pairRecordBuffer.contents;
 		*candidatesOut = context->pairCandidateBuffer.contents;
-		*candidateCountOut = (int)totalCandidateCount;
+		*candidateCountOut = (int)summary->totalCount;
 		if ( stats != NULL ) stats->gpuMilliseconds = gpuMilliseconds;
 		return true;
 	}

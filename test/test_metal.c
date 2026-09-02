@@ -362,7 +362,7 @@ static int MetalFinalizationTest( void )
 
 static int MetalPairTraversalTest( void )
 {
-	const int bodyCount = 96;
+	const int bodyCount = 607;
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.gravity = b3Vec3_zero;
 	b3WorldId worldId = b3CreateWorld( &worldDef );
@@ -372,9 +372,9 @@ static int MetalPairTraversalTest( void )
 	for ( int i = 0; i < bodyCount; ++i )
 	{
 		b3BodyDef bodyDef = b3DefaultBodyDef();
-		bodyDef.type = i < 24 ? b3_staticBody : i < 48 ? b3_kinematicBody : b3_dynamicBody;
-		bodyDef.position = (b3Pos){ 0.62f * (float)( i % 8 ), 0.62f * (float)( ( i / 8 ) % 4 ),
-			0.62f * (float)( i / 32 ) };
+		bodyDef.type = i % 4 == 0 ? b3_staticBody : i % 4 == 1 ? b3_kinematicBody : b3_dynamicBody;
+		bodyDef.position = (b3Pos){ 0.62f * (float)( i % 16 ), 0.62f * (float)( ( i / 16 ) % 8 ),
+			0.62f * (float)( i / 128 ) };
 		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
 		b3CreateSphereShape( bodyId, &shapeDef, &sphere );
 	}
@@ -389,6 +389,11 @@ static int MetalPairTraversalTest( void )
 	b3MetalDispatchStats stats = { 0 };
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
 		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
+	ENSURE( stats.commandBufferCount == 2 );
+	double growthGpuMilliseconds = stats.gpuMilliseconds;
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
+		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
+	ENSURE( stats.commandBufferCount == 1 );
 
 	int cpuCapacity = bodyCount * bodyCount;
 	b3MetalPairCandidate* cpuCandidates = malloc( (size_t)cpuCapacity * sizeof( b3MetalPairCandidate ) );
@@ -428,8 +433,8 @@ static int MetalPairTraversalTest( void )
 		totalCpuCount += capture.count;
 	}
 	ENSURE( totalCpuCount == gpuCandidateCount );
-	printf( "    pair traversal moves=%d candidates=%d gpu=%.3f ms exactOrder=yes\n", moveCount,
-		gpuCandidateCount, stats.gpuMilliseconds );
+	printf( "    pair traversal moves=%d candidates=%d growth=%.3f ms steady=%.3f ms exactOrder=yes\n", moveCount,
+		gpuCandidateCount, growthGpuMilliseconds, stats.gpuMilliseconds );
 
 	free( cpuCandidates );
 	b3DestroyWorld( worldId );

@@ -36,6 +36,7 @@ typedef struct b3MetalDispatchStats
 {
 	double gpuMilliseconds;
 	int bodyCount;
+	int commandBufferCount;
 } b3MetalDispatchStats;
 
 // Returns false when there is no usable Metal device or the shader pipeline
@@ -88,9 +89,10 @@ bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, 
 	int bodyCount, float invTimeStep, bool statesAreResident, const b3MetalFinalizeResult** results,
 	b3MetalDispatchStats* stats );
 
-// Traverse the existing Box3D dynamic trees on Metal. Per-move records and
-// candidates preserve move-array and tree traversal order. Returns false before
-// exposing results if the bounded Metal traversal cannot represent the step.
+// Traverse the existing Box3D dynamic trees and compact candidate ranges on
+// Metal. Per-move records and candidates preserve move-array and tree traversal
+// order. Returns false before exposing results if the bounded Metal traversal
+// cannot represent the step.
 bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase* broadPhase,
 	const int* moveArray, int moveCount, const b3MetalPairQueryRecord** records,
 	const b3MetalPairCandidate** candidates, int* candidateCount, b3MetalDispatchStats* stats );

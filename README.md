@@ -22,9 +22,9 @@ order inside dedicated Metal kernels. Distance joints (including springs,
 limits, and motors) and parallel joints share the GPU-resident command graph;
 other joint types fall back safely. Experimental, separately opt-in stages port
 body/shape finalization and traverse Erin's existing broad-phase trees on Metal
-while retaining deterministic CPU filtering and contact creation. They remain
-off by default; shape readback is still a regression, while GPU tree traversal
-crosses over only in large measured worlds.
+with deterministic on-device candidate compaction, while retaining CPU filtering
+and contact creation. They remain off by default; shape readback is still a
+regression, while GPU tree traversal crosses over only in large measured worlds.
 See [the architecture and compatibility contract](docs/metal_architecture.md)
 for the exact supported surface and current CPU-only stages.
 
