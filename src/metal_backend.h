@@ -24,6 +24,7 @@ typedef struct b3MetalPairQueryRecord
 	uint32_t offset;
 	uint32_t flags;
 	int queryShapeIndex;
+	int queryProxyKey;
 	float lowerX, lowerY, lowerZ;
 	float upperX, upperY, upperZ;
 } b3MetalPairQueryRecord;
@@ -156,6 +157,11 @@ bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, 
 bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* world, const int* moveArray, int moveCount,
 									const b3MetalPairQueryRecord** records, const b3MetalPairCandidate** candidates,
 									int* candidateCount, b3MetalDispatchStats* stats );
+
+// Number of deterministically compacted proxy moves retained on the device by
+// the most recently committed Metal tree refit. The count remains authoritative
+// until resident pair generation succeeds or CPU synchronization materializes it.
+int b3MetalGetResidentPairMoveCount( const b3MetalContext* context );
 
 // Batch the first common convex narrow-phase route. The returned array contains
 // Results are ordered by inputIndex. When residentBypassCount is non-NULL, the
