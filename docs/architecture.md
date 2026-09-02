@@ -201,8 +201,14 @@ double records retain all three exact
 binary64 position bit patterns for shader-side VF64 subtraction. Unsupported
 contact batches return before either registry is built.
 
-Input packing remains. The input is 32 bytes per contact and carries
-eligibility, two shape ids, contact identity, and contact generation. Full
+The input is 32 bytes per contact and carries eligibility, two shape ids,
+contact identity, and contact generation. A resident registry keys the exact
+input/order buffer by pair-set revision, constraint-graph revision, and an
+explicit eligibility revision. Stable steps therefore skip CPU contact-ID
+gathering and input writes. Current body-local solver indices and transient
+fast flags are read from the per-step body table, so awake-body reordering does
+not invalidate the registry and a newly fast body still produces a CPU
+exception. Full
 160-byte results are private. A deterministic 256-lane block scan, serial block
 prefix, and parallel scatter separate stable resident contacts from ordered CPU
 exceptions in the same command buffer. Every supported contact finalizes into
@@ -228,9 +234,11 @@ That authority now survives into solver setup explicitly. Each collision worker
 clears a transient ownership bit before overlap and recycling decisions, then
 sets it only after a resident result passes through Box3D allocation, callback,
 and topology handling. Pre-solve callback contacts remain CPU-owned. Solver
-setup counts marked contact ids in graph-color order and exposes SIMD-wide
-coverage only when every colored convex contact is resident-table authoritative
-and no convex overflow exists.
+When the dispatch classifies every convex graph contact as stable and contact
+state processing leaves the graph revision unchanged, solver setup uses the
+known graph-color counts directly. Otherwise it retains the per-contact
+ownership walk. SIMD-wide coverage is exposed only when every colored convex
+contact is resident-table authoritative and no convex overflow exists.
 
 That gate drives a Metal preparation kernel at the front of the existing solver
 command buffer. It reads normal and identity from the private contact-id table
@@ -282,6 +290,7 @@ Stable collision ownership is generation-based. After a successful dispatch,
 the world generation advances and unchanged resident contacts do not require a
 per-contact stale-flag write. Public and fallback consumers compare each
 contact's synchronization generation before materializing its private result.
-The CPU still gathers graph contact IDs, packs narrow-phase input records, and
-walks graph contacts for solver coverage and schedule eligibility. A revisioned
-resident contact-input/order registry is the next ownership boundary.
+Cold/topology/eligibility changes still rebuild from Erin Catto's CPU-owned
+structures. Stable supported steps reuse the resident contact input/order
+registry and bypass the per-contact solver ownership walk. CPU allocation,
+callbacks, events, unsupported geometry, and ordered topology mutation remain.

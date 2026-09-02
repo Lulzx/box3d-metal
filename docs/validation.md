@@ -222,6 +222,14 @@ double/VF64 differentials both reported 243 stable refreshes; CPU/GPU velocity
 error remained `3.58e-07`, and the warm-start generation fixture remained
 `4.47e-08`.
 
+The contact-input residency checkpoint again passed the portable CPU suite,
+complete float Metal debug, AddressSanitizer, and UndefinedBehaviorSanitizer
+suites, float and double/VF64 warning-as-error builds and focused tests, plus
+focused double/VF64 UBSan. A mutation fixture reused inputs across an awake-body
+index swap, then forced exactly one CPU exception when the same body became
+fast without changing the cache key. Broader gates also caught and fixed a
+CPU-only conditional-compilation regression and a null cached-order prefetch.
+
 ## What the tests do not prove
 
 They do not prove bit-identical determinism, all future upstream revisions,

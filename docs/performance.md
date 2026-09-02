@@ -125,7 +125,16 @@ only the 512 and 8,192 seed contacts. Both latest unchanged steps reported zero
 exceptions and zero shared manifold bytes. These are structural counters, not
 a speedup claim: the host load exceeded 80 with `ffmpeg` consuming roughly ten
 CPU cores, and raw timings varied by several multiples. A quiet-host rerun is
-required after the remaining contact input/order registry work.
+required after the contact input/order registry work.
+
+The contact-input residency checkpoint retains the exact 32-byte input/order
+buffer across stable pair-set, graph, and eligibility revisions. Release smokes
+at 512 and 8,192 contacts each recorded two packs, eleven reuses, zero latest
+input bytes, zero latest exceptions, and solver coverage bypasses equal to all
+stable collision bypasses (6,144 and 98,304). Only seed contacts reached CPU
+collision. These are structural counters, not speedup evidence: a Python
+process consumed one full CPU core and load averages remained about 4 to 8.
+A quiet-host whole-world matrix is still required.
 
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact

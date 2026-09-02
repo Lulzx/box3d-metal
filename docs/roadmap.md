@@ -52,14 +52,16 @@ Resident contact results now carry warm starts by contact generation and feature
 ID. Public-manifold synchronization is lazy, and hit events use a compact
 exception list assembled during narrow-phase packing.
 
-1. Classify callback and topology exceptions so unchanged resident contacts
-   bypass CPU manifold application, then return only the compact exceptions.
+1. Run a quiet-host whole-world matrix now that stable contact-ID gathering,
+   input rewriting, shared manifold output, CPU collision, and solver coverage
+   walks are removed; use the profile to select the next residency boundary.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,
    overflow tests, static-body tests, and whole-world benchmarks.
-4. Move deterministic contact creation only after the geometry and manifold
-   residency boundaries are proven, keeping topology mutation ordered.
+4. Move more deterministic contact/topology mutation on-device only after the
+   geometry and manifold residency boundaries are proven, keeping topology
+   mutation ordered.
 5. Add per-Apple-GPU-family benchmark records before considering automatic
    thresholds.
 

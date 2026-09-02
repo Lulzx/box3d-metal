@@ -66,6 +66,7 @@ for review.
 - [Device contact-prepare refresh](benchmarks/m4-pro-device-contact-prepare-refresh-2026-09-02.md)
 - [Resident collision-application bypass](benchmarks/m4-pro-resident-collision-bypass-2026-09-02.md)
 - [Contact exception compaction](benchmarks/m4-pro-contact-exception-compaction-2026-09-02.md)
+- [Resident contact input/order registry](benchmarks/m4-pro-contact-input-residency-2026-09-02.md)
 
 ## Repository map
 

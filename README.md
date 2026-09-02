@@ -41,7 +41,11 @@ boundary-triangle streams are content-deduplicated. A body-id registry retains
 static and awake rotations, local centers, and VF64-capable world translations
 for collision. Revision-stable dispatches reuse both registries. Each 32-byte
 contact input contains eligibility, shape/contact identity, and contact
-generation. Full 160-byte outputs stay in private Metal storage; a deterministic
+generation. A revisioned contact input/order registry retains those records
+across unchanged pair-set, constraint-graph, and eligibility revisions, so
+stable steps do not gather CPU contact IDs or rewrite the input buffer. Current
+body indices and transient fast flags come from the per-step body registry.
+Full 160-byte outputs stay in private Metal storage; a deterministic
 scan/prefix/scatter pass returns only ordered CPU exceptions in the same command
 buffer. Stable resident contacts finalize directly into the private contact-ID
 table, emit zero shared manifold bytes, and schedule no CPU collision task. The
@@ -200,9 +204,12 @@ sleep, and disable boundaries materialize the lazy mirror safely. Its
 exception-compaction follow-on removes the stable shared stream and flat
 collision task: 512 and 8,192-contact runs report only their seed contacts as
 cumulative CPU collision work, then zero latest exceptions and zero shared
-manifold bytes. Timing is withheld because the host load exceeded 80; the CPU
-still gathers graph contact IDs, packs 32-byte input records, and walks solver
-coverage.
+manifold bytes. Timing was withheld there because the host load exceeded 80.
+The input/order follow-on then removes the stable graph-ID gather, 32-byte input
+rewrite, and per-contact solver coverage walk. At 512 and 8,192 contacts it
+reports two cold/topology packs followed by eleven reuses, zero latest input
+bytes, and complete stable coverage bypass. Timing remains withheld because a
+Python process occupied a full CPU core and host load stayed above 4.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.
