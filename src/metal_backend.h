@@ -58,8 +58,9 @@ typedef struct b3MetalConvexManifoldResult
 	float normalImpulse1, normalImpulse2;
 	uint32_t persistedBits;
 	uint32_t residentFlags;
-	float friction, restitution, rollingResistance, materialPadding;
-	float tangentVelocityX, tangentVelocityY, tangentVelocityZ, tangentVelocityPadding;
+	float friction, restitution, rollingResistance, satSeparation;
+	float tangentVelocityX, tangentVelocityY, tangentVelocityZ;
+	uint32_t satCache;
 	float anchorB1X, anchorB1Y, anchorB1Z, anchorB1Padding;
 	float anchorB2X, anchorB2Y, anchorB2Z, anchorB2Padding;
 	float point3X, point3Y, point3Z, separation3;

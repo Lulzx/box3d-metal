@@ -73,8 +73,8 @@ hull points, planes, triangles, and shape descriptors, while geometry and
 topology mutation rebuild fail-closed. Identical hull streams remain
 content-deduplicated. A second body-id registry retains static and awake body
 rotations, local centers, and VF64-capable world translations for the collision
-step. Each 32-byte contact record carries eligibility, shape/contact identity,
-and contact generation. Full 240-byte outputs stay in private Metal storage; a stable scan/prefix/scatter pass
+step. Each 40-byte contact record carries eligibility, shape/contact identity,
+contact generation, and a CPU-seeded SAT cache. Full 240-byte outputs stay in private Metal storage; a stable scan/prefix/scatter pass
 returns only active results, tagged by original contact index, in the same
 command buffer. The scatter rotates normals into world axes, produces both
 center-of-mass-relative anchors with VF64 translation subtraction, mixes default
@@ -134,7 +134,7 @@ exceptions: an unchanged resident step returns zero shared manifold bytes and
 runs no CPU collision workers, while the hit-event and first-touch
 differentials each return exactly one ordered 240-byte record. Contact mirrors
 use a world generation instead of per-step stable-contact flag writes. A
-revisioned contact input/order registry now retains the 32-byte records across
+revisioned contact input/order registry now retains the 40-byte records across
 unchanged pair, graph, and eligibility revisions, so stable steps neither
 gather graph contact IDs nor rewrite the input buffer. Current body indices and
 fast-body flags come from the per-step body registry. The same dispatch proves

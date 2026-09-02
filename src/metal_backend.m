@@ -297,6 +297,8 @@ typedef struct b3MetalConvexManifoldInput
 	uint32_t contactGeneration;
 	uint32_t prepareEligible;
 	int32_t indexA, indexB;
+	float satSeparation;
+	uint32_t satCache;
 } b3MetalConvexManifoldInput;
 
 typedef struct b3MetalBodyTransform
@@ -356,7 +358,7 @@ _Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI 
 _Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
 _Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
 _Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed" );
-_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 32, "Metal convex-manifold input ABI changed" );
+_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 40, "Metal convex-manifold input ABI changed" );
 _Static_assert( sizeof( b3MetalBodyTransform ) == 80, "Metal body-transform ABI changed" );
 _Static_assert( sizeof( b3MetalConvexManifoldResult ) == 240, "Metal convex-manifold result ABI changed" );
 _Static_assert( offsetof( b3MetalConvexManifoldResult, inputIndex ) == 12, "Metal manifold input-index ABI changed" );
@@ -554,7 +556,7 @@ static const char* b3_metalSource =
 	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates,shapeCount,pairCapacity,p1,p2; };\n"
 	"struct PairPrefixParams { uint moveCount,candidateCapacity,candidateLimit,padding; };\n"
 	"struct ConvexManifoldInput {\n"
-	"  uint eligible,shapeIdA,shapeIdB,contactId,contactGeneration,prepareEligible; int indexA,indexB;\n"
+	"  uint eligible,shapeIdA,shapeIdB,contactId,contactGeneration,prepareEligible; int indexA,indexB; float satSeparation; uint satCache;\n"
 	"};\n"
 	"struct BodyTransform { float qx,qy,qz,qw,px,py,pz; uint supported; ulong pxBits,pyBits,pzBits; int index; uint flags;\n"
 	"  float localCenterX,localCenterY,localCenterZ,sleepVelocity; };\n"
@@ -566,7 +568,7 @@ static const char* b3_metalSource =
 	"struct ConvexManifoldResult { uint eligible,touching,pointCount,inputIndex; float nx,ny,nz; uint contactGeneration;\n"
 	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,scanOffset,contactId;\n"
 	"  float normalImpulse1,normalImpulse2; uint persistedBits,residentFlags;\n"
-	"  float friction,restitution,rollingResistance,materialPadding,tangentVelocityX,tangentVelocityY,tangentVelocityZ,tangentVelocityPadding;\n"
+	"  float friction,restitution,rollingResistance,satSeparation,tangentVelocityX,tangentVelocityY,tangentVelocityZ; uint satCache;\n"
 	"  float anchorB1X,anchorB1Y,anchorB1Z,anchorB1Padding,anchorB2X,anchorB2Y,anchorB2Z,anchorB2Padding;\n"
 	"  float p3x,p3y,p3z,separation3,p4x,p4y,p4z,separation4; uint feature3,feature4; float normalImpulse3,normalImpulse4;\n"
 	"  float anchorB3X,anchorB3Y,anchorB3Z,anchorB3Padding,anchorB4X,anchorB4Y,anchorB4Z,anchorB4Padding; };\n"
@@ -578,7 +580,7 @@ static const char* b3_metalSource =
 	"  float rollingResistance,tangentVelocityX,tangentVelocityY,tangentVelocityZ;\n"
 	"  float twistImpulse,frictionImpulseX,frictionImpulseY,frictionImpulseZ;\n"
 	"  float rollingImpulseX,rollingImpulseY,rollingImpulseZ; uint contactGeneration; PreparePoint points[4]; };\n"
-	"struct ConvexManifoldParams { uint contactCount; float linearSlop,speculativeDistance; uint bodyCount; };\n"
+	"struct ConvexManifoldParams { uint contactCount; float linearSlop,speculativeDistance; uint bodyCount,previousTableCount; };\n"
 	"struct ManifoldCompactParams { uint contactCount,blockCount,previousCount,previousGeneration,currentGeneration,p0,p1,p2; };\n"
 	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
 	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
@@ -1045,6 +1047,16 @@ static const char* b3_metalSource =
 	"  float denom=1.0f/(va+vb+vc),v=vb*denom,w=vc*denom;return a+v*ab+w*ac;}\n"
 	"struct BoxClipVertex { float3 position; float separation; uint feature; };\n"
 	"struct BoxManifold { float3 normal; uint pointCount; BoxClipVertex points[4]; float minSeparation; uint valid; };\n"
+	"float3 box_cross(float3 a,float3 b){return float3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);}\n"
+	"float box_dot(float3 a,float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}\n"
+	"float3 box_rotate(float4 q,float3 v){float3 t1=box_cross(q.xyz,v);float3 t2=float3(t1.x+q.w*v.x,t1.y+q.w*v.y,t1.z+q.w*v.z);\n"
+	"  float3 t3=box_cross(q.xyz,t2);return float3(v.x+2.0f*t3.x,v.y+2.0f*t3.y,v.z+2.0f*t3.z);}\n"
+	"float3 box_inv_rotate(float4 q,float3 v){float3 t1=box_cross(q.xyz,v);float3 t2=float3(t1.x-q.w*v.x,t1.y-q.w*v.y,t1.z-q.w*v.z);\n"
+	"  float3 t3=box_cross(q.xyz,t2);return float3(v.x+2.0f*t3.x,v.y+2.0f*t3.y,v.z+2.0f*t3.z);}\n"
+	"float4 box_inv_mul_quat(float4 a,float4 b){float3 t1=box_cross(b.xyz,a.xyz);float3 t2=float3(t1.x+a.w*b.x,t1.y+a.w*b.y,t1.z+a.w*b.z);\n"
+	"  float3 t3=float3(t2.x-b.w*a.x,t2.y-b.w*a.y,t2.z-b.w*a.z);return float4(t3,a.w*b.w+box_dot(a.xyz,b.xyz));}\n"
+	"float3 box_clip_intersection(float3 a,float3 b,float da,float db){float denominator=da-db;float fraction=da/denominator;\n"
+	"  float3 delta=b-a;float3 scaled=fraction*delta;return a+scaled;}\n"
 	"uint box_make_feature(uint owner1,uint index1,uint owner2,uint index2){return (owner1<<24u)|(index1<<16u)|(owner2<<8u)|index2;}\n"
 	"uint box_flip_feature(uint feature){uint owner1=feature>>24u,index1=(feature>>16u)&255u,owner2=(feature>>8u)&255u,index2=feature&255u;\n"
 	"  return ((1u-owner2)<<24u)|(index2<<16u)|((1u-owner1)<<8u)|index1;}\n"
@@ -1067,11 +1079,11 @@ static const char* b3_metalSource =
 	"  BoxClipVertex vertex1=polygon[count-1u];float distance1=dot(normal,vertex1.position)-offset;uint outCount=0u;\n"
 	"  for(uint index=0u;index<count;++index){BoxClipVertex vertex2=polygon[index];float distance2=dot(normal,vertex2.position)-offset;\n"
 	"    if(distance1<=0.0f&&distance2<=0.0f){if(outCount>=8u)return 9u;out[outCount++]=vertex2;}\n"
-	"    else if(distance1<=0.0f&&distance2>0.0f){float fraction=distance1/(distance1-distance2);BoxClipVertex clipped;\n"
-	"      clipped.position=vertex1.position+fraction*(vertex2.position-vertex1.position);clipped.separation=dot(refNormal,clipped.position)-refOffset;\n"
+	"    else if(distance1<=0.0f&&distance2>0.0f){BoxClipVertex clipped;\n"
+	"      clipped.position=box_clip_intersection(vertex1.position,vertex2.position,distance1,distance2);clipped.separation=dot(refNormal,clipped.position)-refOffset;\n"
 	"      clipped.feature=(vertex2.feature&0xffff0000u)|edgeIndex;if(outCount>=8u)return 9u;out[outCount++]=clipped;}\n"
-	"    else if(distance2<=0.0f&&distance1>0.0f){float fraction=distance1/(distance1-distance2);BoxClipVertex clipped;\n"
-	"      clipped.position=vertex1.position+fraction*(vertex2.position-vertex1.position);clipped.separation=dot(refNormal,clipped.position)-refOffset;\n"
+	"    else if(distance2<=0.0f&&distance1>0.0f){BoxClipVertex clipped;\n"
+	"      clipped.position=box_clip_intersection(vertex1.position,vertex2.position,distance1,distance2);clipped.separation=dot(refNormal,clipped.position)-refOffset;\n"
 	"      clipped.feature=(vertex1.feature&0x0000ffffu)|(edgeIndex<<16u);if(outCount>=8u)return 9u;out[outCount++]=clipped;\n"
 	"      if(outCount>=8u)return 9u;out[outCount++]=vertex2;}vertex1=vertex2;distance1=distance2;}return outCount;}\n"
 	"void box_reduce(thread BoxManifold& manifold,thread BoxClipVertex* points,uint count,float speculativeDistance){\n"
@@ -1159,8 +1171,10 @@ static const char* b3_metalSource =
 	"                                const device BodyTransform* bodyTransforms [[buffer(7)]],\n"
 	"                                const device HullEdge* hullEdges [[buffer(8)]],\n"
 	"                                const device uint* hullFaces [[buffer(9)]],\n"
+	"                                const device ConvexManifoldResult* previousTable [[buffer(10)]],\n"
 	"                                uint i [[thread_position_in_grid]]) {\n"
 	"  if(i>=p.contactCount)return; ConvexManifoldInput in=inputs[i]; ConvexManifoldResult out={};out.inputIndex=i;\n"
+	"  if(in.contactId<p.previousTableCount){ConvexManifoldResult previous=previousTable[in.contactId];if(previous.eligible!=0u&&previous.contactId==in.contactId&&previous.contactGeneration==in.contactGeneration){in.satSeparation=previous.satSeparation;in.satCache=previous.satCache;}}\n"
 	"  if(in.eligible==0u){results[i]=out;return;} out.eligible=1u;\n"
 	"  ShapeGeometry geometryA=shapeGeometry[in.shapeIdA],geometryB=shapeGeometry[in.shapeIdB];\n"
 	"  if(geometryA.supported==0u||geometryB.supported==0u||geometryA.bodyId<0||geometryB.bodyId<0||\n"
@@ -1177,7 +1191,7 @@ static const char* b3_metalSource =
 	"#endif\n"
 	"  float4 qA=float4(transformA.qx,transformA.qy,transformA.qz,transformA.qw);\n"
 	"  float4 qB=float4(transformB.qx,transformB.qy,transformB.qz,transformB.qw);\n"
-	"  float3 relativePosition=inv_rotate(qA,d); float4 relativeRotation=quat_mul(float4(-qA.xyz,qA.w),qB);\n"
+	"  float3 relativePosition=box_inv_rotate(qA,d); float4 relativeRotation=box_inv_mul_quat(qA,qB);\n"
 	"  float3 a1=float3(geometryA.point1X,geometryA.point1Y,geometryA.point1Z),a2=float3(geometryA.point2X,geometryA.point2Y,geometryA.point2Z);\n"
 	"  float3 b1=rotate(relativeRotation,float3(geometryB.point1X,geometryB.point1Y,geometryB.point1Z))+relativePosition;\n"
 	"  float3 b2=rotate(relativeRotation,float3(geometryB.point2X,geometryB.point2Y,geometryB.point2Z))+relativePosition;\n"
@@ -1187,28 +1201,52 @@ static const char* b3_metalSource =
 	"    float3 lowerA=float3(3.40282347e+38f),upperA=float3(-3.40282347e+38f),lowerB=lowerA,upperB=upperA;\n"
 	"    for(uint pointIndex=0u;pointIndex<8u;++pointIndex){float3 pointA=hullPoints[geometryA.pointOffset+pointIndex].xyz;float3 pointB=hullPoints[geometryB.pointOffset+pointIndex].xyz;\n"
 	"      lowerA=min(lowerA,pointA);upperA=max(upperA,pointA);lowerB=min(lowerB,pointB);upperB=max(upperB,pointB);}\n"
-	"    float3 extentA=upperA-lowerA,extentB=upperB-lowerB;float minA=min(extentA.x,min(extentA.y,extentA.z)),maxA=max(extentA.x,max(extentA.y,extentA.z));\n"
-	"    float minB=min(extentB.x,min(extentB.y,extentB.z)),maxB=max(extentB.x,max(extentB.y,extentB.z));\n"
+	"    float3 extentA=upperA-lowerA,extentB=upperB-lowerB;float minA=min(extentA.x,min(extentA.y,extentA.z));\n"
+	"    float minB=min(extentB.x,min(extentB.y,extentB.z)),maxA=max(extentA.x,max(extentA.y,extentA.z)),maxB=max(extentB.x,max(extentB.y,extentB.z));\n"
 	"    if(minA<=p.linearSlop||minB<=p.linearSlop||maxA>16.0f*minA||maxB>16.0f*minB){out.eligible=0u;results[i]=out;return;}\n"
+	"    BoxManifold manifold={};uint cacheType=in.satCache&255u,cacheIndexA=(in.satCache>>8u)&255u,cacheIndexB=(in.satCache>>16u)&255u;uint usedCache=0u;\n"
+	"    if(cacheType==2u&&cacheIndexA<geometryA.planeCount){float4 plane=hullPlanes[geometryA.planeOffset+cacheIndexA];float3 direction=-box_inv_rotate(qB,box_rotate(qA,plane.xyz));\n"
+	"      float bestDot=-3.40282347e+38f;uint support=0u;for(uint pointIndex=0u;pointIndex<geometryB.pointCount;++pointIndex){float value=dot(direction,hullPoints[geometryB.pointOffset+pointIndex].xyz);\n"
+	"        if(value>bestDot){bestDot=value;support=pointIndex;}}float3 supportPoint=box_rotate(relativeRotation,hullPoints[geometryB.pointOffset+support].xyz)+relativePosition;\n"
+	"      float separation=dot(plane.xyz,supportPoint)-plane.w;\n"
+	"      if(separation>=p.speculativeDistance){out.satSeparation=in.satSeparation;out.satCache=(in.satCache&0x00ffffffu)|0x01000000u;results[i]=out;return;}\n"
+	"      box_build_face(manifold,geometryA,geometryB,relativeRotation,relativePosition,cacheIndexA,support,p.speculativeDistance,hullPoints,hullPlanes,hullEdges,hullFaces);\n"
+	"      if(manifold.valid!=0u&&manifold.pointCount>0u&&fabs(in.satSeparation-manifold.minSeparation)<p.linearSlop){usedCache=1u;out.satSeparation=in.satSeparation;out.satCache=(in.satCache&0x00ffffffu)|0x01000000u;}}\n"
+	"    else if(cacheType==3u&&cacheIndexB<geometryB.planeCount){float4 plane=hullPlanes[geometryB.planeOffset+cacheIndexB];float3 direction=-box_inv_rotate(qA,box_rotate(qB,plane.xyz));\n"
+	"      float bestDot=-3.40282347e+38f;uint support=0u;for(uint pointIndex=0u;pointIndex<geometryA.pointCount;++pointIndex){float value=dot(direction,hullPoints[geometryA.pointOffset+pointIndex].xyz);\n"
+	"        if(value>bestDot){bestDot=value;support=pointIndex;}}float3 supportPoint=box_inv_rotate(relativeRotation,hullPoints[geometryA.pointOffset+support].xyz-relativePosition);\n"
+	"      float separation=dot(plane.xyz,supportPoint)-plane.w;\n"
+	"      if(separation>=p.speculativeDistance){out.satSeparation=in.satSeparation;out.satCache=(in.satCache&0x00ffffffu)|0x01000000u;results[i]=out;return;}\n"
+	"      float4 inverseRotation=float4(-relativeRotation.xyz,relativeRotation.w);float3 inversePosition=box_inv_rotate(relativeRotation,-relativePosition);\n"
+	"      box_build_face(manifold,geometryB,geometryA,inverseRotation,inversePosition,cacheIndexB,support,p.speculativeDistance,hullPoints,hullPlanes,hullEdges,hullFaces);\n"
+	"      if(manifold.valid!=0u){manifold.normal=-box_rotate(relativeRotation,manifold.normal);for(uint j=0u;j<manifold.pointCount;++j){manifold.points[j].position=box_rotate(relativeRotation,manifold.points[j].position)+relativePosition;manifold.points[j].feature=box_flip_feature(manifold.points[j].feature);}}\n"
+	"      if(manifold.valid!=0u&&manifold.pointCount>0u&&fabs(in.satSeparation-manifold.minSeparation)<p.linearSlop){usedCache=1u;out.satSeparation=in.satSeparation;out.satCache=(in.satCache&0x00ffffffu)|0x01000000u;}}\n"
+	"    if(usedCache==0u){manifold=BoxManifold{};out.satSeparation=0.0f;out.satCache=0u;\n"
 	"    float faceASeparation=-3.40282347e+38f,faceBSeparation=-3.40282347e+38f;uint faceA=0u,vertexB=0u,faceB=0u,vertexA=0u;\n"
-	"    for(uint face=0u;face<geometryA.planeCount;++face){float4 plane=hullPlanes[geometryA.planeOffset+face];\n"
-	"      float separation=3.40282347e+38f;uint support=0u;for(uint pointIndex=0u;pointIndex<geometryB.pointCount;++pointIndex){\n"
-	"        float3 point=rotate(relativeRotation,hullPoints[geometryB.pointOffset+pointIndex].xyz)+relativePosition;float value=dot(plane.xyz,point)-plane.w;\n"
-	"        if(value<separation){separation=value;support=pointIndex;}}if(separation>faceASeparation){faceASeparation=separation;faceA=face;vertexB=support;}}\n"
-	"    for(uint face=0u;face<geometryB.planeCount;++face){float4 plane=hullPlanes[geometryB.planeOffset+face];float3 normal=rotate(relativeRotation,plane.xyz);\n"
-	"      float offset=plane.w+dot(normal,relativePosition),separation=3.40282347e+38f;uint support=0u;\n"
-	"      for(uint pointIndex=0u;pointIndex<geometryA.pointCount;++pointIndex){float value=dot(normal,hullPoints[geometryA.pointOffset+pointIndex].xyz)-offset;\n"
-	"        if(value<separation){separation=value;support=pointIndex;}}if(separation>faceBSeparation){faceBSeparation=separation;faceB=face;vertexA=support;}}\n"
-	"    if(faceASeparation>p.speculativeDistance||faceBSeparation>p.speculativeDistance){results[i]=out;return;}\n"
+	"    for(uint face=0u;face<geometryA.planeCount;++face){float4 plane=hullPlanes[geometryA.planeOffset+face];float3 direction=-box_inv_rotate(qB,box_rotate(qA,plane.xyz));\n"
+	"      float planeSeparation=dot(plane.xyz,relativePosition)-plane.w,supportValue=-3.40282347e+38f;uint support=0u;\n"
+	"      for(uint pointIndex=0u;pointIndex<geometryB.pointCount;++pointIndex){float value=dot(direction,hullPoints[geometryB.pointOffset+pointIndex].xyz);\n"
+	"        if(value>supportValue){supportValue=value;support=pointIndex;}}float separation=planeSeparation-supportValue;\n"
+	"      if(separation>faceASeparation){faceASeparation=separation;faceA=face;vertexB=support;}}\n"
+	"    for(uint face=0u;face<geometryB.planeCount;++face){float4 plane=hullPlanes[geometryB.planeOffset+face];float3 direction=-box_inv_rotate(qA,box_rotate(qB,plane.xyz));\n"
+	"      float planeSeparation=dot(direction,relativePosition)-plane.w,supportValue=-3.40282347e+38f;uint support=0u;\n"
+	"      for(uint pointIndex=0u;pointIndex<geometryA.pointCount;++pointIndex){float value=dot(direction,hullPoints[geometryA.pointOffset+pointIndex].xyz);\n"
+	"        if(value>supportValue){supportValue=value;support=pointIndex;}}float separation=planeSeparation-supportValue;\n"
+	"      if(separation>faceBSeparation){faceBSeparation=separation;faceB=face;vertexA=support;}}\n"
+	"    if(faceASeparation>p.speculativeDistance){out.satSeparation=faceASeparation;out.satCache=2u|(faceA<<8u)|(vertexB<<16u);results[i]=out;return;}\n"
+	"    if(faceBSeparation>p.speculativeDistance){out.satSeparation=faceBSeparation;out.satCache=3u|(vertexA<<8u)|(faceB<<16u);results[i]=out;return;}\n"
 	"    BoxEdgeQuery edgeQuery=box_query_edges(geometryA,geometryB,relativeRotation,relativePosition,hullPoints,hullPlanes,hullEdges,p.speculativeDistance);\n"
-	"    if(edgeQuery.valid!=0u&&edgeQuery.separation>p.speculativeDistance){results[i]=out;return;}BoxManifold manifold={};\n"
-	"    if(faceASeparation>faceBSeparation){box_build_face(manifold,geometryA,geometryB,relativeRotation,relativePosition,faceA,vertexB,p.speculativeDistance,hullPoints,hullPlanes,hullEdges,hullFaces);}\n"
-	"    else{float4 inverseRotation=float4(-relativeRotation.xyz,relativeRotation.w);float3 inversePosition=inv_rotate(relativeRotation,-relativePosition);\n"
+	"    if(edgeQuery.valid!=0u&&edgeQuery.separation>p.speculativeDistance){out.satSeparation=edgeQuery.separation;out.satCache=4u|(edgeQuery.indexA<<8u)|(edgeQuery.indexB<<16u);results[i]=out;return;}\n"
+	"    if(faceASeparation>faceBSeparation){box_build_face(manifold,geometryA,geometryB,relativeRotation,relativePosition,faceA,vertexB,p.speculativeDistance,hullPoints,hullPlanes,hullEdges,hullFaces);\n"
+	"      if(manifold.valid!=0u&&manifold.pointCount>0u){out.satSeparation=manifold.minSeparation;out.satCache=2u|(faceA<<8u)|(vertexB<<16u);}}\n"
+	"    else{float4 inverseRotation=float4(-relativeRotation.xyz,relativeRotation.w);float3 inversePosition=box_inv_rotate(relativeRotation,-relativePosition);\n"
 	"      box_build_face(manifold,geometryB,geometryA,inverseRotation,inversePosition,faceB,vertexA,p.speculativeDistance,hullPoints,hullPlanes,hullEdges,hullFaces);\n"
-	"      if(manifold.valid!=0u){manifold.normal=-rotate(relativeRotation,manifold.normal);for(uint j=0u;j<manifold.pointCount;++j){\n"
-	"        manifold.points[j].position=rotate(relativeRotation,manifold.points[j].position)+relativePosition;manifold.points[j].feature=box_flip_feature(manifold.points[j].feature);}}}\n"
+	"      if(manifold.valid!=0u){manifold.normal=-box_rotate(relativeRotation,manifold.normal);for(uint j=0u;j<manifold.pointCount;++j){\n"
+	"        manifold.points[j].position=box_rotate(relativeRotation,manifold.points[j].position)+relativePosition;manifold.points[j].feature=box_flip_feature(manifold.points[j].feature);}\n"
+	"        if(manifold.pointCount>0u){out.satSeparation=manifold.minSeparation;out.satCache=3u|(vertexA<<8u)|(faceB<<16u);}}}\n"
 	"    if(edgeQuery.valid!=0u&&(manifold.pointCount==0u||edgeQuery.separation>manifold.minSeparation+p.linearSlop)){\n"
-	"      BoxManifold edgeManifold={};if(box_build_edge(edgeManifold,geometryA,geometryB,relativeRotation,relativePosition,edgeQuery,hullPoints,hullEdges)!=0u)manifold=edgeManifold;}\n"
+	"      BoxManifold edgeManifold={};if(box_build_edge(edgeManifold,geometryA,geometryB,relativeRotation,relativePosition,edgeQuery,hullPoints,hullEdges)!=0u){manifold=edgeManifold;out.satSeparation=edgeManifold.minSeparation;out.satCache=4u|(edgeQuery.indexA<<8u)|(edgeQuery.indexB<<16u);}}\n"
+	"    }\n"
 	"    if(manifold.valid==0u){out.eligible=0u;results[i]=out;return;}\n"
 	"    if(manifold.pointCount==0u){results[i]=out;return;}out.touching=1u;out.pointCount=manifold.pointCount;\n"
 	"    out.nx=manifold.normal.x;out.ny=manifold.normal.y;out.nz=manifold.normal.z;BoxClipVertex point=manifold.points[0];\n"
@@ -1279,11 +1317,11 @@ static const char* b3_metalSource =
 	"  constant ManifoldCompactParams& p [[buffer(2)]]){uint total=0u,stable=0u,matches=0u;for(uint i=0u;i<p.blockCount;++i){PairBlock b=blocks[i];\n"
 	"    b.offset=total;blocks[i]=b;total+=b.sum;stable+=b.flags;matches+=b.padding;}summary->totalCount=ulong(total);summary->flags=stable;summary->writeFlags=matches;}\n"
 	"kernel void b3_manifold_scatter(const device ConvexManifoldResult* results [[buffer(0)]],const device PairBlock* blocks [[buffer(1)]],\n"
-	"  device ConvexManifoldResult* compact [[buffer(2)]],const device ConvexManifoldInput* inputs [[buffer(3)]],\n"
+	"  device ConvexManifoldResult* compact [[buffer(2)]],device ConvexManifoldInput* inputs [[buffer(3)]],\n"
 	"  const device ShapeGeometry* shapeGeometry [[buffer(4)]],const device BodyTransform* bodyTransforms [[buffer(5)]],\n"
 	"  device ConvexManifoldResult* table [[buffer(6)]],const device ImpulseResult* previous [[buffer(7)]],\n"
 	"  device PrepareInput* prepareTable [[buffer(8)]],constant ManifoldCompactParams& p [[buffer(9)]],uint i [[thread_position_in_grid]]){\n"
-	"  if(i>=p.contactCount)return;ConvexManifoldResult r=results[i];uint contactId=inputs[i].contactId;if(r.eligible==0u){if(p.p0!=0u){uint output=blocks[i/256u].offset+r.scanOffset;r.inputIndex=i;r.scanOffset=0u;r.contactId=contactId;compact[output]=r;}return;}ShapeGeometry geometryA=shapeGeometry[inputs[i].shapeIdA];\n"
+	"  if(i>=p.contactCount)return;ConvexManifoldResult r=results[i];uint contactId=inputs[i].contactId;inputs[i].satSeparation=r.satSeparation;inputs[i].satCache=r.satCache;if(r.eligible==0u){if(p.p0!=0u){uint output=blocks[i/256u].offset+r.scanOffset;r.inputIndex=i;r.scanOffset=0u;r.contactId=contactId;compact[output]=r;}return;}ShapeGeometry geometryA=shapeGeometry[inputs[i].shapeIdA];\n"
 	"  ShapeGeometry geometryB=shapeGeometry[inputs[i].shapeIdB];BodyTransform transformA=bodyTransforms[geometryA.bodyId];\n"
 	"  BodyTransform transformB=bodyTransforms[geometryB.bodyId];float4 q=float4(transformA.qx,transformA.qy,transformA.qz,transformA.qw);\n"
 	"  float4 qb=float4(transformB.qx,transformB.qy,transformB.qz,transformB.qw);r.friction=sqrt(geometryA.friction*geometryB.friction);\n"
@@ -1356,7 +1394,7 @@ static const char* b3_contactSource =
 	"struct ConvexManifoldResult { uint eligible,touching,pointCount,inputIndex; float nx,ny,nz; uint contactGeneration;\n"
 	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,scanOffset,contactId;\n"
 	"  float normalImpulse1,normalImpulse2; uint persistedBits,residentFlags;\n"
-	"  float friction,restitution,rollingResistance,materialPadding,tangentVelocityX,tangentVelocityY,tangentVelocityZ,tangentVelocityPadding;\n"
+	"  float friction,restitution,rollingResistance,satSeparation,tangentVelocityX,tangentVelocityY,tangentVelocityZ; uint satCache;\n"
 	"  float anchorB1X,anchorB1Y,anchorB1Z,anchorB1Padding,anchorB2X,anchorB2Y,anchorB2Z,anchorB2Padding;\n"
 	"  float p3x,p3y,p3z,separation3,p4x,p4y,p4z,separation4; uint feature3,feature4; float normalImpulse3,normalImpulse4;\n"
 	"  float anchorB3X,anchorB3Y,anchorB3Z,anchorB3Padding,anchorB4X,anchorB4Y,anchorB4Z,anchorB4Padding; };\n"
@@ -2331,6 +2369,7 @@ static bool b3MetalEnsureConvexManifoldCapacity( b3MetalContext* context, NSUInt
 		[context->convexManifoldTableBuffer release];
 		context->convexManifoldTableBuffer = buffer;
 		context->convexManifoldTableCapacity = capacity;
+		context->convexManifoldTableCount = 0;
 	}
 	return true;
 }
@@ -4187,9 +4226,8 @@ static bool b3MetalSupportsBoxPair( const b3World* world, const b3Shape* shapeA,
 	}
 	b3Vec3 extentA = b3Sub( shapeA->hull->aabb.upperBound, shapeA->hull->aabb.lowerBound );
 	b3Vec3 extentB = b3Sub( shapeB->hull->aabb.upperBound, shapeB->hull->aabb.lowerBound );
-	// High-aspect reference faces amplify float projection error through stacked
-	// four-point solves. Keep those on Erin's CPU SAT path until the Metal
-	// projection/cache path has an equivalent high-precision implementation.
+	// High-aspect reference faces remain CPU-owned until the Metal cached-face
+	// rebuild matches Box3D's rotating clipped-face acceptance at that scale.
 	float minExtentA = b3MinFloat( extentA.x, b3MinFloat( extentA.y, extentA.z ) );
 	float maxExtentA = b3MaxFloat( extentA.x, b3MaxFloat( extentA.y, extentA.z ) );
 	float minExtentB = b3MinFloat( extentB.x, b3MinFloat( extentB.y, extentB.z ) );
@@ -4698,8 +4736,11 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 	if ( reuseInputs && b3MetalCanReuseConvexManifoldInputs( context, world, contactCount ) == false ) return false;
 	( (b3World*)world )->metalLastNarrowPhaseResultCount = 0;
 	( (b3World*)world )->metalLastNarrowPhaseManifoldTableCount = 0;
-	context->convexManifoldTableCount = 0;
-	if ( contactCount == 0 ) return true;
+	if ( contactCount == 0 )
+	{
+		context->convexManifoldTableCount = 0;
+		return true;
+	}
 	if ( (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldInput ) ||
 		 (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldResult ) ||
 		 world->contacts.count < 0 || (NSUInteger)world->contacts.count > NSUIntegerMax / sizeof( b3MetalConvexManifoldResult ) )
@@ -4735,7 +4776,11 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 			}
 		}
 		if ( reuseInputs == false ) context->contactHitEventIdCount = 0;
-		if ( candidateCount == 0 ) return true;
+		if ( candidateCount == 0 )
+		{
+			context->convexManifoldTableCount = 0;
+			return true;
+		}
 
 		NSUInteger inputBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldInput );
 		NSUInteger resultBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldResult );
@@ -4789,6 +4834,13 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 				b3MetalConvexManifoldInput* input = inputs + i;
 				input->contactId = (uint32_t)contactIndex;
 				input->contactGeneration = contact->generation;
+				if ( shapeA->type == b3_hullShape && shapeB->type == b3_hullShape )
+				{
+					const b3SATCache* satCache = &contact->convexContact.cache.satCache;
+					input->satSeparation = satCache->separation;
+					input->satCache = (uint32_t)satCache->type | ( (uint32_t)satCache->indexA << 8 ) |
+						( (uint32_t)satCache->indexB << 16 ) | ( (uint32_t)satCache->hit << 24 );
+				}
 				bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
 					( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
 					( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
@@ -4845,8 +4897,9 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 			( (b3World*)world )->metalLastContactInputBytes = 0;
 		}
 
-		struct { uint32_t contactCount; float linearSlop, speculativeDistance; uint32_t bodyCount; } params = {
+		struct { uint32_t contactCount; float linearSlop, speculativeDistance; uint32_t bodyCount, previousTableCount; } params = {
 			(uint32_t)contactCount, B3_LINEAR_SLOP, B3_SPECULATIVE_DISTANCE, (uint32_t)context->convexBodyTransformCount,
+			(uint32_t)context->convexManifoldTableCount,
 		};
 		struct
 		{
@@ -4878,6 +4931,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		[encoder setBuffer:context->convexBodyTransformBuffer offset:0 atIndex:7];
 		[encoder setBuffer:context->convexHullEdgeBuffer offset:0 atIndex:8];
 		[encoder setBuffer:context->convexHullFaceBuffer offset:0 atIndex:9];
+		[encoder setBuffer:context->convexManifoldTableBuffer offset:0 atIndex:10];
 		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
 		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -5061,6 +5115,17 @@ static bool b3MetalApplyContactManifoldResult( b3Contact* contact, const b3Metal
 	contact->rollingResistance = result->rollingResistance;
 	contact->tangentVelocity =
 		(b3Vec3){ result->tangentVelocityX, result->tangentVelocityY, result->tangentVelocityZ };
+	uint8_t satType = (uint8_t)result->satCache;
+	if ( satType == b3_faceAxisA || satType == b3_faceAxisB || satType == b3_edgePairAxis )
+	{
+		contact->convexContact.cache.satCache = (b3SATCache){
+			.separation = result->satSeparation,
+			.type = satType,
+			.indexA = (uint8_t)( result->satCache >> 8 ),
+			.indexB = (uint8_t)( result->satCache >> 16 ),
+			.hit = (uint8_t)( result->satCache >> 24 ),
+		};
+	}
 	contact->flags &= ~b3_simMetalManifoldStale;
 	return true;
 }

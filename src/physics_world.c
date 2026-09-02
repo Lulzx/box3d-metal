@@ -962,6 +962,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 
 		b3Contact* contact = contacts + contactIndex;
 		B3_VALIDATE( contact->contactId == contactIndex );
+#if defined( BOX3D_METAL )
+		bool hadMetalManifold = ( contact->flags & b3_simMetalManifold ) != 0;
+#endif
 		contact->flags &= ~b3_simMetalManifold;
 
 		b3Shape* shapeA = shapes + contact->shapeIdA;
@@ -1098,6 +1101,14 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 						taskContext->manifoldCounts[bucketIndex - 1] += 1;
 					}
 
+#if defined( BOX3D_METAL )
+					// A prior resident solve owns the current warm-start impulses. The
+					// recycling shortcut otherwise skips both the normal collision update
+					// and the point-matching path that imports them. Synchronize that one
+					// compact record before CPU preparation consumes the recycled manifold.
+					if ( hadMetalManifold ) b3SyncContactImpulses( world, contact );
+#endif
+
 					// Contact is recycled. This also skips updating other aspects of the contact
 					// such as material parameters.
 					continue;
@@ -1212,6 +1223,16 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 							 precomputedConvexManifold != NULL, precomputedNormalImpulses, precomputedPersistedBits,
 							 precomputedAnchorBs, precomputedAnchorsRelativeToCenter, precomputedMaterial, taskContext->arena );
 #if defined( BOX3D_METAL )
+		if ( precomputedConvexManifold != NULL && shapeA->type == b3_hullShape && shapeB->type == b3_hullShape )
+		{
+			contact->convexContact.cache.satCache = (b3SATCache){
+				.separation = metalResult->satSeparation,
+				.type = (uint8_t)metalResult->satCache,
+				.indexA = (uint8_t)( metalResult->satCache >> 8 ),
+				.indexB = (uint8_t)( metalResult->satCache >> 16 ),
+				.hit = (uint8_t)( metalResult->satCache >> 24 ),
+			};
+		}
 		contact->flags &= ~b3_simMetalManifoldStale;
 		contact->metalSyncGeneration = world->metalContactManifoldGeneration;
 		if ( precomputedConvexManifold != NULL && ( contact->flags & b3_simEnablePreSolveEvents ) == 0 &&

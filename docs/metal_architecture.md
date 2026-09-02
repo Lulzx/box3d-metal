@@ -292,8 +292,9 @@ the next solved step rebuilds it. Double builds retain all three binary64 world
 position bit patterns and perform VF64 subtraction in the shader. Unsupported
 contact batches return before either registry is built.
 
-The 32-byte contact input contains eligibility, two shape ids, contact identity,
-and contact generation rather than per-contact geometry or transforms. A cache
+The 40-byte contact input contains eligibility, two shape ids, contact identity,
+contact generation, and a CPU-seeded hull SAT feature rather than per-contact
+geometry or transforms. A cache
 key combines pair-set, constraint-graph, and explicit eligibility revisions.
 When it is unchanged, the input/order buffer is reused without gathering graph
 contact IDs or writing CPU records. The MSL kernel follows shape-to-body ids to
@@ -318,6 +319,12 @@ The same scatter writes an identical finalized record to a persistent private
 table indexed by Box3D contact id. Compact exceptions remain ordered by
 awake-contact input index, while the private copy sets `inputIndex` to the
 contact id so its address and identity are independent of input permutation.
+Canonical box contacts carry their SAT separation, feature type, and feature
+indices in this table. Face-A and face-B cache hits rebuild the clipped manifold
+before fresh SAT, and later dispatches consume the private copy even when a
+topology revision repacks the shared input registry. Edge-pair caches currently
+fall through to fresh GPU SAT; high-aspect boxes remain CPU-owned until their
+rotating cached-face acceptance matches the CPU oracle.
 The table is exposed only through an explicit diagnostic/fallback blit. Entries
 are authoritative only for contacts marked eligible in the current successful
 dispatch; stale unsupported slots are never consumed.

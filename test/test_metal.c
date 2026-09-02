@@ -936,6 +936,15 @@ static int MetalConvexManifoldTest( void )
 	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &gpu, &eligibleCount, NULL,
 										   &stats ) );
 	ENSURE( eligibleCount == firstEligibleCount );
+	int faceCacheHitCount = 0;
+	for ( int i = 0; i < firstEligibleCount; ++i )
+	{
+		uint32_t cacheType = gpu[i].satCache & 0xffu;
+		faceCacheHitCount += ( cacheType == b3_faceAxisA || cacheType == b3_faceAxisB ) &&
+			( gpu[i].satCache >> 24 ) != 0;
+		first[i].satCache = ( first[i].satCache & 0x00ffffffu ) | ( gpu[i].satCache & 0xff000000u );
+	}
+	ENSURE( faceCacheHitCount > 0 );
 	ENSURE( memcmp( first, gpu, (size_t)firstEligibleCount * sizeof( b3MetalConvexManifoldResult ) ) == 0 );
 	for ( int i = 0; i < contactCount / 2; ++i )
 	{
@@ -1011,7 +1020,7 @@ static int MetalConvexManifoldTest( void )
 	// contacts.
 	ENSURE( profile.lastNarrowPhaseResultCount == contactCount );
 	ENSURE( profile.lastNarrowPhaseManifoldTableCount == world->contacts.count );
-	printf( "    resident narrow inputs geometry=%llu/%llu transforms=%llu/%llu hullShapes=%d uniqueHulls=%d inputBytes=32 "
+	printf( "    resident narrow inputs geometry=%llu/%llu transforms=%llu/%llu hullShapes=%d uniqueHulls=%d inputBytes=40 "
 			"resultBytes=%zu tableSlots=%d\n",
 			(unsigned long long)profile.narrowPhaseGeometryUploadCount, (unsigned long long)profile.narrowPhaseGeometryReuseCount,
 			(unsigned long long)profile.narrowPhaseTransformUploadCount,
@@ -1256,8 +1265,9 @@ static int MetalResidentSolverOwnershipTest( void )
 	b3Vec3 gpuVelocity = b3Body_GetLinearVelocity( bodyB );
 	ENSURE( b3Length( b3Sub( cpuVelocity, gpuVelocity ) ) <= 3.0e-5f );
 
-	// The next unchanged step deliberately takes the CPU recycling exception.
-	// A table slot still exists, but it must no longer authorize GPU preparation.
+	// The next unchanged step takes Box3D's recycling shortcut. The prior
+	// device impulse record is synchronized before CPU preparation consumes the
+	// recycled manifold, but the contact no longer authorizes GPU preparation.
 	b3World_SetContactRecycleDistance( worldId, 0.1f );
 	b3World_SetContactRecycleDistance( cpuWorldId, 0.1f );
 	b3World_Step( cpuWorldId, 1.0f / 60.0f, 1 );
@@ -1700,7 +1710,7 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.lastNarrowPhaseResultBytes == sizeof( b3MetalConvexManifoldResult ) );
 	ENSURE( profile.contactInputPackCount == 3 );
 	ENSURE( profile.contactInputReuseCount == 2 );
-	ENSURE( profile.lastContactInputBytes == count * 32u );
+	ENSURE( profile.lastContactInputBytes == count * 40u );
 	ENSURE( profile.lastContactStateBitSetBytes > 0 );
 	ENSURE( profile.contactHitEventBitSetClearBypassCount == 4 );
 	ENSURE( profile.lastContactHitEventBitSetBytes > 0 );
@@ -1736,7 +1746,7 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.lastNarrowPhaseResultBytes == sizeof( b3MetalConvexManifoldResult ) );
 	ENSURE( profile.contactInputPackCount == 4 );
 	ENSURE( profile.contactInputReuseCount == 2 );
-	ENSURE( profile.lastContactInputBytes == ( count + 1 ) * 32u );
+	ENSURE( profile.lastContactInputBytes == ( count + 1 ) * 40u );
 	ENSURE( profile.lastContactStateBitSetBytes > 0 );
 	ENSURE( profile.contactHitEventBitSetClearBypassCount == 5 );
 	ENSURE( profile.lastContactHitEventBitSetBytes == 0 );
