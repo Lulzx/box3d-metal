@@ -4447,10 +4447,10 @@ index 0000000..bf16de3
 +before that traversal and state readback can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..8b41d47
+index 0000000..c71cac2
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,569 @@
+@@ -0,0 +1,584 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -5020,6 +5020,21 @@ index 0000000..8b41d47
 +Fully resident convex-contact state, sim, shape-bound, and body-finalization
 +ownership is recorded in
 +[`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).
++
++### Four-point resident contact transport
++
++Convex face contacts may contain up to `B3_MAX_MANIFOLD_POINTS` (four) points.
++The resident manifold, preparation, and compact impulse ABIs therefore carry
++four points end to end, matching the existing four-point capacity of Box3D's
++wide contact solver. Metal preparation, warm-start matching, solve,
++restitution, compact store, lazy CPU synchronization, and the
++precomputed-manifold bridge all accept the same limit.
++
++This is transport and solver capacity, not a claim that hull-hull narrow phase
++is already resident. The Metal manifold generator still emits the documented
++sphere, capsule, and hull-sphere subset. Hull-hull SAT, clipping, and feature
++generation are the next producer to use the widened ABI; those pairs continue
++through the CPU oracle until that differential test gate passes.
 diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
 index 2e82590..cd49acf 100644
 --- a/include/box3d/box3d.h
@@ -6096,7 +6111,7 @@ index ab17e9a..7da9347 100644
  	b3GraphColor colors[B3_GRAPH_COLOR_COUNT];
  } b3ConstraintGraph;
 diff --git a/src/contact.c b/src/contact.c
-index 1506bdb..f10c01d 100644
+index 1506bdb..f8eeeb9 100644
 --- a/src/contact.c
 +++ b/src/contact.c
 @@ -12,6 +12,9 @@
@@ -6192,7 +6207,7 @@ index 1506bdb..f10c01d 100644
  
  	b3FreeManifolds( world, contact->manifolds, contact->manifoldCount );
  	contact->manifolds = NULL;
-@@ -478,58 +539,88 @@ void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies )
+@@ -478,58 +539,98 @@ void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies )
  }
  
  static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact* contact, const b3Shape* shapeA,
@@ -6210,8 +6225,8 @@ index 1506bdb..f10c01d 100644
  
 -	int pointCapacity = 32;
 -	b3LocalManifoldPoint* pointBuffer = (b3LocalManifoldPoint*)b3Bump( &arena, pointCapacity * sizeof( b3LocalManifoldPoint ) );
-+	b3LocalManifoldPoint precomputedPointBuffer[2];
-+	int pointCapacity = precomputedConvexManifold != NULL ? 2 : 32;
++	b3LocalManifoldPoint precomputedPointBuffer[B3_MAX_MANIFOLD_POINTS];
++	int pointCapacity = precomputedConvexManifold != NULL ? B3_MAX_MANIFOLD_POINTS : 32;
 +	b3LocalManifoldPoint* pointBuffer =
 +		precomputedConvexManifold != NULL
 +			? precomputedPointBuffer
@@ -6223,28 +6238,38 @@ index 1506bdb..f10c01d 100644
 -	b3Transform transformBtoA = b3InvMulWorldTransforms( xfA, xfB );
 -
 -	if ( typeA == b3_sphereShape )
--	{
++	if ( precomputedConvexManifold != NULL )
+ 	{
 -		B3_ASSERT( typeB == b3_sphereShape );
 -		b3CollideSpheres( &geomManifold, pointCapacity, &shapeA->sphere, &shapeB->sphere, transformBtoA );
 -	}
 -	else if ( typeA == b3_capsuleShape )
-+	if ( precomputedConvexManifold != NULL )
- 	{
+-	{
 -		if ( typeB == b3_sphereShape )
 +		B3_ASSERT( ( typeA == b3_sphereShape && typeB == b3_sphereShape ) ||
 +				   ( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) ) ||
-+				   ( typeA == b3_hullShape && typeB == b3_sphereShape ) );
++				   ( typeA == b3_hullShape && ( typeB == b3_sphereShape || typeB == b3_hullShape ) ) );
 +		if ( typeA == b3_hullShape )
  		{
 -			b3CollideCapsuleAndSphere( &geomManifold, pointCapacity, &shapeA->capsule, &shapeB->sphere, transformBtoA );
-+			// The specialized hull-point route does not consume or emit GJK
-+			// simplexes. Keep a valid cold cache if this contact later falls back.
-+			cache->simplexCache = b3_emptyDistanceCache;
++			if ( typeB == b3_hullShape )
++			{
++				// A precomputed hull pair does not update the CPU SAT cache. Keep a
++				// valid cold cache if this contact later falls back.
++				cache->satCache = (b3SATCache){ 0 };
++			}
++			else
++			{
++				// The specialized hull-point route does not consume or emit GJK
++				// simplexes. Keep a valid cold cache if this contact later falls back.
++				cache->simplexCache = b3_emptyDistanceCache;
++			}
  		}
 -		else
 +		geomManifold = *precomputedConvexManifold;
 +		geomManifold.points = pointBuffer;
-+		B3_ASSERT( 0 <= precomputedConvexManifold->pointCount && precomputedConvexManifold->pointCount <= 2 );
++		B3_ASSERT( 0 <= precomputedConvexManifold->pointCount &&
++				   precomputedConvexManifold->pointCount <= B3_MAX_MANIFOLD_POINTS );
 +		for ( int pointIndex = 0; pointIndex < precomputedConvexManifold->pointCount; ++pointIndex )
  		{
 -			B3_ASSERT( typeB == b3_capsuleShape );
@@ -6308,7 +6333,7 @@ index 1506bdb..f10c01d 100644
  		}
  	}
  
-@@ -553,7 +644,7 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
+@@ -553,7 +654,7 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
  		contact->manifolds = b3AllocateManifolds( world, 1 );
  		contact->manifoldCount = 1;
  	}
@@ -6317,7 +6342,7 @@ index 1506bdb..f10c01d 100644
  	{
  		oldCount = contact->manifolds[0].pointCount;
  		memcpy( oldPoints, contact->manifolds[0].points, oldCount * sizeof( b3ManifoldPoint ) );
-@@ -562,8 +653,16 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
+@@ -562,8 +663,16 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
  	b3Manifold* manifold = contact->manifolds;
  	manifold->pointCount = geomManifold.pointCount;
  
@@ -6336,7 +6361,7 @@ index 1506bdb..f10c01d 100644
  
  	// Store point data in contact
  	for ( int i = 0; i < geomManifold.pointCount; ++i )
-@@ -572,8 +671,9 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
+@@ -572,8 +681,9 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
  		b3ManifoldPoint* target = manifold->points + i;
  
  		// Contact points are computed in frame A
@@ -6348,7 +6373,7 @@ index 1506bdb..f10c01d 100644
  		target->separation = source->separation;
  		target->featureId = b3MakeFeatureId( source->pair );
  		target->triangleIndex = B3_NULL_INDEX;
-@@ -585,9 +685,10 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
+@@ -585,9 +695,10 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
  	{
  		b3ManifoldPoint* pt2 = manifold->points + i;
  		pt2->totalNormalImpulse = 0.0f;
@@ -6361,7 +6386,7 @@ index 1506bdb..f10c01d 100644
  		{
  			b3ManifoldPoint* pt1 = oldPoints + j;
  
-@@ -613,10 +714,16 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
+@@ -613,10 +724,16 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
  }
  
  static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* contact, b3Shape* shapeA, b3WorldTransform xfA,
@@ -6380,7 +6405,7 @@ index 1506bdb..f10c01d 100644
  
  	if ( touching == false )
  	{
-@@ -643,12 +750,21 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
+@@ -643,12 +760,21 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
  	const b3SurfaceMaterial* materialB = b3GetShapeMaterials( shapeB );
  
  	// Keep these updated in case the values on the shapes are modified
@@ -6406,7 +6431,7 @@ index 1506bdb..f10c01d 100644
  	{
  		b3ShapeType typeA = shapeA->type;
  		b3ShapeType typeB = shapeB->type;
-@@ -689,9 +805,12 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
+@@ -689,9 +815,12 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
  		contact->rollingResistance = 0.0f;
  	}
  
@@ -6422,7 +6447,7 @@ index 1506bdb..f10c01d 100644
  
  	if ( world->preSolveFcn && ( contact->flags & b3_simEnablePreSolveEvents ) != 0 )
  	{
-@@ -728,7 +847,10 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
+@@ -728,7 +857,10 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
  // Note: do not assume the shape AABBs are overlapping or are valid.
  bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Shape* shapeA, b3Vec3 localCenterA,
  					  b3WorldTransform xfA, b3Shape* shapeB, b3Vec3 localCenterB, b3WorldTransform xfB, bool isFast,
@@ -6434,7 +6459,7 @@ index 1506bdb..f10c01d 100644
  {
  	bool touching;
  
-@@ -762,12 +884,14 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
+@@ -762,12 +894,14 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
  			{
  				// Flip
  				bool flip = true;
@@ -6451,7 +6476,7 @@ index 1506bdb..f10c01d 100644
  			}
  		}
  		else if ( child.type == b3_hullShape )
-@@ -775,7 +899,8 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
+@@ -775,7 +909,8 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
  			childShapeA.hull = child.hull;
  			b3WorldTransform xfChild = b3MulWorldTransforms( xfA, child.transform );
  			bool flip = false;
@@ -6461,7 +6486,7 @@ index 1506bdb..f10c01d 100644
  		}
  		else if ( child.type == b3_meshShape )
  		{
-@@ -806,12 +931,14 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
+@@ -806,12 +941,14 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
  			{
  				// Flip
  				bool flip = true;
@@ -6478,7 +6503,7 @@ index 1506bdb..f10c01d 100644
  			}
  		}
  
-@@ -852,7 +979,9 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
+@@ -852,7 +989,9 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
  	{
  		// Convex-vs-convex
  		bool flip = false;
@@ -6489,7 +6514,7 @@ index 1506bdb..f10c01d 100644
  	}
  
  	if ( touching )
-@@ -861,7 +990,7 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
+@@ -861,7 +1000,7 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
  		b3Vec3 centerB = b3RotateVector( xfB.q, localCenterB );
  
  		// Adjust anchors to be relative to center of mass
@@ -6958,10 +6983,10 @@ index d85f233..ffa6859 100644
  int b3GetWideContactConstraintByteCount( void );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000..3ebcd9d
+index 0000000..46c8a77
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,233 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -7026,6 +7051,12 @@ index 0000000..3ebcd9d
 +	float tangentVelocityX, tangentVelocityY, tangentVelocityZ, tangentVelocityPadding;
 +	float anchorB1X, anchorB1Y, anchorB1Z, anchorB1Padding;
 +	float anchorB2X, anchorB2Y, anchorB2Z, anchorB2Padding;
++	float point3X, point3Y, point3Z, separation3;
++	float point4X, point4Y, point4Z, separation4;
++	uint32_t featureId3, featureId4;
++	float normalImpulse3, normalImpulse4;
++	float anchorB3X, anchorB3Y, anchorB3Z, anchorB3Padding;
++	float anchorB4X, anchorB4Y, anchorB4Z, anchorB4Padding;
 +} b3MetalConvexManifoldResult;
 +
 +// Compact post-solve state written by Metal and indexed by contact id. This is
@@ -7043,7 +7074,7 @@ index 0000000..3ebcd9d
 +	{
 +		float normalImpulse, totalNormalImpulse, normalVelocity;
 +		uint32_t featureId;
-+	} points[2];
++	} points[B3_MAX_MANIFOLD_POINTS];
 +} b3MetalContactImpulseResult;
 +
 +typedef struct b3MetalDispatchStats
@@ -7191,10 +7222,10 @@ index 0000000..3ebcd9d
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..18f2b34
+index 0000000..4de22a2
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,5639 @@
+@@ -0,0 +1,5662 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -7545,7 +7576,7 @@ index 0000000..18f2b34
 +_Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed" );
 +_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 32, "Metal convex-manifold input ABI changed" );
 +_Static_assert( sizeof( b3MetalBodyTransform ) == 80, "Metal body-transform ABI changed" );
-+_Static_assert( sizeof( b3MetalConvexManifoldResult ) == 160, "Metal convex-manifold result ABI changed" );
++_Static_assert( sizeof( b3MetalConvexManifoldResult ) == 240, "Metal convex-manifold result ABI changed" );
 +_Static_assert( offsetof( b3MetalConvexManifoldResult, inputIndex ) == 12, "Metal manifold input-index ABI changed" );
 +_Static_assert( offsetof( b3MetalConvexManifoldResult, scanOffset ) == 72, "Metal manifold scan-offset ABI changed" );
 +_Static_assert( offsetof( b3MetalConvexManifoldResult, contactId ) == 76, "Metal manifold contact-id ABI changed" );
@@ -7600,7 +7631,7 @@ index 0000000..18f2b34
 +	float twistImpulse, frictionImpulseX, frictionImpulseY, frictionImpulseZ;
 +	float rollingImpulseX, rollingImpulseY, rollingImpulseZ;
 +	uint32_t contactGeneration;
-+	b3MetalContactPreparePoint points[2];
++	b3MetalContactPreparePoint points[B3_MAX_MANIFOLD_POINTS];
 +} b3MetalContactPrepareInput;
 +
 +typedef struct b3MetalContactPrepareParams
@@ -7614,9 +7645,9 @@ index 0000000..18f2b34
 +} b3MetalContactPrepareParams;
 +
 +_Static_assert( sizeof( b3MetalContactPreparePoint ) == 36, "Metal contact-prepare point ABI changed" );
-+_Static_assert( sizeof( b3MetalContactPrepareInput ) == 152, "Metal contact-prepare input ABI changed" );
++_Static_assert( sizeof( b3MetalContactPrepareInput ) == 224, "Metal contact-prepare input ABI changed" );
 +_Static_assert( sizeof( b3MetalContactPrepareParams ) == 48, "Metal contact-prepare parameter ABI changed" );
-+_Static_assert( sizeof( b3MetalContactImpulseResult ) == 80, "Metal contact-impulse result ABI changed" );
++_Static_assert( sizeof( b3MetalContactImpulseResult ) == 112, "Metal contact-impulse result ABI changed" );
 +
 +typedef struct b3MetalContactImpulseParams
 +{
@@ -7752,15 +7783,17 @@ index 0000000..18f2b34
 +	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,scanOffset,contactId;\n"
 +	"  float normalImpulse1,normalImpulse2; uint persistedBits,residentFlags;\n"
 +	"  float friction,restitution,rollingResistance,materialPadding,tangentVelocityX,tangentVelocityY,tangentVelocityZ,tangentVelocityPadding;\n"
-+	"  float anchorB1X,anchorB1Y,anchorB1Z,anchorB1Padding,anchorB2X,anchorB2Y,anchorB2Z,anchorB2Padding; };\n"
++	"  float anchorB1X,anchorB1Y,anchorB1Z,anchorB1Padding,anchorB2X,anchorB2Y,anchorB2Z,anchorB2Padding;\n"
++	"  float p3x,p3y,p3z,separation3,p4x,p4y,p4z,separation4; uint feature3,feature4; float normalImpulse3,normalImpulse4;\n"
++	"  float anchorB3X,anchorB3Y,anchorB3Z,anchorB3Padding,anchorB4X,anchorB4Y,anchorB4Z,anchorB4Padding; };\n"
 +	"struct ImpulsePoint { float normalImpulse,totalNormalImpulse,normalVelocity; uint featureId; };\n"
 +	"struct ImpulseResult { uint contactId,generation,pointCount,contactGeneration; float frictionX,frictionY,frictionZ,twistImpulse;\n"
-+	"  float rollingX,rollingY,rollingZ,padding; ImpulsePoint points[2]; };\n"
++	"  float rollingX,rollingY,rollingZ,padding; ImpulsePoint points[4]; };\n"
 +	"struct PreparePoint { float anchorAX,anchorAY,anchorAZ,separation; float anchorBX,anchorBY,anchorBZ,normalImpulse; uint featureId; };\n"
 +	"struct PrepareInput { uint contactId; int indexA,indexB; uint generation; ulong manifold; float friction,restitution;\n"
 +	"  float rollingResistance,tangentVelocityX,tangentVelocityY,tangentVelocityZ;\n"
 +	"  float twistImpulse,frictionImpulseX,frictionImpulseY,frictionImpulseZ;\n"
-+	"  float rollingImpulseX,rollingImpulseY,rollingImpulseZ; uint contactGeneration; PreparePoint points[2]; };\n"
++	"  float rollingImpulseX,rollingImpulseY,rollingImpulseZ; uint contactGeneration; PreparePoint points[4]; };\n"
 +	"struct ConvexManifoldParams { uint contactCount; float linearSlop,speculativeDistance; uint bodyCount; };\n"
 +	"struct ManifoldCompactParams { uint contactCount,blockCount,previousCount,previousGeneration,currentGeneration,p0,p1,p2; };\n"
 +	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
@@ -8298,11 +8331,11 @@ index 0000000..18f2b34
 +	"  out.separation1=distance-radius;out.feature1=0u;results[i]=out;\n"
 +	"}\n"
 +	"inline uint b3_manifold_stable(const ConvexManifoldResult r,const ConvexManifoldInput in,const device ImpulseResult* previous,const device PrepareInput* prepareTable,constant ManifoldCompactParams& p){\n"
-+	"  if(p.p0==0u||r.eligible==0u||r.touching==0u||r.pointCount==0u||r.pointCount>2u||(r.residentFlags&4u)!=0u||(in.prepareEligible&2u)==0u||in.contactId>=p.previousCount)return 0u;\n"
-+	"  ImpulseResult old=previous[in.contactId];if(old.contactId!=in.contactId||old.generation!=p.previousGeneration||old.contactGeneration!=in.contactGeneration||old.pointCount==0u||old.pointCount>2u)return 0u;\n"
++	"  if(p.p0==0u||r.eligible==0u||r.touching==0u||r.pointCount==0u||r.pointCount>4u||(r.residentFlags&4u)!=0u||(in.prepareEligible&2u)==0u||in.contactId>=p.previousCount)return 0u;\n"
++	"  ImpulseResult old=previous[in.contactId];if(old.contactId!=in.contactId||old.generation!=p.previousGeneration||old.contactGeneration!=in.contactGeneration||old.pointCount==0u||old.pointCount>4u)return 0u;\n"
 +	"  PrepareInput prep=prepareTable[in.contactId];return prep.contactId==in.contactId&&prep.contactGeneration==in.contactGeneration&&prep.manifold!=0ul; }\n"
 +	"inline uint b3_manifold_matches(const ConvexManifoldResult r,const ConvexManifoldInput in,const device ImpulseResult* previous){ImpulseResult old=previous[in.contactId];uint claimed=0u,matches=0u;\n"
-+	"  for(uint pointIndex=0u;pointIndex<r.pointCount;++pointIndex){uint feature=pointIndex==0u?r.feature1:r.feature2;for(uint oldIndex=0u;oldIndex<old.pointCount;++oldIndex){uint bit=1u<<oldIndex;if((claimed&bit)==0u&&feature==old.points[oldIndex].featureId){claimed|=bit;matches+=1u;break;}}}return matches;}\n"
++	"  for(uint pointIndex=0u;pointIndex<r.pointCount;++pointIndex){uint feature=pointIndex==0u?r.feature1:(pointIndex==1u?r.feature2:(pointIndex==2u?r.feature3:r.feature4));for(uint oldIndex=0u;oldIndex<old.pointCount;++oldIndex){uint bit=1u<<oldIndex;if((claimed&bit)==0u&&feature==old.points[oldIndex].featureId){claimed|=bit;matches+=1u;break;}}}return matches;}\n"
 +	"kernel void b3_manifold_scan_blocks(device ConvexManifoldResult* results [[buffer(0)]],device PairBlock* blocks [[buffer(1)]],\n"
 +	"  const device ConvexManifoldInput* inputs [[buffer(2)]],const device ImpulseResult* previous [[buffer(3)]],\n"
 +	"  const device PrepareInput* prepareTable [[buffer(4)]],constant ManifoldCompactParams& p [[buffer(5)]],uint i [[thread_position_in_grid]],uint ti [[thread_index_in_threadgroup]],\n"
@@ -8341,21 +8374,27 @@ index 0000000..18f2b34
 +	"    r.nx=n.x;r.ny=n.y;r.nz=n.z;r.p1x=a.x;r.p1y=a.y;r.p1z=a.z;r.anchorB1X=b.x;r.anchorB1Y=b.y;r.anchorB1Z=b.z;}\n"
 +	"  if(r.pointCount>1u){float3 p2=rotate(q,float3(r.p2x,r.p2y,r.p2z));float3 a=p2-centerA,b=p2-d-centerB;\n"
 +	"    r.p2x=a.x;r.p2y=a.y;r.p2z=a.z;r.anchorB2X=b.x;r.anchorB2Y=b.y;r.anchorB2Z=b.z;}\n"
++	"  if(r.pointCount>2u){float3 p3=rotate(q,float3(r.p3x,r.p3y,r.p3z));float3 a=p3-centerA,b=p3-d-centerB;\n"
++	"    r.p3x=a.x;r.p3y=a.y;r.p3z=a.z;r.anchorB3X=b.x;r.anchorB3Y=b.y;r.anchorB3Z=b.z;}\n"
++	"  if(r.pointCount>3u){float3 p4=rotate(q,float3(r.p4x,r.p4y,r.p4z));float3 a=p4-centerA,b=p4-d-centerB;\n"
++	"    r.p4x=a.x;r.p4y=a.y;r.p4z=a.z;r.anchorB4X=b.x;r.anchorB4Y=b.y;r.anchorB4Z=b.z;}\n"
 +	"  r.contactGeneration=inputs[i].contactGeneration;ImpulseResult old={};uint oldValid=0u;if(r.pointCount>0u&&contactId<p.previousCount){old=previous[contactId];\n"
-+	"    if(old.contactId==contactId&&old.generation==p.previousGeneration&&old.contactGeneration==inputs[i].contactGeneration&&old.pointCount>0u&&old.pointCount<=2u){\n"
-+	"      oldValid=1u;r.residentFlags|=1u;uint claimed=0u;for(uint pointIndex=0u;pointIndex<r.pointCount;++pointIndex){uint feature=pointIndex==0u?r.feature1:r.feature2;\n"
++	"    if(old.contactId==contactId&&old.generation==p.previousGeneration&&old.contactGeneration==inputs[i].contactGeneration&&old.pointCount>0u&&old.pointCount<=4u){\n"
++	"      oldValid=1u;r.residentFlags|=1u;uint claimed=0u;for(uint pointIndex=0u;pointIndex<r.pointCount;++pointIndex){uint feature=pointIndex==0u?r.feature1:(pointIndex==1u?r.feature2:(pointIndex==2u?r.feature3:r.feature4));\n"
 +	"        for(uint oldIndex=0u;oldIndex<old.pointCount;++oldIndex){uint bit=1u<<oldIndex;if((claimed&bit)==0u&&feature==old.points[oldIndex].featureId){\n"
-+	"          if(pointIndex==0u)r.normalImpulse1=old.points[oldIndex].normalImpulse;else r.normalImpulse2=old.points[oldIndex].normalImpulse;\n"
++	"          if(pointIndex==0u)r.normalImpulse1=old.points[oldIndex].normalImpulse;else if(pointIndex==1u)r.normalImpulse2=old.points[oldIndex].normalImpulse;else if(pointIndex==2u)r.normalImpulse3=old.points[oldIndex].normalImpulse;else r.normalImpulse4=old.points[oldIndex].normalImpulse;\n"
 +	"          r.persistedBits|=1u<<pointIndex;claimed|=bit;break;}}}}}\n"
-+	"  if(oldValid!=0u&&(inputs[i].prepareEligible&1u)!=0u&&r.touching!=0u&&r.pointCount>0u&&r.pointCount<=2u){PrepareInput prep=prepareTable[contactId];\n"
++	"  if(oldValid!=0u&&(inputs[i].prepareEligible&1u)!=0u&&r.touching!=0u&&r.pointCount>0u&&r.pointCount<=4u){PrepareInput prep=prepareTable[contactId];\n"
 +	"    if(prep.contactId==contactId&&prep.contactGeneration==inputs[i].contactGeneration&&prep.manifold!=0ul){prep.indexA=transformA.index;prep.indexB=transformB.index;prep.generation=p.currentGeneration;\n"
 +	"      prep.friction=r.friction;prep.restitution=r.restitution;prep.rollingResistance=r.rollingResistance;prep.tangentVelocityX=r.tangentVelocityX;prep.tangentVelocityY=r.tangentVelocityY;prep.tangentVelocityZ=r.tangentVelocityZ;\n"
 +	"      prep.twistImpulse=old.twistImpulse;prep.frictionImpulseX=old.frictionX;prep.frictionImpulseY=old.frictionY;prep.frictionImpulseZ=old.frictionZ;\n"
 +	"      prep.rollingImpulseX=old.rollingX;prep.rollingImpulseY=old.rollingY;prep.rollingImpulseZ=old.rollingZ;\n"
 +	"      prep.points[0]=PreparePoint{r.p1x,r.p1y,r.p1z,r.separation1,r.anchorB1X,r.anchorB1Y,r.anchorB1Z,r.normalImpulse1,r.feature1};\n"
 +	"      prep.points[1]=PreparePoint{r.p2x,r.p2y,r.p2z,r.separation2,r.anchorB2X,r.anchorB2Y,r.anchorB2Z,r.normalImpulse2,r.feature2};\n"
++	"      prep.points[2]=PreparePoint{r.p3x,r.p3y,r.p3z,r.separation3,r.anchorB3X,r.anchorB3Y,r.anchorB3Z,r.normalImpulse3,r.feature3};\n"
++	"      prep.points[3]=PreparePoint{r.p4x,r.p4y,r.p4z,r.separation4,r.anchorB4X,r.anchorB4Y,r.anchorB4Z,r.normalImpulse4,r.feature4};\n"
 +	"      prepareTable[contactId]=prep;r.residentFlags|=2u;}}\n"
-+	"  uint stable=p.p0!=0u&&(inputs[i].prepareEligible&2u)!=0u&&(r.residentFlags&6u)==2u&&r.touching!=0u&&r.pointCount>0u&&r.pointCount<=2u;if(p.p0==0u||stable==0u){uint output=blocks[i/256u].offset+r.scanOffset;r.inputIndex=i;r.scanOffset=0u;r.contactId=contactId;compact[output]=r;}\n"
++	"  uint stable=p.p0!=0u&&(inputs[i].prepareEligible&2u)!=0u&&(r.residentFlags&6u)==2u&&r.touching!=0u&&r.pointCount>0u&&r.pointCount<=4u;if(p.p0==0u||stable==0u){uint output=blocks[i/256u].offset+r.scanOffset;r.inputIndex=i;r.scanOffset=0u;r.contactId=contactId;compact[output]=r;}\n"
 +	"  r.inputIndex=r.contactId;table[r.contactId]=r;}\n";
 +#pragma clang diagnostic pop
 +
@@ -8390,18 +8429,20 @@ index 0000000..18f2b34
 +	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,scanOffset,contactId;\n"
 +	"  float normalImpulse1,normalImpulse2; uint persistedBits,residentFlags;\n"
 +	"  float friction,restitution,rollingResistance,materialPadding,tangentVelocityX,tangentVelocityY,tangentVelocityZ,tangentVelocityPadding;\n"
-+	"  float anchorB1X,anchorB1Y,anchorB1Z,anchorB1Padding,anchorB2X,anchorB2Y,anchorB2Z,anchorB2Padding; };\n"
++	"  float anchorB1X,anchorB1Y,anchorB1Z,anchorB1Padding,anchorB2X,anchorB2Y,anchorB2Z,anchorB2Padding;\n"
++	"  float p3x,p3y,p3z,separation3,p4x,p4y,p4z,separation4; uint feature3,feature4; float normalImpulse3,normalImpulse4;\n"
++	"  float anchorB3X,anchorB3Y,anchorB3Z,anchorB3Padding,anchorB4X,anchorB4Y,anchorB4Z,anchorB4Padding; };\n"
 +	"struct PreparePoint { float anchorAX,anchorAY,anchorAZ,separation; float anchorBX,anchorBY,anchorBZ,normalImpulse; uint featureId; };\n"
 +	"struct Softness { float biasRate, massScale, impulseScale; };\n"
 +	"struct PrepareInput { uint contactId; int indexA,indexB; uint generation; ulong manifold; float friction,restitution;\n"
 +	"  float rollingResistance,tangentVelocityX,tangentVelocityY,tangentVelocityZ;\n"
 +	"  float twistImpulse,frictionImpulseX,frictionImpulseY,frictionImpulseZ;\n"
-+	"  float rollingImpulseX,rollingImpulseY,rollingImpulseZ; uint contactGeneration; PreparePoint points[2]; };\n"
++	"  float rollingImpulseX,rollingImpulseY,rollingImpulseZ; uint contactGeneration; PreparePoint points[4]; };\n"
 +	"struct PrepareParams { uint wideCount,tableCount; float warmStartScale,invTau; Softness contactSoftness; float padding0;\n"
 +	"  Softness staticSoftness; uint generation; };\n"
 +	"struct ImpulsePoint { float normalImpulse,totalNormalImpulse,normalVelocity; uint featureId; };\n"
 +	"struct ImpulseResult { uint contactId,generation,pointCount,contactGeneration; float frictionX,frictionY,frictionZ,twistImpulse;\n"
-+	"  float rollingX,rollingY,rollingZ,padding; ImpulsePoint points[2]; };\n"
++	"  float rollingX,rollingY,rollingZ,padding; ImpulsePoint points[4]; };\n"
 +	"struct ImpulseParams { uint wideCount,tableCount,generation,padding; };\n"
 +	"struct BodyProperties { float qx,qy,qz,qw; float forceX,forceY,forceZ; float torqueX,torqueY,torqueZ; float invMass;\n"
 +	"  float invInertiaLocal[9]; float invInertiaWorld[9]; float linearDamping,angularDamping,gravityScale; };\n"
@@ -8477,7 +8518,7 @@ index 0000000..18f2b34
 +	"  for(uint lane=0;lane<4u;++lane){uint contactId=indices[4u*tid+lane];if(contactId==0xffffffffu)continue;\n"
 +	"    if(contactId>=p.tableCount){atomic_fetch_or_explicit(status,1u,memory_order_relaxed);continue;}PrepareInput in=inputs[contactId];\n"
 +	"    ConvexManifoldResult mr=table[contactId];if(in.contactId!=contactId||in.generation!=p.generation||mr.eligible==0u||mr.touching==0u||mr.contactId!=contactId||\n"
-+	"      mr.inputIndex!=contactId||mr.pointCount==0u||mr.pointCount>2u){atomic_fetch_or_explicit(status,2u,memory_order_relaxed);continue;}\n"
++	"      mr.inputIndex!=contactId||mr.pointCount==0u||mr.pointCount>4u){atomic_fetch_or_explicit(status,2u,memory_order_relaxed);continue;}\n"
 +	"    uint pointCount=mr.pointCount;int ia=in.indexA,ib=in.indexB;c.indexA[lane]=ia+1;c.indexB[lane]=ib+1;c.pointCounts[lane]=int(pointCount);c.manifolds[lane]=in.manifold;\n"
 +	"    float ma=ia>=0?properties[ia].invMass:0.0f,mb=ib>=0?properties[ib].invMass:0.0f;c.invMassA[lane]=ma;c.invMassB[lane]=mb;\n"
 +	"    SM3 iA=load_inertia(properties,ia),iB=load_inertia(properties,ib);\n"
@@ -8595,7 +8636,7 @@ index 0000000..18f2b34
 +	"  device ImpulseResult* results [[buffer(2)]],const device PrepareInput* inputs [[buffer(3)]],constant ImpulseParams& p [[buffer(4)]],uint tid [[thread_position_in_grid]]){\n"
 +	"  if(tid>=p.wideCount)return;const device ContactWide& c=constraints[tid];\n"
 +	"  for(uint lane=0;lane<4u;++lane){uint contactId=indices[4u*tid+lane];if(contactId==0xffffffffu||contactId>=p.tableCount)continue;\n"
-+	"    uint pointCount=uint(c.pointCounts[lane]);if(pointCount==0u||pointCount>2u)continue;PrepareInput in=inputs[contactId];ImpulseResult r={};r.contactId=contactId;r.generation=p.generation;r.pointCount=pointCount;r.contactGeneration=in.contactGeneration;\n"
++	"    uint pointCount=uint(c.pointCounts[lane]);if(pointCount==0u||pointCount>4u)continue;PrepareInput in=inputs[contactId];ImpulseResult r={};r.contactId=contactId;r.generation=p.generation;r.pointCount=pointCount;r.contactGeneration=in.contactGeneration;\n"
 +	"    float f1=c.frictionImpulse.x[lane],f2=c.frictionImpulse.y[lane];r.frictionX=f1*c.tangent1.X[lane]+f2*c.tangent2.X[lane];\n"
 +	"    r.frictionY=f1*c.tangent1.Y[lane]+f2*c.tangent2.Y[lane];r.frictionZ=f1*c.tangent1.Z[lane]+f2*c.tangent2.Z[lane];r.twistImpulse=c.twistImpulse[lane];\n"
 +	"    r.rollingX=c.rollingImpulse.X[lane];r.rollingY=c.rollingImpulse.Y[lane];r.rollingZ=c.rollingImpulse.Z[lane];\n"
@@ -9706,12 +9747,14 @@ index 0000000..18f2b34
 +	if ( result->contactId != (uint32_t)contact->contactId ||
 +		result->generation != context->contactImpulseResultGeneration ||
 +		result->contactGeneration != contact->generation || result->pointCount != (uint32_t)manifold->pointCount ||
-+		result->pointCount < 1 || result->pointCount > 2 )
++		result->pointCount < 1 || result->pointCount > B3_MAX_MANIFOLD_POINTS )
 +	{
 +		return false;
 +	}
 +
-+	int resultPointIndices[2] = { B3_NULL_INDEX, B3_NULL_INDEX };
++	int resultPointIndices[B3_MAX_MANIFOLD_POINTS] = {
++		B3_NULL_INDEX, B3_NULL_INDEX, B3_NULL_INDEX, B3_NULL_INDEX,
++	};
 +	for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
 +	{
 +		for ( uint32_t resultIndex = 0; resultIndex < result->pointCount; ++resultIndex )
@@ -10004,7 +10047,7 @@ index 0000000..18f2b34
 +	if ( context == NULL || contact == NULL || context->contactPrepareGeneration == 0 ||
 +		contact->contactId < 0 || contact->contactId >= context->convexManifoldTableCount ||
 +		contact->manifoldCount != 1 || contact->manifolds == NULL ||
-+		contact->manifolds[0].pointCount < 1 || contact->manifolds[0].pointCount > 2 )
++		contact->manifolds[0].pointCount < 1 || contact->manifolds[0].pointCount > B3_MAX_MANIFOLD_POINTS )
 +	{
 +		return false;
 +	}
@@ -10019,7 +10062,8 @@ index 0000000..18f2b34
 +			( (const b3MetalContactImpulseResult*)context->contactImpulseResultBuffer.contents ) + contact->contactId;
 +		if ( candidate->contactId == (uint32_t)contact->contactId &&
 +			candidate->generation == context->contactImpulseResultGeneration &&
-+			candidate->contactGeneration == contact->generation && candidate->pointCount >= 1 && candidate->pointCount <= 2 )
++			candidate->contactGeneration == contact->generation && candidate->pointCount >= 1 &&
++			candidate->pointCount <= B3_MAX_MANIFOLD_POINTS )
 +		{
 +			previous = candidate;
 +			manifold->frictionImpulse = (b3Vec3){ previous->frictionX, previous->frictionY, previous->frictionZ };
@@ -11939,7 +11983,7 @@ index 0000000..18f2b34
 +{
 +	if ( contact == NULL || result == NULL || contact->contactId < 0 || contact->manifoldCount != 1 ||
 +		contact->manifolds == NULL || result->eligible == 0 || result->touching == 0 || result->pointCount < 1 ||
-+		result->pointCount > 2 || result->contactId != (uint32_t)contact->contactId ||
++		result->pointCount > B3_MAX_MANIFOLD_POINTS || result->contactId != (uint32_t)contact->contactId ||
 +		result->inputIndex != (uint32_t)contact->contactId || result->contactGeneration != contact->generation )
 +	{
 +		return false;
@@ -11948,17 +11992,27 @@ index 0000000..18f2b34
 +	b3Manifold* manifold = contact->manifolds;
 +	manifold->normal = (b3Vec3){ result->normalX, result->normalY, result->normalZ };
 +	manifold->pointCount = (int)result->pointCount;
-+	const b3Vec3 anchorAs[2] = {
++	const b3Vec3 anchorAs[B3_MAX_MANIFOLD_POINTS] = {
 +		{ result->point1X, result->point1Y, result->point1Z },
 +		{ result->point2X, result->point2Y, result->point2Z },
++		{ result->point3X, result->point3Y, result->point3Z },
++		{ result->point4X, result->point4Y, result->point4Z },
 +	};
-+	const b3Vec3 anchorBs[2] = {
++	const b3Vec3 anchorBs[B3_MAX_MANIFOLD_POINTS] = {
 +		{ result->anchorB1X, result->anchorB1Y, result->anchorB1Z },
 +		{ result->anchorB2X, result->anchorB2Y, result->anchorB2Z },
++		{ result->anchorB3X, result->anchorB3Y, result->anchorB3Z },
++		{ result->anchorB4X, result->anchorB4Y, result->anchorB4Z },
 +	};
-+	const float separations[2] = { result->separation1, result->separation2 };
-+	const float normalImpulses[2] = { result->normalImpulse1, result->normalImpulse2 };
-+	const uint32_t featureIds[2] = { result->featureId1, result->featureId2 };
++	const float separations[B3_MAX_MANIFOLD_POINTS] = {
++		result->separation1, result->separation2, result->separation3, result->separation4,
++	};
++	const float normalImpulses[B3_MAX_MANIFOLD_POINTS] = {
++		result->normalImpulse1, result->normalImpulse2, result->normalImpulse3, result->normalImpulse4,
++	};
++	const uint32_t featureIds[B3_MAX_MANIFOLD_POINTS] = {
++		result->featureId1, result->featureId2, result->featureId3, result->featureId4,
++	};
 +	for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
 +	{
 +		b3ManifoldPoint* point = manifold->points + pointIndex;
@@ -13975,7 +14029,7 @@ index 0000000..a4424e5
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..9778230 100644
+index 29c13c7..20d1e1a 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -14051,7 +14105,7 @@ index 29c13c7..9778230 100644
  
  	b3DestroyStack( &world->stack );
  
-@@ -538,12 +565,302 @@ int b3GetWorldCount( void )
+@@ -538,12 +565,303 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -14326,7 +14380,8 @@ index 29c13c7..9778230 100644
 +	profile.lastNarrowPhaseHullShapeCount = world->metalLastNarrowPhaseHullShapeCount;
 +	profile.lastNarrowPhaseUniqueHullCount = world->metalLastNarrowPhaseUniqueHullCount;
 +	profile.lastNarrowPhaseResultCount = world->metalLastNarrowPhaseResultCount;
-+	profile.lastNarrowPhaseResultBytes = (uint64_t)world->metalLastNarrowPhaseResultCount * 160u;
++	profile.lastNarrowPhaseResultBytes =
++		(uint64_t)world->metalLastNarrowPhaseResultCount * sizeof( b3MetalConvexManifoldResult );
 +	profile.lastNarrowPhaseManifoldTableCount = world->metalLastNarrowPhaseManifoldTableCount;
 +	profile.lastResidentConvexContactCount = world->metalLastResidentConvexContactCount;
 +	profile.lastResidentConvexConstraintCount = world->metalLastResidentConvexConstraintCount;
@@ -14355,7 +14410,7 @@ index 29c13c7..9778230 100644
  // Used to hide the random-access latency of contact lookups while we work on an
  // earlier index.
  static inline void b3PrefetchContact( const b3Contact* contact )
-@@ -582,18 +899,69 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -582,18 +900,69 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  	const int contactPrefetchDistance = 4;
  	int prefetchEnd = endIndex - contactPrefetchDistance;
  
@@ -14426,7 +14481,7 @@ index 29c13c7..9778230 100644
  
  		b3Shape* shapeA = shapes + contact->shapeIdA;
  		b3Shape* shapeB = shapes + contact->shapeIdB;
-@@ -653,8 +1021,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -653,8 +1022,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		// Contact recycling optimization. Please cite this library if you use this optimization.
  		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
  		// However, this allows larger relative motion and has fewer tuning parameters (just one).
@@ -14438,7 +14493,7 @@ index 29c13c7..9778230 100644
  		{
  			// The scalar part of b3InvMulQuat is just the quaternion dot product.
  			// cos(relative_angle/2) = scalar(conj(q1) * q2) = dot(q1, q2)
-@@ -741,9 +1110,103 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -741,9 +1111,115 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
  		contact->flags |= b3_relativeTransformValid;
  
@@ -14448,7 +14503,7 @@ index 29c13c7..9778230 100644
 +#if defined( BOX3D_METAL )
 +		bool residentCollisionBypass =
 +			metalResult != NULL && metalResult->eligible != 0 && metalResult->touching != 0 && metalResult->pointCount >= 1 &&
-+			metalResult->pointCount <= 2 && metalResult->contactGeneration == contact->generation &&
++			metalResult->pointCount <= B3_MAX_MANIFOLD_POINTS && metalResult->contactGeneration == contact->generation &&
 +			( metalResult->residentFlags & 2u ) != 0 && wasTouching && contact->manifoldCount == 1 &&
 +			contact->manifolds != NULL && isFast == false && ( shapeA->flags & b3_enableHitEvents ) == 0 &&
 +			( shapeB->flags & b3_enableHitEvents ) == 0 && world->recording == NULL;
@@ -14479,16 +14534,18 @@ index 29c13c7..9778230 100644
 +#if defined( BOX3D_METAL )
 +		bool prepareRefreshedOnMetal = false;
 +		b3LocalManifold localConvexManifold = { 0 };
-+		b3LocalManifoldPoint localConvexPoints[2] = { 0 };
-+		float localNormalImpulses[2] = { 0.0f, 0.0f };
-+		b3Vec3 localAnchorBs[2] = { b3Vec3_zero, b3Vec3_zero };
++		b3LocalManifoldPoint localConvexPoints[B3_MAX_MANIFOLD_POINTS] = { 0 };
++		float localNormalImpulses[B3_MAX_MANIFOLD_POINTS] = { 0.0f };
++		b3Vec3 localAnchorBs[B3_MAX_MANIFOLD_POINTS] = {
++			b3Vec3_zero, b3Vec3_zero, b3Vec3_zero, b3Vec3_zero,
++		};
 +		b3PrecomputedContactMaterial localMaterial = { 0 };
 +		if ( metalResult != NULL )
 +		{
 +			const b3MetalConvexManifoldResult* result = metalResult;
 +			if ( result->eligible != 0 )
 +			{
-+				B3_ASSERT( result->pointCount <= 2 );
++				B3_ASSERT( result->pointCount <= B3_MAX_MANIFOLD_POINTS );
 +				localConvexManifold.normal = (b3Vec3){ result->normalX, result->normalY, result->normalZ };
 +				localConvexManifold.points = localConvexPoints;
 +				localConvexManifold.pointCount = result->touching != 0 ? (int)result->pointCount : 0;
@@ -14496,7 +14553,13 @@ index 29c13c7..9778230 100644
 +				localConvexPoints[0].separation = result->separation1;
 +				localConvexPoints[1].point = (b3Vec3){ result->point2X, result->point2Y, result->point2Z };
 +				localConvexPoints[1].separation = result->separation2;
-+				uint32_t featureIds[2] = { result->featureId1, result->featureId2 };
++				localConvexPoints[2].point = (b3Vec3){ result->point3X, result->point3Y, result->point3Z };
++				localConvexPoints[2].separation = result->separation3;
++				localConvexPoints[3].point = (b3Vec3){ result->point4X, result->point4Y, result->point4Z };
++				localConvexPoints[3].separation = result->separation4;
++				uint32_t featureIds[B3_MAX_MANIFOLD_POINTS] = {
++					result->featureId1, result->featureId2, result->featureId3, result->featureId4,
++				};
 +				for ( int pointIndex = 0; pointIndex < localConvexManifold.pointCount; ++pointIndex )
 +				{
 +					uint32_t featureId = featureIds[pointIndex];
@@ -14509,10 +14572,14 @@ index 29c13c7..9778230 100644
 +				}
 +				localNormalImpulses[0] = result->normalImpulse1;
 +				localNormalImpulses[1] = result->normalImpulse2;
++				localNormalImpulses[2] = result->normalImpulse3;
++				localNormalImpulses[3] = result->normalImpulse4;
 +				precomputedNormalImpulses = localNormalImpulses;
 +				precomputedPersistedBits = result->persistedBits;
 +				localAnchorBs[0] = (b3Vec3){ result->anchorB1X, result->anchorB1Y, result->anchorB1Z };
 +				localAnchorBs[1] = (b3Vec3){ result->anchorB2X, result->anchorB2Y, result->anchorB2Z };
++				localAnchorBs[2] = (b3Vec3){ result->anchorB3X, result->anchorB3Y, result->anchorB3Z };
++				localAnchorBs[3] = (b3Vec3){ result->anchorB4X, result->anchorB4Y, result->anchorB4Z };
 +				precomputedAnchorBs = localAnchorBs;
 +				precomputedAnchorsRelativeToCenter = true;
 +				localMaterial.friction = result->friction;
@@ -14545,7 +14612,7 @@ index 29c13c7..9778230 100644
  
  		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
  		if ( bucketIndex > 0 )
-@@ -814,8 +1277,34 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
+@@ -814,8 +1290,34 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
  	}
  }
  
@@ -14581,7 +14648,7 @@ index 29c13c7..9778230 100644
  {
  	b3World* world = context->world;
  
-@@ -825,12 +1314,17 @@ static void b3Collide( b3StepContext* context )
+@@ -825,12 +1327,17 @@ static void b3Collide( b3StepContext* context )
  
  	// Gather contacts from all the graph colors into a single array for easier parallel-for
  	int touchingCount = 0;
@@ -14599,7 +14666,7 @@ index 29c13c7..9778230 100644
  
  	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
  	int nonTouchingCount = awakeSet->contactIndices.count;
-@@ -840,58 +1334,145 @@ static void b3Collide( b3StepContext* context )
+@@ -840,58 +1347,145 @@ static void b3Collide( b3StepContext* context )
  	if ( contactCount == 0 )
  	{
  		b3TracyCZoneEnd( collide );
@@ -14775,7 +14842,7 @@ index 29c13c7..9778230 100644
  	contactIndices = NULL;
  
  	// Serially update contact state
-@@ -900,8 +1481,10 @@ static void b3Collide( b3StepContext* context )
+@@ -900,8 +1494,10 @@ static void b3Collide( b3StepContext* context )
  
  	int satMultiplier = context->dt > 0.0f ? 1 : 0;
  
@@ -14788,7 +14855,7 @@ index 29c13c7..9778230 100644
  	world->satCallCount = satMultiplier * world->taskContexts.data[0].satCallCount;
  	world->satCacheHitCount = satMultiplier * world->taskContexts.data[0].satCacheHitCount;
  	memcpy( world->manifoldCounts, world->taskContexts.data[0].manifoldCounts,
-@@ -909,7 +1492,8 @@ static void b3Collide( b3StepContext* context )
+@@ -909,7 +1505,8 @@ static void b3Collide( b3StepContext* context )
  
  	for ( int i = 1; i < world->workerCount; ++i )
  	{
@@ -14798,7 +14865,7 @@ index 29c13c7..9778230 100644
  		world->satCallCount += world->taskContexts.data[i].satCallCount;
  		world->satCacheHitCount += world->taskContexts.data[i].satCacheHitCount;
  		for ( int j = 0; j < B3_CONTACT_MANIFOLD_COUNT_BUCKETS; ++j )
-@@ -932,7 +1516,8 @@ static void b3Collide( b3StepContext* context )
+@@ -932,7 +1529,8 @@ static void b3Collide( b3StepContext* context )
  	uint16_t worldId = world->worldId;
  
  	// Process contact state changes. Iterate over set bits
@@ -14808,7 +14875,7 @@ index 29c13c7..9778230 100644
  	{
  		uint64_t bits = bitSet->bits[k];
  		while ( bits != 0 )
-@@ -1027,8 +1612,17 @@ static void b3Collide( b3StepContext* context )
+@@ -1027,8 +1625,17 @@ static void b3Collide( b3StepContext* context )
  	b3ValidateSolverSets( world );
  	b3ValidateContacts( world );
  
@@ -14826,7 +14893,7 @@ index 29c13c7..9778230 100644
  }
  
  void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
-@@ -1039,6 +1633,41 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1646,41 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -14868,7 +14935,7 @@ index 29c13c7..9778230 100644
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -1055,6 +1684,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1055,6 +1697,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Prepare to capture events
  	// Ensure user does not access stale data if there is an early return
  	b3Array_Clear( world->bodyMoveEvents );
@@ -14879,7 +14946,7 @@ index 29c13c7..9778230 100644
  	b3Array_Clear( world->sensorBeginEvents );
  	b3Array_Clear( world->contactBeginEvents );
  	b3Array_Clear( world->contactHitEvents );
-@@ -1131,7 +1764,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1131,7 +1777,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Narrow phase : update contacts
  	{
  		uint64_t collideTicks = b3GetTicks();
@@ -14893,7 +14960,7 @@ index 29c13c7..9778230 100644
  		world->profile.collide = b3GetMilliseconds( collideTicks );
  	}
  
-@@ -1176,6 +1814,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1176,6 +1827,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  
  	if ( world->recording != NULL )
  	{
@@ -14914,7 +14981,7 @@ index 29c13c7..9778230 100644
  		uint64_t hash = b3HashWorldState( world );
  		b3RecArgs_StateHash stateHash = { worldId, hash };
  		b3RecWrite_StateHash( world->recording, &stateHash );
-@@ -1440,7 +2092,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1440,7 +2105,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  				b3WorldTransform transform = { bodySim->center, bodySim->transform.q };
  				draw->DrawTransformFcn( transform, draw->context );
  
@@ -14923,7 +14990,7 @@ index 29c13c7..9778230 100644
  				{
  					b3Vec3 offset = { 0.05f, 0.05f, 0.05f };
  					b3Pos p = b3TransformWorldPoint( transform, offset );
-@@ -1517,6 +2169,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1517,6 +2182,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  					// avoid double draw
  					if ( b3GetBit( &world->debugContactSet, contactId ) == false )
  					{
@@ -14935,7 +15002,7 @@ index 29c13c7..9778230 100644
  						b3Body* bodyA = b3Array_Get( world->bodies, contact->edges[0].bodyId );
  						b3BodySim* bodySimA = b3GetBodySim( world, bodyA );
  						b3Body* bodyB = b3Array_Get( world->bodies, contact->edges[1].bodyId );
-@@ -1753,6 +2410,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
+@@ -1753,6 +2423,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
  		return (b3BodyEvents){ 0 };
  	}
  
@@ -14950,7 +15017,7 @@ index 29c13c7..9778230 100644
  	int count = world->bodyMoveEvents.count;
  	b3BodyEvents events = { world->bodyMoveEvents.data, count };
  	return events;
-@@ -2125,6 +2790,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
+@@ -2125,6 +2803,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
  	B3_REC( world, WorldSetContactRecycleDistance, worldId, recycleDistance );
  
  	world->contactRecycleDistance = b3ClampFloat( recycleDistance, 0.0f, FLT_MAX );
@@ -14958,7 +15025,7 @@ index 29c13c7..9778230 100644
  }
  
  float b3World_GetContactRecycleDistance( b3WorldId worldId )
-@@ -2259,6 +2925,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
+@@ -2259,6 +2938,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
  	}
  
  	world->frictionCallback = callback != NULL ? callback : b3DefaultFrictionCallback;
@@ -14969,7 +15036,7 @@ index 29c13c7..9778230 100644
  }
  
  void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* callback )
-@@ -2270,6 +2940,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
+@@ -2270,6 +2953,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
  	}
  
  	world->restitutionCallback = callback != NULL ? callback : b3DefaultRestitutionCallback;
@@ -14980,7 +15047,7 @@ index 29c13c7..9778230 100644
  }
  
  void b3World_SetWorkerCount( b3WorldId worldId, int count )
-@@ -2312,6 +2986,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
+@@ -2312,6 +2999,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
  	}
  
  	b3StartRecordingIntoBuffer( world, recording );
@@ -14988,7 +15055,7 @@ index 29c13c7..9778230 100644
  }
  
  void b3World_StopRecording( b3WorldId worldId )
-@@ -2323,6 +2998,7 @@ void b3World_StopRecording( b3WorldId worldId )
+@@ -2323,6 +3011,7 @@ void b3World_StopRecording( b3WorldId worldId )
  	}
  
  	b3StopRecordingInternal( world );
@@ -14996,7 +15063,7 @@ index 29c13c7..9778230 100644
  }
  
  void b3World_DumpMemoryStats( b3WorldId worldId )
-@@ -3313,6 +3989,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
+@@ -3313,6 +4002,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
  	}
  	world->preSolveFcn = fcn;
  	world->preSolveContext = context;
@@ -15004,7 +15071,7 @@ index 29c13c7..9778230 100644
  }
  
  void b3World_SetGravity( b3WorldId worldId, b3Vec3 gravity )
-@@ -3445,6 +4122,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3445,6 +4135,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	}
  
  	B3_REC( world, WorldExplode, worldId, *explosionDef );
@@ -15016,7 +15083,7 @@ index 29c13c7..9778230 100644
  
  	// Locked due to waking
  	world->locked = true;
-@@ -3457,6 +4139,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3457,6 +4152,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	b3AABB aabb = b3OffsetAABB( localBox, position );
  
  	b3DynamicTree_Query( world->broadPhase.trees + b3_dynamicBody, aabb, maskBits, false, ExplosionCallback, &explosionContext );
@@ -15024,7 +15091,7 @@ index 29c13c7..9778230 100644
  
  	world->locked = false;
  }
-@@ -3473,6 +4156,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +4169,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -15036,7 +15103,7 @@ index 29c13c7..9778230 100644
  }
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
-@@ -3637,7 +4325,15 @@ void b3ValidateSolverSets( b3World* world )
+@@ -3637,7 +4338,15 @@ void b3ValidateSolverSets( b3World* world )
  					uint32_t syncedFlags = body->flags & ~b3_bodyTransientFlags;
  					B3_ASSERT( ( bodySim->flags & syncedFlags ) == syncedFlags );
  
