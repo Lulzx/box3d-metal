@@ -62,6 +62,11 @@ Solver submission bulk-copies only a deterministic four-byte ID schedule per
 SIMD lane and no longer dereferences contacts to repack those records. Mixed,
 recycled, callback, overflow, and unsupported routes fail closed, including
 explicit CPU prepare-on-fallback recovery.
+After restitution, Metal extracts one 80-byte impulse record per active contact
+into a generation-tagged contact-ID table. CPU public-manifold and hit-event
+synchronization keeps upstream order while consuming that compact table instead
+of the 1,696-byte SIMD-wide records. Invalid and unsupported routes retain the
+original CPU store path.
 
 ## Quick start
 
@@ -142,8 +147,10 @@ The solver-ownership checkpoint establishes the fail-closed preparation gate;
 the resident contact-preparation checkpoint now uses it to skip CPU preparation
 arithmetic for complete supported sets. The metadata-residency checkpoint also
 removes the dedicated solver-time contact traversal and 144-byte lane stream;
-CPU persistence/table writes, graph scheduling, and impulse storage remain. It
-adds no loaded-host speedup claim.
+CPU persistence/table writes and graph scheduling remain. Compact post-solve
+extraction reduces the 81-contact CPU impulse-input surface from 35,616 to 6,480
+bytes while retaining public manifolds and matching hit events. It adds no
+loaded-host speedup claim.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

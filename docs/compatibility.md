@@ -23,6 +23,7 @@ evaluation order differs.
 | Supported contact/joint overflow | Serial GPU execution in deterministic upstream order |
 | Mixed distance/parallel colors and overflow | Supported with type-dense buffers and ordered descriptors |
 | Resident convex contact preparation | Complete colored sets prepared from the private contact-id table; CPU recovery on later solver fallback |
+| Resident convex impulse extraction | 80-byte contact-ID results after restitution; CPU public-manifold and hit-event synchronization remains ordered |
 | Experimental broad phase | Resident leaf update/refit plus built-in filtered candidates in exact CPU visitation order |
 | Experimental narrow phase | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere local geometry; primitive records and deduplicated compact hull streams are retained across revision-stable dispatches |
 
@@ -36,7 +37,7 @@ The following remain CPU work:
   manifold state application; per-contact eligibility/id validation and ordered
   manifold-result consumption;
 - mesh, joint, callback, mixed/recycled convex, and convex-overflow preparation;
-- events, islands, sleeping, and CCD;
+- public-manifold synchronization and event construction, islands, sleeping, and CCD;
 - recording, queries, topology mutation, and public API calls;
 - filter, motor, prismatic, revolute, spherical, weld, and wheel joint solving;
 - any joint requesting force/torque threshold events.
@@ -56,6 +57,10 @@ mesh constraints arrive CPU-prepared. The supported contact solve
 can therefore cover contacts originating from both accelerated convex pairs and
 Box3D's CPU convex/mesh/height-field collision paths. Collision detection is
 partially accelerated only for the experimental narrow-phase pairs listed above.
+Complete resident convex sets also write compact post-solve impulses by contact
+ID. CPU storage resolves the authoritative manifold from the contact and reads
+the compact table rather than the SIMD-wide constraints. Unsupported routes
+retain upstream CPU storage.
 
 Body and awake-shape finalization have an experimental, separately opt-in Metal
 path for rotation, origin offset, motion/sleep metrics, world-space inverse

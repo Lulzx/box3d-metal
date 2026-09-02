@@ -18,9 +18,10 @@ For a supported constrained world, one command buffer performs:
 5. Position and quaternion integration.
 6. Unbiased relaxation iterations.
 7. Restitution for eligible contacts.
-8. Optionally, body and awake-shape finalization using the resident solver state.
-9. Optional resident tree-leaf updates plus deterministic internal refit.
-10. One synchronization followed by CPU impulse storage and topology work.
+8. Compact resident-convex impulse extraction by contact ID.
+9. Optionally, body and awake-shape finalization using the resident solver state.
+10. Optional resident tree-leaf updates plus deterministic internal refit.
+11. One synchronization followed by CPU public-manifold/event synchronization and topology work.
 
 Pair generation is currently a separate experimental command sequence. Metal
 retains the existing three dynamic-tree node arrays, counts candidates per moved
@@ -52,6 +53,9 @@ still use the independent Metal position stage if they meet the threshold.
   shared Metal allocations. Complete resident convex sets instead use a Metal
   preparation kernel. Their post-persistence metadata is retained by contact ID
   and solver submission copies only a four-byte lane schedule.
+- Complete resident convex sets extract an 80-byte post-solve record per active
+  contact. CPU manifold/event synchronization resolves the manifold by contact
+  ID and does not traverse the 1,696-byte SIMD-wide solver records.
 - Distance and parallel joints are packed into compact type-dense records and
   only their accumulated solver state is unpacked after the command buffer.
 - Capacities grow geometrically and buffers are reused.
@@ -237,4 +241,10 @@ warm-start impulses. Mixed, recycled, callback, overflow, stale, or malformed
 sets fail closed. If another unsupported constraint rejects the Metal solver
 after CPU preparation was skipped, Box3D reruns convex preparation before the
 CPU solver fallback. CPU persistence/material table writes, graph scheduling,
-impulse storage, events, and topology remain the next residency boundary.
+events, and topology remain the next residency boundary. After restitution, a
+kernel in the same command buffer writes world-axis friction, twist, rolling,
+point normal/total impulses, and pre-solve normal velocity into a
+generation-tagged 80-byte table indexed by contact ID. CPU storage preserves
+public manifold and hit-event semantics in graph order while reading that
+compact table. Identity, generation, point count, and flags are validated;
+release fallback can still consume the wide records.

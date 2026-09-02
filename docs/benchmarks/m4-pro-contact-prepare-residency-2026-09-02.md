@@ -41,10 +41,11 @@ schedule/prior-stream byte pairs were 2,048/73,728 and 32,768/1,179,648,
 respectively. Wall-clock values from those loaded-host smoke runs are not
 published as performance evidence.
 
-No whole-world timing is claimed from the loaded development host. The next
-performance measurement must compare complete world steps on a quiet machine;
-the next ownership work is GPU persistence/impulse storage plus a resident graph
-schedule or compact CPU exception stream.
+No whole-world timing is claimed from the loaded development host. The follow-on
+contact-impulse checkpoint now extracts compact post-solve results by contact ID;
+a future performance measurement must still compare complete world steps on a
+quiet machine. Resident graph scheduling and compact/lazy CPU exception streams
+remain next.
 
 The reproducible whole-world harness is
 `metal_resident_contact_benchmark`. It creates independent sphere contacts,

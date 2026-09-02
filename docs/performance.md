@@ -79,6 +79,12 @@ and padded 144-byte lane stream with a four-byte lane schedule. The 81-contact
 fixture drops solver submission from 12,096 to 336 bytes. This remains ownership
 evidence, not a loaded-host speedup claim.
 
+The post-solve checkpoint adds an 80-byte result per active contact after
+restitution. The same 81-contact fixture exposes 6,480 compact bytes instead of
+21 complete 1,696-byte SIMD records, or 35,616 bytes. This 81.8% reduction is in
+the CPU impulse-storage input surface; public-manifold and event synchronization
+still runs on the CPU. Loaded-host smoke timing is not published as speedup.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.
