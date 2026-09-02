@@ -43,6 +43,13 @@ typedef struct b3MetalProfile
 	uint64_t contactSchedulePackCount;
 	/// Successful solver steps that reused the resident contact-ID schedule.
 	uint64_t contactScheduleReuseCount;
+	/// Resident convex steps that skipped the all-contact CPU impulse-store walk.
+	uint64_t contactImpulseStoreBypassCount;
+	/// Hit-event exception contacts synchronized during the compact store path.
+	uint64_t contactImpulseEventSyncCount;
+	/// Total individual contacts synchronized into the CPU/public manifold on
+	/// event, query, debug-draw, or snapshot boundaries.
+	uint64_t contactImpulseSyncCount;
 	uint64_t jointDispatchCount;
 	uint64_t jointFallbackCount;
 	uint64_t finalizationDispatchCount;

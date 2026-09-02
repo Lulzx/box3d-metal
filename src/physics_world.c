@@ -665,6 +665,9 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.lastContactImpulseResultBytes = world->metalLastContactImpulseResultBytes;
 	profile.contactSchedulePackCount = world->metalContactSchedulePackCount;
 	profile.contactScheduleReuseCount = world->metalContactScheduleReuseCount;
+	profile.contactImpulseStoreBypassCount = world->metalContactImpulseStoreBypassCount;
+	profile.contactImpulseEventSyncCount = world->metalContactImpulseEventSyncCount;
+	profile.contactImpulseSyncCount = world->metalContactImpulseSyncCount;
 	profile.jointDispatchCount = world->metalJointDispatchCount;
 	profile.jointFallbackCount = world->metalJointFallbackCount;
 	profile.finalizationDispatchCount = world->metalFinalizationDispatchCount;
@@ -1810,6 +1813,10 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
 					// avoid double draw
 					if ( b3GetBit( &world->debugContactSet, contactId ) == false )
 					{
+						if ( draw->drawContactForces )
+						{
+							b3SyncContactImpulses( world, contact );
+						}
 						b3Body* bodyA = b3Array_Get( world->bodies, contact->edges[0].bodyId );
 						b3BodySim* bodySimA = b3GetBodySim( world, bodyA );
 						b3Body* bodyB = b3Array_Get( world->bodies, contact->edges[1].bodyId );

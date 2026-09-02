@@ -1520,6 +1520,10 @@ static void b3SolverTask( void* taskContext )
 		bool integratedAllUnconstrainedOnMetal = false;
 		bool solvedAllConstraintsOnMetal = false;
 #if defined( BOX3D_METAL )
+		// Collision/persistence has consumed any prior resident result for warm
+		// starts. Drop that authority before selecting this step's solver route so
+		// a CPU fallback cannot later be overwritten by an older GPU result.
+		b3MetalInvalidateContactImpulseResults( context->world->metalContext );
 		solvedAllConstraintsOnMetal = b3ExecuteMetalConstraintSubsteps( context );
 		if ( solvedAllConstraintsOnMetal == false )
 		{

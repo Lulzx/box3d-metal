@@ -47,8 +47,9 @@ colored command graph. A compact descriptor stream preserves upstream order for
 mixed distance/parallel overflow joints in one serial kernel per phase. Other
 joint types and reaction-threshold events remain on the CPU path. CPU preparation writes constraint and manifold data
 directly into persistent `MTLStorageModeShared` memory; the kernels consume
-those allocations in place and CPU impulse storage reads them afterward, so
-there is no constraint upload or readback copy.
+those allocations in place, so there is no constraint upload or readback copy.
+CPU-prepared and fallback contacts retain upstream impulse storage, while
+complete resident convex sets leave post-solve impulses in the contact-ID table.
 
 An experimental finalization kernel ports the arithmetic portion of Erin
 Catto's body-finalization loop: final rotation, body-origin offset,
@@ -230,7 +231,7 @@ table. If input packing or a later unsupported constraint rejects the route,
 CPU convex preparation is rerun before the CPU solver fallback. This removes
 CPU preparation arithmetic plus the dedicated solver-time contact traversal and
 144-byte lane stream. CPU manifold persistence/material work, table writes, the
-graph-color schedule, impulse storage, events, and topology remain.
+graph-color schedule, events, and topology remain.
 The 80-byte post-solve record carries contact generation plus each point's
 feature ID without increasing its size. Before the next supported persistence
 record is staged, matching features restore normal impulses from that resident
@@ -238,6 +239,15 @@ record; friction, twist, and rolling warm-start terms are restored at contact
 scope. A recycled contact slot with a different generation cannot inherit the
 old result. This removes CPU manifold impulse freshness as a prerequisite for
 future lazy public synchronization.
+Successful resident solves now skip the all-contact CPU impulse-store walk.
+During the already-required narrow-phase input pack, Box3D retains only IDs whose
+shapes requested hit events. The store stage processes that compact exception
+list on one worker, synchronizes qualifying contacts by contact generation and
+feature ID, and leaves ordered event construction unchanged. With no hit-event
+requests, the stage touches no contacts. Public contact/body/shape queries sync
+only requested records; force debug drawing and snapshots explicitly sync the
+contacts they consume. CPU solver routes invalidate old result authority before
+fallback, so an earlier GPU result cannot overwrite a newer CPU manifold.
 
 Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 unsupported joint solution, continuous collision, events, and sleeping/island
@@ -256,7 +266,7 @@ paths, not yet the final performance architecture.
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 | Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
 | Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere local geometry is batched on Metal; compact hull geometry is deduplicated and retained across revision-stable dispatches. CPU applies persistence, materials, callbacks, and state transitions. High-aspect/speculative hull-sphere, other hull pairs, meshes, height fields, and compounds remain CPU |
-| Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts an 80-byte result per active contact into a generation-tagged contact-ID table; CPU public-manifold/event synchronization consumes that table instead of rereading 1,696-byte SIMD records. Mixed/recycled/callback/overflow sets remain CPU |
+| Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts an 80-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
 | Double-precision world positions | VF64 exact add plus directed narrowing produces conservative far-world AABBs on Metal |
@@ -361,6 +371,9 @@ Constraint-graph revisioning and unchanged-step schedule reuse are recorded in
 [`benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md`](benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md).
 Feature-matched resident warm-start carry is recorded in
 [`benchmarks/m4-pro-resident-warm-start-2026-09-02.md`](benchmarks/m4-pro-resident-warm-start-2026-09-02.md).
+Lazy public-manifold synchronization and the compact hit-event exception path
+are recorded in
+[`benchmarks/m4-pro-lazy-contact-impulse-sync-2026-09-02.md`](benchmarks/m4-pro-lazy-contact-impulse-sync-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

@@ -166,6 +166,10 @@ typedef struct b3Contact
 	uint32_t generation;
 } b3Contact;
 
+// Refresh one public CPU manifold from the latest authoritative Metal result.
+// This is a no-op on portable builds or when the latest step used the CPU path.
+bool b3SyncContactImpulses( b3World* world, b3Contact* contact );
+
 typedef struct b3ContactSpec
 {
 	int contactId;

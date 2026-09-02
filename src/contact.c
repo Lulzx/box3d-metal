@@ -12,6 +12,9 @@
 #include "shape.h"
 #include "solver_set.h"
 #include "table.h"
+#if defined( BOX3D_METAL )
+#include "metal_backend.h"
+#endif
 
 #include "box3d/box3d.h"
 
@@ -59,10 +62,26 @@ static b3Contact* b3GetContactFullId( b3World* world, b3ContactId contactId )
 	return contact;
 }
 
+bool b3SyncContactImpulses( b3World* world, b3Contact* contact )
+{
+#if defined( BOX3D_METAL )
+	if ( world != NULL && world->metalContext != NULL && b3MetalSyncContactImpulses( world->metalContext, contact ) )
+	{
+		world->metalContactImpulseSyncCount += 1;
+		return true;
+	}
+#else
+	(void)world;
+	(void)contact;
+#endif
+	return false;
+}
+
 b3ContactData b3Contact_GetData( b3ContactId contactId )
 {
 	b3World* world = b3GetWorld( contactId.world0 );
 	b3Contact* contact = b3GetContactFullId( world, contactId );
+	b3SyncContactImpulses( world, contact );
 
 	const b3Shape* shapeA = b3Array_Get( world->shapes, contact->shapeIdA );
 	const b3Shape* shapeB = b3Array_Get( world->shapes, contact->shapeIdB );

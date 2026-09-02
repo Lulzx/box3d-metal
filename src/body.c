@@ -476,6 +476,7 @@ int b3Body_GetContactData( b3BodyId bodyId, b3ContactData* contactData, int capa
 		// Is contact touching?
 		if ( contact->flags & b3_contactTouchingFlag )
 		{
+			b3SyncContactImpulses( world, contact );
 			b3Shape* shapeA = b3Array_Get( world->shapes, contact->shapeIdA );
 			b3Shape* shapeB = b3Array_Get( world->shapes, contact->shapeIdB );
 

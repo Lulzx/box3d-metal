@@ -789,8 +789,12 @@ static void b3SerContacts( b3RecBuffer* buf, b3World* world )
 
 	for ( int i = 0; i < count; ++i )
 	{
-		const b3Contact* c = world->contacts.data + i;
+		b3Contact* c = world->contacts.data + i;
 		bool isLive = ( c->contactId == i );
+		if ( isLive )
+		{
+			b3SyncContactImpulses( world, c );
+		}
 
 		// Write raw struct with pointer fields zeroed
 		b3Contact copy = *c;

@@ -73,7 +73,7 @@ int main( void )
 
 	printf( "# operation=whole_world_resident_sphere_contacts substeps=4 workers=%d timing=wall_clock_step\n",
 		workerCount );
-	printf( "contacts,repeats,cpu_ms,gpu_ms,speedup,prepare_dispatches,schedule_packs,schedule_reuses,index_bytes,prior_stream_bytes,impulse_bytes,prior_impulse_bytes\n" );
+	printf( "contacts,repeats,cpu_ms,gpu_ms,speedup,prepare_dispatches,schedule_packs,schedule_reuses,store_bypasses,event_syncs,public_syncs,index_bytes,prior_stream_bytes,impulse_bytes,prior_impulse_bytes\n" );
 	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
 	{
 		int contactCount = requestedCount > 0 ? requestedCount : counts[testIndex];
@@ -93,10 +93,13 @@ int main( void )
 		b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
 		uint64_t priorImpulseBytes = (uint64_t)profile.lastResidentConvexConstraintCount * 1696;
-		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n", contactCount, repeats, cpuMs, gpuMs,
+		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n", contactCount, repeats, cpuMs, gpuMs,
 			cpuMs / gpuMs, (unsigned long long)profile.contactPrepareDispatchCount,
 			(unsigned long long)profile.contactSchedulePackCount,
 			(unsigned long long)profile.contactScheduleReuseCount,
+			(unsigned long long)profile.contactImpulseStoreBypassCount,
+			(unsigned long long)profile.contactImpulseEventSyncCount,
+			(unsigned long long)profile.contactImpulseSyncCount,
 			(unsigned long long)profile.lastContactPrepareIndexBytes, (unsigned long long)priorBytes,
 			(unsigned long long)profile.lastContactImpulseResultBytes, (unsigned long long)priorImpulseBytes );
 		b3DestroyWorld( gpuWorld );

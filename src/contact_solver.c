@@ -1841,6 +1841,55 @@ void b3StoreImpulses_Convex( b3SolverBlock block, b3StepContext* context, int wo
 	{
 		impulseResults = b3MetalGetResidentContactImpulseTable(
 			world->metalContext, &impulseGeneration, &impulseResultCount );
+		if ( impulseResults != NULL )
+		{
+			// The resident result table is already the authoritative solver output.
+			// Only the block owning flat index zero consumes the compact list of
+			// contacts whose shapes requested hit events; all other store blocks
+			// bypass the legacy all-contact traversal.
+			if ( block.startIndex != 0 )
+			{
+				b3TracyCZoneEnd( store_impulses );
+				return;
+			}
+
+			world->metalContactImpulseStoreBypassCount += 1;
+			int hitContactCount = 0;
+			const int* hitContactIds = b3MetalGetResidentHitEventContacts( world->metalContext, &hitContactCount );
+			for ( int hitIndex = 0; hitIndex < hitContactCount; ++hitIndex )
+			{
+				int contactId = hitContactIds[hitIndex];
+				if ( contactId < 0 || contactId >= world->contacts.count ) continue;
+				b3Contact* contact = b3Array_Get( world->contacts, contactId );
+				if ( contact->contactId != contactId || contact->setIndex != b3_awakeSet ||
+					contact->colorIndex == B3_NULL_INDEX || ( contact->flags & b3_simEnableHitEvent ) == 0 ||
+					b3SyncContactImpulses( world, contact ) == false )
+				{
+					continue;
+				}
+
+				world->metalContactImpulseEventSyncCount += 1;
+				bool flagged = false;
+				for ( int manifoldIndex = 0; manifoldIndex < contact->manifoldCount && flagged == false; ++manifoldIndex )
+				{
+					b3Manifold* manifold = contact->manifolds + manifoldIndex;
+					for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
+					{
+						b3ManifoldPoint* point = manifold->points + pointIndex;
+						if ( point->normalVelocity < negHitThreshold && point->totalNormalImpulse > 0.0f )
+						{
+							b3SetBit( hitEventBitSet, contactId );
+							hasHitEvents = true;
+							flagged = true;
+							break;
+						}
+					}
+				}
+			}
+			taskContext->hasHitEvents = hasHitEvents;
+			b3TracyCZoneEnd( store_impulses );
+			return;
+		}
 	}
 #endif
 

@@ -165,6 +165,20 @@ bool b3MetalStageResidentContactPrepare( b3MetalContext* context, b3Contact* con
 const b3MetalContactImpulseResult* b3MetalGetResidentContactImpulseTable(
 	const b3MetalContext* context, uint32_t* generation, int* resultCount );
 
+// Return the contact ids whose shapes requested hit events during the current
+// resident narrow-phase input pass. The list is already compact and is valid
+// only while the latest post-solve result table is authoritative.
+const int* b3MetalGetResidentHitEventContacts( const b3MetalContext* context, int* contactCount );
+
+// Materialize one contact's GPU-authored impulse state into its CPU/public
+// manifold. Contact generation and point feature ids are validated before any
+// field is changed.
+bool b3MetalSyncContactImpulses( const b3MetalContext* context, b3Contact* contact );
+
+// Drop authority from a prior GPU solve after its warm-start state has been
+// consumed by the next collision pass and before a new solver route is chosen.
+void b3MetalInvalidateContactImpulseResults( b3MetalContext* context );
+
 // Mark the resident tree snapshot as matching CPU bounds after a successful
 // shape-result leaf update/refit and the corresponding CPU bookkeeping pass.
 void b3MetalCommitPairTreeRefit( b3MetalContext* context, const b3BroadPhase* broadPhase );

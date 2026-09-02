@@ -1753,6 +1753,7 @@ int b3Shape_GetContactData( b3ShapeId shapeId, b3ContactData* contactData, int c
 		if ( ( contact->shapeIdA == shapeId.index1 - 1 || contact->shapeIdB == shapeId.index1 - 1 ) &&
 			 ( contact->flags & b3_contactTouchingFlag ) != 0 )
 		{
+			b3SyncContactImpulses( world, contact );
 			b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
 			b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
 

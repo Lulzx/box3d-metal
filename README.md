@@ -77,10 +77,14 @@ records. Normal and identity remain private on-device. Mixed, recycled, callback
 overflow, or unsupported solver worlds fail closed to CPU preparation, including
 explicit prepare-on-fallback recovery when a later constraint rejects the route.
 After the final restitution pass, Metal writes an 80-byte compact impulse record
-per active contact into a generation-tagged contact-ID table. The CPU still
-synchronizes public manifolds and constructs hit events in upstream order, but
-reads these compact records instead of traversing the full 1,696-byte SIMD-wide
-solver constraints. Invalid or unsupported routes retain the original store path.
+per active contact into a generation-tagged contact-ID table. Successful
+resident steps bypass the all-contact CPU impulse-store traversal. Hit-enabled
+contact IDs are compacted while the existing narrow-phase input is packed and
+only those exceptions synchronize before ordered event construction. Contact,
+body, and shape queries synchronize requested manifolds on demand; force debug
+drawing and snapshots are explicit synchronization boundaries. Invalid or
+unsupported routes retain the original store path, and CPU fallback invalidates
+prior GPU result authority.
 The constraint graph carries a monotonic topology/order revision. The four-byte
 contact-ID lane schedule remains in its Metal buffer while that revision and its
 exact wide/contact counts are unchanged; contact or joint insertion/removal
@@ -89,6 +93,9 @@ The post-solve table also retains contact generation and per-point feature IDs.
 On the next fresh supported collision pass, matching features restore normal,
 friction, twist, and rolling warm-start impulses from GPU-authored state before
 preparation metadata is staged. Contact-slot reuse cannot consume stale state.
+The 81-contact differential now performs four store bypasses and zero CPU
+manifold synchronizations; the hit-event differential synchronizes exactly one
+exception contact.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.

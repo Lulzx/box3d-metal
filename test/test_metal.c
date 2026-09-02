@@ -1275,6 +1275,10 @@ static int MetalContactPrepareFallbackTest( void )
 	ENSURE( profile.contactPrepareFallbackCount == 1 );
 	ENSURE( profile.lastContactPrepareIndexBytes == 0 );
 	ENSURE( profile.jointFallbackCount == 1 );
+	b3World* gpu = b3GetWorldFromId( gpuWorld );
+	int staleResultCount = 0;
+	ENSURE( b3MetalGetResidentContactImpulseTable( gpu->metalContext, NULL, &staleResultCount ) == NULL );
+	ENSURE( staleResultCount == 0 );
 	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuContactBody ),
 		b3Body_GetLinearVelocity( gpuContactBody ) ) ) <= 3.0e-5f );
 	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuJointB ),
@@ -1372,6 +1376,9 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
 	ENSURE( profile.contactSchedulePackCount == 1 );
 	ENSURE( profile.contactScheduleReuseCount == 3 );
+	ENSURE( profile.contactImpulseStoreBypassCount == 4 );
+	ENSURE( profile.contactImpulseEventSyncCount == 0 );
+	ENSURE( profile.contactImpulseSyncCount == 0 );
 	ENSURE( profile.lastResidentConvexContactCount == count );
 	ENSURE( profile.lastResidentConvexConstraintCount == ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH );
 	ENSURE( profile.lastContactPrepareIndexBytes ==
@@ -1401,6 +1408,7 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	profile = b3World_GetMetalProfile( gpuWorld );
 	ENSURE( profile.contactSchedulePackCount == 2 );
 	ENSURE( profile.contactScheduleReuseCount == 3 );
+	ENSURE( profile.contactImpulseStoreBypassCount == 5 );
 	ENSURE( profile.lastResidentConvexContactCount == count + 1 );
 	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuAddedDynamic ),
 		b3Body_GetLinearVelocity( gpuAddedDynamic ) ) ) <= 3.0e-5f );
@@ -1452,6 +1460,9 @@ static int MetalResidentContactHitEventTest( void )
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	ENSURE( profile.contactPrepareDispatchCount == 1 );
 	ENSURE( profile.lastContactImpulseResultBytes == sizeof( b3MetalContactImpulseResult ) );
+	ENSURE( profile.contactImpulseStoreBypassCount == 1 );
+	ENSURE( profile.contactImpulseEventSyncCount == 1 );
+	ENSURE( profile.contactImpulseSyncCount == 1 );
 	printf( "    resident hit event speed=%.3g impulseBytes=%llu cpuGpuMatch=yes\n",
 		gpuHit.approachSpeed, (unsigned long long)profile.lastContactImpulseResultBytes );
 	b3DestroyWorld( gpuWorld );
@@ -1485,7 +1496,7 @@ static int MetalResidentWarmStartCarryTest( void )
 	b3BodyId cpuDynamic = b3CreateBody( cpuWorld, &dynamicDef );
 	b3BodyId gpuDynamic = b3CreateBody( gpuWorld, &dynamicDef );
 	b3CreateSphereShape( cpuDynamic, &shapeDef, &sphere );
-	b3CreateSphereShape( gpuDynamic, &shapeDef, &sphere );
+	b3ShapeId gpuDynamicShape = b3CreateSphereShape( gpuDynamic, &shapeDef, &sphere );
 
 	b3World_Step( cpuWorld, 1.0f / 60.0f, 1 );
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 1 );
@@ -1511,6 +1522,32 @@ static int MetalResidentWarmStartCarryTest( void )
 	ENSURE( result->contactGeneration == contact->generation );
 	ENSURE( result->points[0].featureId == contact->manifolds[0].points[0].featureId );
 	ENSURE( result->points[0].normalImpulse > 0.0f );
+	contact->manifolds[0].points[0].normalImpulse = 999.0f;
+	contact->manifolds[0].points[0].totalNormalImpulse = 999.0f;
+	contact->manifolds[0].points[0].normalVelocity = 999.0f;
+	b3ContactId publicContactId = { contactId + 1, gpu->worldId, 0, contact->generation };
+	b3ContactData publicData = b3Contact_GetData( publicContactId );
+	ENSURE( publicData.manifoldCount == 1 && publicData.manifolds == contact->manifolds );
+	ENSURE( contact->manifolds[0].points[0].normalImpulse == result->points[0].normalImpulse );
+	ENSURE( contact->manifolds[0].points[0].totalNormalImpulse == result->points[0].totalNormalImpulse );
+	ENSURE( contact->manifolds[0].points[0].normalVelocity == result->points[0].normalVelocity );
+	contact->manifolds[0].points[0].normalImpulse = 998.0f;
+	b3ContactData bodyData[1] = { 0 };
+	ENSURE( b3Body_GetContactData( gpuDynamic, bodyData, 1 ) == 1 );
+	ENSURE( bodyData[0].manifolds == contact->manifolds );
+	ENSURE( contact->manifolds[0].points[0].normalImpulse == result->points[0].normalImpulse );
+	contact->manifolds[0].points[0].normalImpulse = 997.0f;
+	b3ContactData shapeData[1] = { 0 };
+	ENSURE( b3Shape_GetContactData( gpuDynamicShape, shapeData, 1 ) == 1 );
+	ENSURE( shapeData[0].manifolds == contact->manifolds );
+	ENSURE( contact->manifolds[0].points[0].normalImpulse == result->points[0].normalImpulse );
+	contact->manifolds[0].points[0].normalImpulse = 996.0f;
+	b3Recording* recording = b3CreateRecording( 0 );
+	ENSURE( recording != NULL );
+	b3World_StartRecording( gpuWorld, recording );
+	ENSURE( contact->manifolds[0].points[0].normalImpulse == result->points[0].normalImpulse );
+	b3World_StopRecording( gpuWorld );
+	b3DestroyRecording( recording );
 	uint32_t savedContactGeneration = contact->generation;
 	contact->generation += 1;
 	contact->manifolds[0].points[0].normalImpulse = 777.0f;
@@ -1532,6 +1569,9 @@ static int MetalResidentWarmStartCarryTest( void )
 	ENSURE( profile.contactPrepareDispatchCount == 2 );
 	ENSURE( profile.contactSchedulePackCount == 1 );
 	ENSURE( profile.contactScheduleReuseCount == 1 );
+	ENSURE( profile.contactImpulseStoreBypassCount == 2 );
+	ENSURE( profile.contactImpulseEventSyncCount == 0 );
+	ENSURE( profile.contactImpulseSyncCount == 4 );
 	ENSURE( velocityError <= 3.0e-5f );
 	printf( "    resident warm-start feature=%u schedule=1/1 velocityError=%.3g\n",
 		result->points[0].featureId, velocityError );

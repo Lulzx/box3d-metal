@@ -41,8 +41,7 @@ No quiet-host whole-world timing is claimed here. The
 `metal_resident_contact_benchmark` now reports both compact impulse bytes and the
 equivalent former wide-record traversal, alongside its contact-ID preparation
 schedule. A future measurement must determine whether the smaller CPU cache
-stream changes end-to-end time. The next ownership reduction is to retain the
-make public-manifold/event synchronization lazy or exception only; topology and
-event ordering remain CPU responsibilities at this checkpoint. The follow-on
-schedule checkpoint retains the contact-ID lanes across unchanged graph
-revisions, so repeated steps no longer recopy them.
+stream changes end-to-end time. Follow-on checkpoints retain contact-ID lanes,
+carry warm starts from the resident result, and bypass the all-contact CPU store
+using lazy public sync plus compact hit-event exceptions. Topology and final
+event ordering remain CPU responsibilities.

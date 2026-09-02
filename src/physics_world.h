@@ -282,6 +282,9 @@ typedef struct b3World
 	uint64_t metalLastContactImpulseResultBytes;
 	uint64_t metalContactSchedulePackCount;
 	uint64_t metalContactScheduleReuseCount;
+	uint64_t metalContactImpulseStoreBypassCount;
+	uint64_t metalContactImpulseEventSyncCount;
+	uint64_t metalContactImpulseSyncCount;
 	uint64_t metalJointDispatchCount;
 	uint64_t metalJointFallbackCount;
 	uint64_t metalFinalizationDispatchCount;

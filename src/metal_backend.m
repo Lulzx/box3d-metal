@@ -170,6 +170,9 @@ struct b3MetalContext
 	NSUInteger contactImpulseResultCapacity;
 	int contactImpulseResultCount;
 	uint32_t contactImpulseResultGeneration;
+	id<MTLBuffer> contactHitEventIdBuffer;
+	NSUInteger contactHitEventIdCapacity;
+	int contactHitEventIdCount;
 	id<MTLBuffer> meshContactBuffer;
 	NSUInteger meshContactCapacity;
 	id<MTLBuffer> meshManifoldBuffer;
@@ -1781,6 +1784,7 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->contactPrepareIndexBuffer release];
 	[context->contactPrepareStatusBuffer release];
 	[context->contactImpulseResultBuffer release];
+	[context->contactHitEventIdBuffer release];
 	[context->meshContactBuffer release];
 	[context->meshManifoldBuffer release];
 	[context->distanceJointBuffer release];
@@ -2288,12 +2292,87 @@ static bool b3MetalEnsureContactImpulseResultCapacity( b3MetalContext* context, 
 	return true;
 }
 
+static bool b3MetalEnsureContactHitEventIdCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	requiredBytes = requiredBytes > 0 ? requiredBytes : sizeof( int );
+	if ( context->contactHitEventIdCapacity >= requiredBytes ) return true;
+	NSUInteger capacity = context->contactHitEventIdCapacity > 0 ? context->contactHitEventIdCapacity : 4096;
+	while ( capacity < requiredBytes ) capacity *= 2;
+	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+	if ( buffer == nil ) return false;
+	[context->contactHitEventIdBuffer release];
+	context->contactHitEventIdBuffer = buffer;
+	context->contactHitEventIdCapacity = capacity;
+	return true;
+}
+
 const b3MetalContactImpulseResult* b3MetalGetResidentContactImpulseTable(
 	const b3MetalContext* context, uint32_t* generation, int* resultCount )
 {
 	if ( generation != NULL ) *generation = context != NULL ? context->contactImpulseResultGeneration : 0;
 	if ( resultCount != NULL ) *resultCount = context != NULL ? context->contactImpulseResultCount : 0;
 	return context != NULL && context->contactImpulseResultCount > 0 ? context->contactImpulseResultBuffer.contents : NULL;
+}
+
+const int* b3MetalGetResidentHitEventContacts( const b3MetalContext* context, int* contactCount )
+{
+	int count = context != NULL && context->contactImpulseResultCount > 0 ? context->contactHitEventIdCount : 0;
+	if ( contactCount != NULL ) *contactCount = count;
+	return count > 0 ? context->contactHitEventIdBuffer.contents : NULL;
+}
+
+bool b3MetalSyncContactImpulses( const b3MetalContext* context, b3Contact* contact )
+{
+	if ( context == NULL || contact == NULL || contact->contactId < 0 ||
+		contact->contactId >= context->contactImpulseResultCount || contact->manifoldCount != 1 ||
+		contact->manifolds == NULL )
+	{
+		return false;
+	}
+
+	const b3MetalContactImpulseResult* result =
+		( (const b3MetalContactImpulseResult*)context->contactImpulseResultBuffer.contents ) + contact->contactId;
+	b3Manifold* manifold = contact->manifolds;
+	if ( result->contactId != (uint32_t)contact->contactId ||
+		result->generation != context->contactImpulseResultGeneration ||
+		result->contactGeneration != contact->generation || result->pointCount != (uint32_t)manifold->pointCount ||
+		result->pointCount < 1 || result->pointCount > 2 )
+	{
+		return false;
+	}
+
+	int resultPointIndices[2] = { B3_NULL_INDEX, B3_NULL_INDEX };
+	for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
+	{
+		for ( uint32_t resultIndex = 0; resultIndex < result->pointCount; ++resultIndex )
+		{
+			if ( manifold->points[pointIndex].featureId == result->points[resultIndex].featureId )
+			{
+				resultPointIndices[pointIndex] = (int)resultIndex;
+				break;
+			}
+		}
+		if ( resultPointIndices[pointIndex] == B3_NULL_INDEX ) return false;
+	}
+
+	manifold->frictionImpulse = (b3Vec3){ result->frictionX, result->frictionY, result->frictionZ };
+	manifold->twistImpulse = result->twistImpulse;
+	manifold->rollingImpulse = (b3Vec3){ result->rollingX, result->rollingY, result->rollingZ };
+	for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
+	{
+		int resultIndex = resultPointIndices[pointIndex];
+		b3ManifoldPoint* target = manifold->points + pointIndex;
+		target->normalImpulse = result->points[resultIndex].normalImpulse;
+		target->totalNormalImpulse = result->points[resultIndex].totalNormalImpulse;
+		target->normalVelocity = result->points[resultIndex].normalVelocity;
+	}
+	return true;
+}
+
+void b3MetalInvalidateContactImpulseResults( b3MetalContext* context )
+{
+	if ( context == NULL ) return;
+	context->contactImpulseResultCount = 0;
 }
 
 b3ContactConstraintWide* b3MetalGetContactConstraintStorage( b3MetalContext* context, int constraintCount )
@@ -3867,6 +3946,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 	@autoreleasepool
 	{
 		int candidateCount = 0;
+		int hitEventContactCount = 0;
 		for ( int i = 0; i < contactCount; ++i )
 		{
 			int contactIndex = contactIndices[i];
@@ -3879,11 +3959,15 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 			}
 			const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
 			const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
-			candidateCount += ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
+			bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
 				( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
 				( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
 				b3MetalSupportsHullSphere( shapeA, shapeB );
+			candidateCount += eligible;
+			hitEventContactCount += eligible && ( ( shapeA->flags & b3_enableHitEvents ) != 0 ||
+				( shapeB->flags & b3_enableHitEvents ) != 0 );
 		}
+		context->contactHitEventIdCount = 0;
 		if ( candidateCount == 0 ) return true;
 
 		NSUInteger inputBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldInput );
@@ -3897,7 +3981,8 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		if ( b3MetalEnsureShapeGeometryRegistry( context, world ) == false ||
 			 b3MetalEnsureBodyTransformRegistry( context, world ) == false ||
 			 b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes, resultBytes, blockBytes, tableBytes ) == false ||
-			 b3MetalEnsureContactPrepareTableCapacity( context, prepareTableBytes ) == false )
+			 b3MetalEnsureContactPrepareTableCapacity( context, prepareTableBytes ) == false ||
+			 b3MetalEnsureContactHitEventIdCapacity( context, (NSUInteger)hitEventContactCount * sizeof( int ) ) == false )
 		{
 			return false;
 		}
@@ -3908,6 +3993,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 			context->contactPrepareGeneration = 1;
 		}
 		b3MetalConvexManifoldInput* inputs = context->convexManifoldInputBuffer.contents;
+		int* hitEventContactIds = context->contactHitEventIdBuffer.contents;
 		memset( inputs, 0, inputBytes );
 		for ( int i = 0; i < contactCount; ++i )
 		{
@@ -3926,6 +4012,10 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 				( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
 				b3MetalSupportsHullSphere( shapeA, shapeB );
 			if ( eligible == false ) continue;
+			if ( ( shapeA->flags & b3_enableHitEvents ) != 0 || ( shapeB->flags & b3_enableHitEvents ) != 0 )
+			{
+				hitEventContactIds[context->contactHitEventIdCount++] = contactIndex;
+			}
 			b3MetalConvexManifoldInput* input = inputs + i;
 			input->eligible = 1;
 			input->shapeIdA = (uint32_t)contact->shapeIdA;
