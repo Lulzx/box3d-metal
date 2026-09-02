@@ -68,10 +68,13 @@ indexed by Box3D contact id. This adds no steady-path readback or dispatch; expl
 staging exists only for validation and fallback diagnostics.
 When every colored convex contact remains authoritative after persistence and
 callback processing, a Metal preparation kernel now builds Erin's SIMD-wide
-contact constraints from that table in the solver command buffer. The CPU writes
-the remaining body indices, manifold identity, callback results, and finalized
-contact state into a 152-byte generation-tagged contact-ID table during the
-existing topology pass.
+contact constraints from that table in the solver command buffer. The CPU seeds
+a 152-byte generation-tagged contact-ID table with body indices and manifold
+identity. On later generation-stable steps, the manifold scatter refreshes that
+record directly with current indices, finalized anchors and materials, prior
+contact-scope impulses, persistence, and normal warm starts. Recycling,
+pre-solve callbacks, and custom material callbacks remain CPU-written
+exceptions.
 Solver submission bulk-copies only a deterministic four-byte contact-ID schedule
 per SIMD lane; it no longer walks and dereferences every contact to repack the
 records. Normal and identity remain private on-device. Mixed, recycled, callback,

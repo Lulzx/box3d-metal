@@ -1241,9 +1241,13 @@ static int MetalContactMaterialCallbackExceptionTest( void )
 	float tangentSign = contact->shapeIdA == shapeA.index1 - 1 ? 1.0f : -1.0f;
 	ENSURE( b3Length( b3Sub( contact->tangentVelocity,
 							 (b3Vec3){ tangentSign * 2.0f, tangentSign * 1.5f, tangentSign * 2.75f } ) ) <= 1.0e-6f );
+	b3World_Step( worldId, 0.0f, 1 );
+	ENSURE( contact->friction == 0.123f );
+	ENSURE( contact->restitution == 0.456f );
 	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
-	ENSURE( profile.narrowPhaseDispatchCount == 1 );
-	printf( "    material callbacks custom=cpu rolling+tangent=gpu narrowDispatches=1\n" );
+	ENSURE( profile.narrowPhaseDispatchCount == 2 );
+	ENSURE( profile.contactPrepareDeviceRefreshCount == 0 );
+	printf( "    material callbacks custom=cpu rolling+tangent=gpu narrowDispatches=2 deviceRefreshes=0\n" );
 	b3DestroyWorld( worldId );
 	return 0;
 }
@@ -1484,9 +1488,11 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 																		  b3Body_GetAngularVelocity( gpuBodies[i] ) ) ) );
 	}
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
-	printf( "    resident contact prepare contacts=%d dispatches=%llu schedule=%llu/%llu indexBytes=%llu legacyBytes=%zu "
+	printf( "    resident contact prepare contacts=%d dispatches=%llu deviceRefreshes=%llu schedule=%llu/%llu indexBytes=%llu "
+			"legacyBytes=%zu "
 			"impulseBytes=%llu legacyImpulseBytes=%zu transformError=%.3g velocityError=%.3g\n",
-			count, (unsigned long long)profile.contactPrepareDispatchCount, (unsigned long long)profile.contactSchedulePackCount,
+			count, (unsigned long long)profile.contactPrepareDispatchCount,
+			(unsigned long long)profile.contactPrepareDeviceRefreshCount, (unsigned long long)profile.contactSchedulePackCount,
 			(unsigned long long)profile.contactScheduleReuseCount, (unsigned long long)profile.lastContactPrepareIndexBytes,
 			(size_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * 144,
 			(unsigned long long)profile.lastContactImpulseResultBytes,
@@ -1494,6 +1500,7 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 			maxVelocityError );
 	ENSURE( profile.contactPrepareDispatchCount == 4 );
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
+	ENSURE( profile.contactPrepareDeviceRefreshCount == 3 * count );
 	ENSURE( profile.contactSchedulePackCount == 1 );
 	ENSURE( profile.contactScheduleReuseCount == 3 );
 	ENSURE( profile.contactImpulseStoreBypassCount == 4 );
@@ -1674,6 +1681,7 @@ static int MetalResidentWarmStartCarryTest( void )
 	ENSURE( b3MetalStageResidentContactPrepare( gpu->metalContext, contact ) );
 	ENSURE( contact->manifolds[0].points[0].normalImpulse == 777.0f );
 	contact->generation = savedContactGeneration;
+	ENSURE( b3MetalStageResidentContactPrepare( gpu->metalContext, contact ) );
 
 	// Simulate a stale CPU public mirror. The next persistence pass must match
 	// feature IDs against the resident result and recover every warm-start term.
@@ -1692,12 +1700,14 @@ static int MetalResidentWarmStartCarryTest( void )
 	ENSURE( profile.contactSchedulePackCount == 1 );
 	ENSURE( profile.contactScheduleReuseCount == 1 );
 	ENSURE( profile.contactPersistenceMatchCount >= 1 );
+	ENSURE( profile.contactPrepareDeviceRefreshCount == 1 );
 	ENSURE( profile.contactImpulseStoreBypassCount == 2 );
 	ENSURE( profile.contactImpulseEventSyncCount == 0 );
 	ENSURE( profile.contactImpulseSyncCount == 4 );
 	ENSURE( velocityError <= 3.0e-5f );
-	printf( "    resident warm-start feature=%u schedule=1/1 gpuPersistence=%llu velocityError=%.3g\n",
-			result->points[0].featureId, (unsigned long long)profile.contactPersistenceMatchCount, velocityError );
+	printf( "    resident warm-start feature=%u schedule=1/1 gpuPersistence=%llu deviceRefreshes=%llu velocityError=%.3g\n",
+			result->points[0].featureId, (unsigned long long)profile.contactPersistenceMatchCount,
+			(unsigned long long)profile.contactPrepareDeviceRefreshCount, velocityError );
 	b3DestroyWorld( gpuWorld );
 	b3DestroyWorld( cpuWorld );
 	return 0;

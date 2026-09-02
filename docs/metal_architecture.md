@@ -223,8 +223,13 @@ the private contact-id table and writes the existing 1,696-byte SIMD-wide
 constraint ABI. Finalized anchors, point persistence, default materials, tangent
 velocity, and normal warm starts come from the private result. Body indices,
 custom callback results, contact-scope impulses, and manifold storage identity are retained in a
-generation-tagged 152-byte shared table indexed by contact ID. Collision workers
-write disjoint records during the existing persistence pass. Solver submission
+generation-tagged 152-byte shared table indexed by contact ID. The CPU seeds a
+record when a contact first becomes eligible. On later generation-stable steps,
+the manifold scatter validates the prior impulse and preparation records, then
+refreshes the table in place with current body indices, finalized anchors and
+materials, contact-scope impulses, feature IDs, persistence, and normal warm
+starts. Collision workers retain disjoint writes for recycling, pre-solve,
+custom material callbacks, and first-touch records. Solver submission
 then initializes tail lanes and bulk-copies one four-byte contact-ID schedule per
 active color; it does not dereference contacts or repack their metadata. The
 kernel computes Erin's tangent frame,
@@ -234,7 +239,7 @@ impulses on Metal. A status word validates table authority without staging the
 table. If input packing or a later unsupported constraint rejects the route,
 CPU convex preparation is rerun before the CPU solver fallback. This removes
 CPU preparation arithmetic plus the dedicated solver-time contact traversal and
-144-byte lane stream. CPU manifold allocation, custom callbacks, table writes,
+144-byte lane stream. CPU manifold allocation, custom callbacks, exceptional table writes,
 the graph-color schedule, events, and topology remain.
 The 80-byte post-solve record carries contact generation plus each point's
 feature ID. The next manifold scatter validates contact identity and generation,
@@ -380,6 +385,8 @@ are recorded in
 GPU-authored persistence, COM-relative anchors, and default material
 finalization are recorded in
 [`benchmarks/m4-pro-contact-finalization-residency-2026-09-02.md`](benchmarks/m4-pro-contact-finalization-residency-2026-09-02.md).
+Direct device refresh of stable contact-preparation records is recorded in
+[`benchmarks/m4-pro-device-contact-prepare-refresh-2026-09-02.md`](benchmarks/m4-pro-device-contact-prepare-refresh-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

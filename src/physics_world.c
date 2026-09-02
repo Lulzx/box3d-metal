@@ -337,6 +337,9 @@ b3WorldId b3CreateWorld( const b3WorldDef* def )
 	if ( def->frictionCallback == NULL )
 	{
 		world->frictionCallback = b3DefaultFrictionCallback;
+#if defined( BOX3D_METAL )
+		world->metalDefaultFrictionCallback = true;
+#endif
 	}
 	else
 	{
@@ -346,6 +349,9 @@ b3WorldId b3CreateWorld( const b3WorldDef* def )
 	if ( def->restitutionCallback == NULL )
 	{
 		world->restitutionCallback = b3DefaultRestitutionCallback;
+#if defined( BOX3D_METAL )
+		world->metalDefaultRestitutionCallback = true;
+#endif
 	}
 	else
 	{
@@ -668,6 +674,7 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.contactSchedulePackCount = world->metalContactSchedulePackCount;
 	profile.contactScheduleReuseCount = world->metalContactScheduleReuseCount;
 	profile.contactPersistenceMatchCount = world->metalContactPersistenceMatchCount;
+	profile.contactPrepareDeviceRefreshCount = world->metalContactPrepareDeviceRefreshCount;
 	profile.contactImpulseStoreBypassCount = world->metalContactImpulseStoreBypassCount;
 	profile.contactImpulseEventSyncCount = world->metalContactImpulseEventSyncCount;
 	profile.contactImpulseSyncCount = world->metalContactImpulseSyncCount;
@@ -964,6 +971,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 		bool precomputedAnchorsRelativeToCenter = false;
 		const b3PrecomputedContactMaterial* precomputedMaterial = NULL;
 #if defined( BOX3D_METAL )
+		bool prepareRefreshedOnMetal = false;
 		b3LocalManifold localConvexManifold = { 0 };
 		b3LocalManifoldPoint localConvexPoints[2] = { 0 };
 		float localNormalImpulses[2] = { 0.0f, 0.0f };
@@ -1006,9 +1014,10 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 				localMaterial.rollingResistance = result->rollingResistance;
 				localMaterial.tangentVelocity =
 					(b3Vec3){ result->tangentVelocityX, result->tangentVelocityY, result->tangentVelocityZ };
-				localMaterial.useFriction = world->frictionCallback == b3DefaultFrictionCallback;
-				localMaterial.useRestitution = world->restitutionCallback == b3DefaultRestitutionCallback;
+				localMaterial.useFriction = world->metalDefaultFrictionCallback;
+				localMaterial.useRestitution = world->metalDefaultRestitutionCallback;
 				precomputedMaterial = &localMaterial;
+				prepareRefreshedOnMetal = ( result->residentFlags & 2u ) != 0;
 				precomputedConvexManifold = &localConvexManifold;
 			}
 		}
@@ -1020,7 +1029,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 							 precomputedAnchorBs, precomputedAnchorsRelativeToCenter, precomputedMaterial, taskContext->arena );
 #if defined( BOX3D_METAL )
 		if ( precomputedConvexManifold != NULL && ( contact->flags & b3_simEnablePreSolveEvents ) == 0 &&
-			 b3MetalStageResidentContactPrepare( world->metalContext, contact ) )
+			 ( prepareRefreshedOnMetal || b3MetalStageResidentContactPrepare( world->metalContext, contact ) ) )
 		{
 			contact->flags |= b3_simMetalManifold;
 		}
@@ -2589,6 +2598,9 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
 	}
 
 	world->frictionCallback = callback != NULL ? callback : b3DefaultFrictionCallback;
+#if defined( BOX3D_METAL )
+	world->metalDefaultFrictionCallback = callback == NULL;
+#endif
 }
 
 void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* callback )
@@ -2600,6 +2612,9 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
 	}
 
 	world->restitutionCallback = callback != NULL ? callback : b3DefaultRestitutionCallback;
+#if defined( BOX3D_METAL )
+	world->metalDefaultRestitutionCallback = callback == NULL;
+#endif
 }
 
 void b3World_SetWorkerCount( b3WorldId worldId, int count )

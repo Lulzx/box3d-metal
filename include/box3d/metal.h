@@ -46,6 +46,9 @@ typedef struct b3MetalProfile
 	/// Contact points whose warm-start impulse and persistence flag were matched
 	/// by the Metal manifold-finalization kernel.
 	uint64_t contactPersistenceMatchCount;
+	/// Stable contact preparation records refreshed directly by the Metal
+	/// manifold-finalization kernel instead of rewritten by a CPU worker.
+	uint64_t contactPrepareDeviceRefreshCount;
 	/// Resident convex steps that skipped the all-contact CPU impulse-store walk.
 	uint64_t contactImpulseStoreBypassCount;
 	/// Hit-event exception contacts synchronized during the compact store path.
