@@ -2350,6 +2350,10 @@ static int MetalWorldIntegrationTest( void )
 	b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
 	b3MetalProfile preEventProfile = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( preEventProfile.finalizationBodyTraversalBypassCount == 1 );
+	ENSURE( preEventProfile.bodySimSyncCount == 0 );
+	ENSURE( preEventProfile.lastBodySimSyncCount == 0 );
+	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodySimCpuStale ) != 0 );
 	ENSURE( preEventProfile.bodyMoveEventDispatchCount == 1 );
 	ENSURE( preEventProfile.bodyMoveEventCpuWriteBypassCount == 1 );
 	ENSURE( preEventProfile.bodyMoveEventSyncCount == 0 );
@@ -2358,6 +2362,8 @@ static int MetalWorldIntegrationTest( void )
 	// Lazy materialization must retain step-time metadata rather than observing
 	// a user-data mutation made after the step.
 	b3Body_SetUserData( gpuBodies[0], (void*)(uintptr_t)0xdeadbeef );
+	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodySimCpuStale ) == 0 );
+	ENSURE( b3World_GetMetalProfile( gpuWorld ).bodySimSyncCount == 1 );
 	b3BodyEvents cpuEvents = b3World_GetBodyEvents( cpuWorld );
 	b3BodyEvents gpuEvents = b3World_GetBodyEvents( gpuWorld );
 	ENSURE( cpuEvents.moveCount == count );
@@ -2434,7 +2440,7 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodyStateCpuStale ) == 0 );
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    integrated world device=%s fusedDispatches=%llu shapeDispatches=%llu compact=%d/%d finalizeBytes=%llu/%llu "
-			"shapeWalkBypasses=%llu transformRegistry=%llu/%llu/%llu state=%llu/%llu/%llu properties=%llu/%llu/%llu "
+			"shapeWalkBypasses=%llu bodyWalkBypasses=%llu simSync=%llu/%llu transformRegistry=%llu/%llu/%llu state=%llu/%llu/%llu properties=%llu/%llu/%llu "
 			"events=%llu/%llu/%llu "
 			"fullApplies=%llu syncShapes=%llu "
 			"maxPositionError=%.3g maxRotationError=%.3g "
@@ -2444,6 +2450,9 @@ static int MetalWorldIntegrationTest( void )
 			(unsigned long long)profile.lastFinalizationReadbackBytes,
 			(unsigned long long)profile.finalizationReadbackBypassCount,
 			(unsigned long long)profile.finalizationShapeTraversalBypassCount,
+			(unsigned long long)profile.finalizationBodyTraversalBypassCount,
+			(unsigned long long)profile.bodySimSyncCount,
+			(unsigned long long)profile.lastBodySimSyncCount,
 			(unsigned long long)profile.narrowPhaseTransformUploadCount,
 			(unsigned long long)profile.narrowPhaseTransformReuseCount,
 			(unsigned long long)profile.narrowPhaseTransformDeviceRefreshCount,
@@ -2464,6 +2473,9 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.finalizationReadbackBypassCount == 1 );
 	ENSURE( profile.lastFinalizationReadbackBytes == 0 );
 	ENSURE( profile.finalizationShapeTraversalBypassCount == 1 );
+	ENSURE( profile.finalizationBodyTraversalBypassCount == 1 );
+	ENSURE( profile.bodySimSyncCount == 1 );
+	ENSURE( profile.lastBodySimSyncCount == count );
 	ENSURE( profile.bodyMoveEventDispatchCount == 1 );
 	ENSURE( profile.bodyMoveEventCpuWriteBypassCount == 1 );
 	ENSURE( profile.bodyMoveEventSyncCount == 1 );
@@ -2497,6 +2509,29 @@ static int MetalWorldIntegrationTest( void )
 	printf( "    VF64 far-world oracle underflow=%.9g\n", maxOracleUnderflow );
 	ENSURE( maxOracleUnderflow <= 0.0f );
 #endif
+
+	// Exercise resident finalization properties across several unobserved steps.
+	// The CPU sim mirror was synchronized once by SetUserData above; it must stay
+	// untouched again until this explicit transform observation.
+	for ( int stepIndex = 1; stepIndex < 10; ++stepIndex )
+	{
+		b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
+		b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
+	}
+	b3MetalProfile multiStepResidentProfile = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( multiStepResidentProfile.finalizationBodyTraversalBypassCount == 10 );
+	ENSURE( multiStepResidentProfile.bodySimSyncCount == 1 );
+	ENSURE( multiStepResidentProfile.lastBodySimSyncCount == 0 );
+	ENSURE( multiStepResidentProfile.bodyPropertyUploadCount == 2 );
+	ENSURE( multiStepResidentProfile.bodyPropertyReuseCount == 8 );
+	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodySimCpuStale ) != 0 );
+	b3WorldTransform cpuFinalTransform = b3Body_GetTransform( cpuBodies[count - 1] );
+	b3WorldTransform gpuFinalTransform = b3Body_GetTransform( gpuBodies[count - 1] );
+	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodySimCpuStale ) == 0 );
+	ENSURE( b3World_GetMetalProfile( gpuWorld ).bodySimSyncCount == 2 );
+	ENSURE( fabs( (double)cpuFinalTransform.p.x - (double)gpuFinalTransform.p.x ) <= 3.0e-5 );
+	ENSURE( fabs( (double)cpuFinalTransform.p.y - (double)gpuFinalTransform.p.y ) <= 3.0e-5 );
+	ENSURE( fabs( (double)cpuFinalTransform.p.z - (double)gpuFinalTransform.p.z ) <= 3.0e-5 );
 
 	free( gpuShapes );
 	free( cpuShapes );
@@ -2617,7 +2652,9 @@ static int MetalUnsupportedJointFallbackTest( void )
 		(unsigned long long)residentProfile.lastBodyStateReadbackBytes,
 		b3AtomicLoadInt( &gpuWorldInternal->metalBodyStateCpuStale ) != 0 ? "yes" : "no" );
 	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodyStateCpuStale ) != 0 );
+	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodySimCpuStale ) != 0 );
 	ENSURE( residentProfile.bodyStateSyncCount == 0 );
+	ENSURE( residentProfile.bodySimSyncCount == 0 );
 
 	b3RevoluteJointDef cpuDef = b3DefaultRevoluteJointDef();
 	cpuDef.base.bodyIdA = cpuA;
@@ -2629,9 +2666,11 @@ static int MetalUnsupportedJointFallbackTest( void )
 	gpuDef.base.bodyIdA = gpuA;
 	gpuDef.base.bodyIdB = gpuB;
 	b3CreateRevoluteJoint( gpuWorld, &gpuDef );
+	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodySimCpuStale ) != 0 );
 
 	b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
+	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodySimCpuStale ) == 0 );
 	b3WorldTransform cpuTransform = b3Body_GetTransform( cpuB );
 	b3WorldTransform gpuTransform = b3Body_GetTransform( gpuB );
 	float maxError = b3MaxFloat( (float)fabs( (double)cpuTransform.p.x - (double)gpuTransform.p.x ),
@@ -2644,6 +2683,9 @@ static int MetalUnsupportedJointFallbackTest( void )
 	ENSURE( profile.positionDispatchCount == 4 );
 	ENSURE( profile.bodyStateSyncCount == 1 );
 	ENSURE( profile.lastBodyStateReadbackBytes == 2u * sizeof( b3BodyState ) );
+	ENSURE( profile.finalizationBodyTraversalBypassCount == 1 );
+	ENSURE( profile.bodySimSyncCount == 1 );
+	ENSURE( profile.lastBodySimSyncCount == 0 );
 	ENSURE( maxError <= 3.0e-5f );
 
 	b3DestroyWorld( gpuWorld );

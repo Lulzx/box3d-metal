@@ -76,7 +76,8 @@ int main( void )
 		"metal_broad_phase=%s shapes=%s\n", workerCount, enableFinalization ? "on" : "off",
 		enableBroadPhase ? "on" : "off", createShapes ? "sphere_per_body" : "none" );
 	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,finalization_readback_bytes,finalization_readback_bypasses,"
-		"finalization_shape_traversal_bypasses,move_event_dispatches,move_event_syncs,last_move_event_readback_bytes,"
+		"finalization_shape_traversal_bypasses,finalization_body_traversal_bypasses,body_sim_syncs,last_body_sim_sync_count,"
+		"move_event_dispatches,move_event_syncs,last_move_event_readback_bytes,"
 		"transform_device_refreshes,pair_kernel_ms,pair_dispatches,"
 		"body_state_uploads,body_state_reuses,last_body_state_upload_bytes,body_state_revision_checks,body_state_syncs,last_body_state_readback_bytes,"
 		"body_property_uploads,body_property_reuses,last_body_property_upload_bytes,pair_fallbacks,speedup\n" );
@@ -110,12 +111,27 @@ int main( void )
 		}
 		double gpuMs = TimeWorld( gpuWorld, repeats );
 		b3MetalProfile metal = b3World_GetMetalProfile( gpuWorld );
-		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.3f\n",
+		if ( enableFinalization && bodyCount >= 1 )
+		{
+			uint64_t expectedSteps = (uint64_t)( 5 + repeats );
+			if ( metal.finalizationBodyTraversalBypassCount != expectedSteps || metal.bodySimSyncCount != 0 ||
+				metal.lastBodySimSyncCount != 0 )
+			{
+				fprintf( stderr, "unexpected body-finalization residency telemetry: bypasses=%llu expected=%llu syncs=%llu last=%llu\n",
+					(unsigned long long)metal.finalizationBodyTraversalBypassCount, (unsigned long long)expectedSteps,
+					(unsigned long long)metal.bodySimSyncCount, (unsigned long long)metal.lastBodySimSyncCount );
+				return 1;
+			}
+		}
+		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.3f\n",
 			bodyCount,
 			repeats, cpuMs, gpuMs,
 			metal.lastUnconstrainedGpuMilliseconds, (unsigned long long)metal.lastFinalizationReadbackBytes,
 			(unsigned long long)metal.finalizationReadbackBypassCount,
 			(unsigned long long)metal.finalizationShapeTraversalBypassCount,
+			(unsigned long long)metal.finalizationBodyTraversalBypassCount,
+			(unsigned long long)metal.bodySimSyncCount,
+			(unsigned long long)metal.lastBodySimSyncCount,
 			(unsigned long long)metal.bodyMoveEventDispatchCount,
 			(unsigned long long)metal.bodyMoveEventSyncCount,
 			(unsigned long long)metal.lastBodyMoveEventReadbackBytes,

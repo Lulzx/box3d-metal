@@ -259,6 +259,7 @@ typedef struct b3StepContext
 	int metalEnlargedShapeResultCount;
 	bool metalStatesResident;
 	bool metalShapeBoundsResident;
+	bool metalShapeFinalizationComplete;
 	bool metalDeferShapeResultApply;
 	bool metalTreeRefitEligible;
 	bool metalTreeRefit;

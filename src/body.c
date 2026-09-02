@@ -36,6 +36,9 @@ b3Body* b3GetBodyFullId( b3World* world, b3BodyId bodyId )
 
 b3WorldTransform b3GetBodyTransformQuick( b3World* world, b3Body* body )
 {
+	bool synced = b3MaterializeBodySims( world );
+	B3_ASSERT( synced );
+	B3_UNUSED( synced );
 	b3SolverSet* set = b3Array_Get( world->solverSets, body->setIndex );
 	b3BodySim* bodySim = b3Array_Get( set->bodySims, body->localIndex );
 	return bodySim->transform;
@@ -56,6 +59,9 @@ b3BodyId b3MakeBodyId( b3World* world, int bodyId )
 
 b3BodySim* b3GetBodySim( b3World* world, b3Body* body )
 {
+	bool synced = b3MaterializeBodySims( world );
+	B3_ASSERT( synced );
+	B3_UNUSED( synced );
 	b3SolverSet* set = b3Array_Get( world->solverSets, body->setIndex );
 	b3BodySim* bodySim = b3Array_Get( set->bodySims, body->localIndex );
 	return bodySim;
@@ -177,6 +183,11 @@ b3BodyId b3CreateBody( b3WorldId worldId, const b3BodyDef* def )
 
 	world->locked = true;
 	if ( b3MaterializeBodyStates( world ) == false )
+	{
+		world->locked = false;
+		return b3_nullBodyId;
+	}
+	if ( b3MaterializeBodySims( world ) == false )
 	{
 		world->locked = false;
 		return b3_nullBodyId;
@@ -361,6 +372,11 @@ void b3DestroyBody( b3BodyId bodyId )
 
 	world->locked = true;
 	if ( b3MaterializeBodyStates( world ) == false )
+	{
+		world->locked = false;
+		return;
+	}
+	if ( b3MaterializeBodySims( world ) == false )
 	{
 		world->locked = false;
 		return;
@@ -1824,8 +1840,13 @@ const char* b3Body_GetName( b3BodyId bodyId )
 void b3Body_SetUserData( b3BodyId bodyId, void* userData )
 {
 	b3World* world = b3GetWorld( bodyId.world0 );
+	if ( b3MaterializeBodySims( world ) == false )
+	{
+		return;
+	}
 	b3Body* body = b3GetBodyFullId( world, bodyId );
 	body->userData = userData;
+	b3BumpMetalBodyPropertyRevision( world );
 }
 
 void* b3Body_GetUserData( b3BodyId bodyId )

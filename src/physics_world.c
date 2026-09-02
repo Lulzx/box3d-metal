@@ -600,6 +600,8 @@ bool b3World_SetMetalFinalization( b3WorldId worldId, bool enabled )
 	{
 		if ( b3MaterializeBodyStates( world ) == false )
 			return false;
+		if ( b3MaterializeBodySims( world ) == false )
+			return false;
 		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
 			return false;
 	}
@@ -668,6 +670,26 @@ bool b3MaterializeBodyStates( b3World* world )
 	return true;
 }
 
+bool b3MaterializeBodySims( b3World* world )
+{
+	if ( world == NULL ) return false;
+	if ( b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 )
+	{
+		b3LockMutex( world->metalBodyStateSyncMutex );
+		if ( b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 )
+		{
+			if ( b3MetalSyncBodySims( world->metalContext, world ) == false )
+			{
+				b3UnlockMutex( world->metalBodyStateSyncMutex );
+				return false;
+			}
+			b3AtomicStoreInt( &world->metalBodySimCpuStale, 0 );
+		}
+		b3UnlockMutex( world->metalBodyStateSyncMutex );
+	}
+	return true;
+}
+
 void b3World_DisableMetal( b3WorldId worldId )
 {
 	b3World* world = b3GetUnlockedWorldFromId( worldId );
@@ -683,6 +705,11 @@ void b3World_DisableMetal( b3WorldId worldId )
 	if ( b3MaterializeBodyStates( world ) == false )
 	{
 		b3Log( "Box3D Metal disable kept the context because body-state readback failed\n" );
+		return;
+	}
+	if ( b3MaterializeBodySims( world ) == false )
+	{
+		b3Log( "Box3D Metal disable kept the context because body-sim readback failed\n" );
 		return;
 	}
 	if ( b3MetalSyncAllContactManifolds( world->metalContext, world ) == false )
@@ -766,6 +793,7 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.lastFinalizationReadbackBytes = world->metalLastFinalizationReadbackBytes;
 	profile.finalizationReadbackBypassCount = world->metalFinalizationReadbackBypassCount;
 	profile.finalizationShapeTraversalBypassCount = world->metalFinalizationShapeTraversalBypassCount;
+	profile.finalizationBodyTraversalBypassCount = world->metalFinalizationBodyTraversalBypassCount;
 	profile.bodyMoveEventDispatchCount = world->metalBodyMoveEventDispatchCount;
 	profile.bodyMoveEventCpuWriteBypassCount = world->metalBodyMoveEventCpuWriteBypassCount;
 	profile.bodyMoveEventSyncCount = world->metalBodyMoveEventSyncCount;
@@ -799,6 +827,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.bodyStateRevisionCheckCount = world->metalBodyStateRevisionCheckCount;
 	profile.bodyStateSyncCount = world->metalBodyStateSyncCount;
 	profile.lastBodyStateReadbackBytes = world->metalLastBodyStateReadbackBytes;
+	profile.bodySimSyncCount = world->metalBodySimSyncCount;
+	profile.lastBodySimSyncCount = world->metalLastBodySimSyncCount;
 	profile.bodyPropertyUploadCount = world->metalBodyPropertyUploadCount;
 	profile.bodyPropertyReuseCount = world->metalBodyPropertyReuseCount;
 	profile.lastBodyPropertyUploadBytes = world->metalLastBodyPropertyUploadBytes;
@@ -1577,6 +1607,18 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	}
 
 #if defined( BOX3D_METAL )
+	if ( b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 &&
+		 ( world->metalContext == NULL || world->metalFinalizationEnabled == false || world->enableSleep ||
+		   world->enableContinuous || b3GetIdCount( &world->contactIdPool ) != 0 || world->sensors.count != 0 ||
+		   b3GetIdCount( &world->jointIdPool ) != 0 ||
+		   world->solverSets.data[b3_awakeSet].bodySims.count < world->metalMinimumBodyCount ) )
+	{
+		if ( b3MaterializeBodySims( world ) == false )
+		{
+			b3Log( "Box3D Metal step skipped because body-sim readback failed\n" );
+			return;
+		}
+	}
 	// A revision-stable, collision-free non-CCD world may deliberately leave
 	// current shape AABBs resident. Any route expansion or CPU mutation fails
 	// closed before the next step can consume those mirrors.
@@ -1651,6 +1693,19 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 		b3UpdateBroadPhasePairs( world );
 		world->profile.pairs = b3GetMilliseconds( pairTicks );
 	}
+
+#if defined( BOX3D_METAL )
+	if ( b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 &&
+		 ( b3GetIdCount( &world->contactIdPool ) != 0 || world->sensors.count != 0 ) )
+	{
+		if ( b3MaterializeBodySims( world ) == false )
+		{
+			world->locked = false;
+			b3Log( "Box3D Metal collision skipped because body-sim readback failed\n" );
+			return;
+		}
+	}
+#endif
 
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
 
@@ -1736,6 +1791,13 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 		if ( b3MaterializeBodyStates( world ) == false )
 		{
 			b3Log( "Box3D Metal recording skipped because body-state readback failed\n" );
+			b3TracyCZoneEnd( world_step );
+			b3TracyCFrame;
+			return;
+		}
+		if ( b3MaterializeBodySims( world ) == false )
+		{
+			b3Log( "Box3D Metal recording skipped because body-sim readback failed\n" );
 			b3TracyCZoneEnd( world_step );
 			b3TracyCFrame;
 			return;

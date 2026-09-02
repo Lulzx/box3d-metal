@@ -1968,6 +1968,7 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 	world->metalLastFinalizationReadbackBytes = 0;
 	world->metalLastBodyStateUploadBytes = 0;
 	world->metalLastBodyStateReadbackBytes = 0;
+	world->metalLastBodySimSyncCount = 0;
 #endif
 
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
@@ -2009,6 +2010,27 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 			stepContext->states = awakeSet->bodyStates.data;
 		}
 	}
+	if ( b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 )
+	{
+		bool hasSimConstraints = false;
+		for ( int i = 0; i < B3_GRAPH_COLOR_COUNT; ++i )
+		{
+			const b3GraphColor* color = world->constraintGraph.colors + i;
+			if ( color->convexContacts.count > 0 || color->contacts.count > 0 || color->jointSims.count > 0 )
+			{
+				hasSimConstraints = true;
+				break;
+			}
+		}
+		bool preserveResidentSims = world->metalContext != NULL && world->metalFinalizationEnabled &&
+			world->enableSleep == false && world->enableContinuous == false &&
+			awakeBodyCount >= world->metalMinimumBodyCount && hasSimConstraints == false;
+		if ( preserveResidentSims == false && b3MaterializeBodySims( world ) == false )
+		{
+			b3Log( "Box3D Metal solve skipped because body-sim readback failed\n" );
+			return;
+		}
+	}
 #endif
 
 	// Solve constraints using graph coloring
@@ -2035,6 +2057,7 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		stepContext->metalEnlargedShapeResultCount = 0;
 		stepContext->metalStatesResident = false;
 		stepContext->metalShapeBoundsResident = false;
+		stepContext->metalShapeFinalizationComplete = false;
 		stepContext->metalDeferShapeResultApply = false;
 
 		// count contacts, joints, and colors
@@ -2586,7 +2609,22 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		{
 			world->metalFinalizationShapeTraversalBypassCount += 1;
 		}
-		b3ParallelFor( world, &b3FinalizeBodiesTask, awakeBodyCount, 16, stepContext, "ccd" );
+		b3GraphColor* finalizationOverflow = world->constraintGraph.colors + B3_OVERFLOW_INDEX;
+		bool noConstraints = stepContext->activeColorCount == 0 && finalizationOverflow->convexContacts.count == 0 &&
+			finalizationOverflow->contacts.count == 0 && finalizationOverflow->jointSims.count == 0;
+		bool bypassBodyFinalization = noConstraints && world->enableSleep == false && world->enableContinuous == false &&
+			stepContext->metalFinalizationDeviceOnly && stepContext->metalBodyStatesFinalizedOnDevice &&
+			stepContext->metalBodyMoveEventsOnDevice && stepContext->metalShapeFinalizationComplete;
+		if ( bypassBodyFinalization )
+		{
+			b3AtomicStoreInt( &world->metalBodySimCpuStale, 1 );
+			world->metalFinalizationBodyTraversalBypassCount += 1;
+		}
+		else
+		{
+			b3ParallelFor( world, &b3FinalizeBodiesTask, awakeBodyCount, 16, stepContext, "ccd" );
+			b3AtomicStoreInt( &world->metalBodySimCpuStale, 0 );
+		}
 		if ( stepContext->metalBodyStatesFinalizedOnDevice == false )
 		{
 			// CPU integration/finalization changed the awake state array. Any older

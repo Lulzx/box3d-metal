@@ -312,6 +312,7 @@ typedef struct b3World
 	uint64_t metalLastFinalizationReadbackBytes;
 	uint64_t metalFinalizationReadbackBypassCount;
 	uint64_t metalFinalizationShapeTraversalBypassCount;
+	uint64_t metalFinalizationBodyTraversalBypassCount;
 	uint64_t metalBodyMoveEventDispatchCount;
 	uint64_t metalBodyMoveEventCpuWriteBypassCount;
 	uint64_t metalBodyMoveEventSyncCount;
@@ -357,6 +358,9 @@ typedef struct b3World
 	uint64_t metalLastBodyStateReadbackBytes;
 	b3AtomicInt metalBodyStateCpuStale;
 	b3Mutex* metalBodyStateSyncMutex;
+	b3AtomicInt metalBodySimCpuStale;
+	uint64_t metalBodySimSyncCount;
+	uint64_t metalLastBodySimSyncCount;
 	uint64_t metalBodyPropertyRevision;
 	uint64_t metalBodyPropertyUploadCount;
 	uint64_t metalBodyPropertyReuseCount;
@@ -409,6 +413,18 @@ bool b3MaterializeBodyMoveEvents( b3World* world );
 bool b3MaterializeBodyStates( b3World* world );
 #else
 static inline bool b3MaterializeBodyStates( b3World* world )
+{
+	B3_UNUSED( world );
+	return true;
+}
+#endif
+
+// Ensure the CPU awake body-simulation array reflects the authoritative
+// device transform/property registries before a CPU consumer reads it.
+#if defined( BOX3D_METAL )
+bool b3MaterializeBodySims( b3World* world );
+#else
+static inline bool b3MaterializeBodySims( b3World* world )
 {
 	B3_UNUSED( world );
 	return true;

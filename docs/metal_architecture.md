@@ -101,7 +101,9 @@ skips each pointer-linked CPU shape list whenever Metal produced a complete
 awake-shape result set. Compatibility routes apply the flat result after body
 bookkeeping; private routes leave the CPU AABB mirror stale until a query or
 fallback explicitly synchronizes it. `finalizationShapeTraversalBypassCount`
-reports those phases. The contiguous CPU body bookkeeping walk remains.
+reports those phases. On the unconstrained, sleep-disabled, non-CCD route, the
+entire contiguous CPU body bookkeeping walk is also omitted; constrained and
+compatibility routes retain it.
 
 The 72-byte shape-input records are also persistent across revision-stable
 steps. The CPU checks the exact awake-body id sequence while it already walks
@@ -146,9 +148,11 @@ arithmetic from the returned solver states while the private device result
 continues directly into shape AABB generation and tree refit.
 `lastFinalizationReadbackBytes` reports the retained transfer and
 `finalizationReadbackBypassCount` reports successful zero-readback steps. This
-removes the 100-byte-per-body finalization stream on the bounded route, but not
-the CPU body traversal, solver-state readback, force reset, or public transform
-mirror.
+removes the 100-byte-per-body finalization stream on the bounded route. The
+unconstrained resident route also retains the finalization-property centers,
+cleared forces/torques, inverse inertia, transient flags, and absolute body
+transforms on-device, so it omits the remaining CPU body traversal as well.
+`finalizationBodyTraversalBypassCount` reports successful omissions.
 
 The same kernel now writes a 72-byte private move-event record in deterministic
 awake-sim order. It snapshots user data and body identity and carries both the
@@ -174,9 +178,10 @@ successful command marks the registry authoritative for the current world
 step, so the next collision pass can consume it without repacking CPU body
 sims. `narrowPhaseTransformDeviceRefreshCount` exposes the device updates.
 Explicit transforms, topology changes, unsupported routes, sleeping, and CCD
-fail closed through the existing revision/step checks. This is transform
-authority for device collision consumers, not yet lazy public body transforms:
-the CPU finalization walk still maintains the public body-sim mirror.
+fail closed through the existing revision/step checks. On the bounded
+unconstrained route this registry is also the authority for lazy public body
+transforms: the first CPU consumer reconstructs the awake `b3BodySim` mirror
+once, while unobserved steps perform no CPU body walk.
 
 The same bounded finalization kernel resets resident solver position/rotation
 deltas and transient state flags after publishing their absolute transform and
@@ -200,6 +205,16 @@ removing the unconditional solved-state copy from the steady step.
 `bodyStateSyncCount` and `lastBodyStateReadbackBytes` expose those lazy
 boundaries. Constrained Metal solves still copy solved states eagerly because
 their remaining CPU preparation stages consume the mirror.
+
+The awake `b3BodySim` array follows the same ownership rule on the bounded
+unconstrained route. Device finalization advances its resident center in VF64
+binary64 when enabled, publishes the absolute transform and sleep metric,
+updates inverse inertia, and clears force, torque, and transient state. Public
+transform/property consumers and route changes reconstruct the full CPU mirror
+under the state synchronization lock. `bodySimSyncCount` and
+`lastBodySimSyncCount` expose these boundaries; a zero value together with a
+`finalizationBodyTraversalBypassCount` increment proves an unobserved step did
+not execute Erin's per-body CPU finalization loop.
 
 The adjacent 128-byte integration-property stream is revision-resident on the
 same bounded route. Device finalization writes the absolute quaternion and
@@ -535,3 +550,6 @@ Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in
 [`benchmarks/m4-pro-shape-input-registry-2026-09-02.md`](benchmarks/m4-pro-shape-input-registry-2026-09-02.md).
+The complete unconstrained CPU body-finalization traversal bypass and its
+loaded-host whole-world signal are recorded in
+[`benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md`](benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md).

@@ -48,6 +48,14 @@ move events into private Metal storage. Public event queries lazily materialize
 only that 72-byte-per-body stream; unqueried steps perform no move-event
 readback. VF64 builds preserve the exact device-authored binary64 translation
 through this public boundary.
+For unconstrained worlds on that same bounded route, the complete per-body CPU
+finalization walk is omitted. Absolute transforms, centers, inverse inertia,
+cleared forces/torques, transient flags, move events, shape bounds, and tree
+refit remain authoritative in Metal storage across steps. Public transform or
+body-property access, topology mutation, recording, unsupported constraints,
+sleep/CCD enablement, and Metal shutdown lazily synchronize the CPU body-sim
+mirror once. Profile counters distinguish traversal bypasses from those
+explicit synchronization boundaries.
 The shape-specialized narrow-phase route batches sphere-sphere, capsule-sphere,
 capsule-capsule, and bounded compact hull-sphere manifold geometry in one Metal
 dispatch. Supported spheres, capsules, and compact hulls live in a revisioned

@@ -110,6 +110,9 @@ typedef struct b3MetalProfile
 	/// Finalization phases that skipped the per-body CPU shape-list traversal
 	/// because Metal shape results covered every awake shape.
 	uint64_t finalizationShapeTraversalBypassCount;
+	/// Complete per-body CPU finalization walks omitted because Metal owns every
+	/// required output on the bounded unconstrained route.
+	uint64_t finalizationBodyTraversalBypassCount;
 	/// Finalization phases that authored a deterministic private move-event
 	/// stream in awake-sim order.
 	uint64_t bodyMoveEventDispatchCount;
@@ -159,6 +162,10 @@ typedef struct b3MetalProfile
 	/// Solved-state bytes copied into the CPU mirror by the latest step or lazy
 	/// synchronization boundary. Zero while resident state remains unobserved.
 	uint64_t lastBodyStateReadbackBytes;
+	/// Lazy full awake-body simulation mirror synchronizations and the number of
+	/// body records updated by the latest boundary.
+	uint64_t bodySimSyncCount;
+	uint64_t lastBodySimSyncCount;
 	/// Cross-step 128-byte awake body-property uploads and revision-authorized
 	/// device reuses. Finalization writes the next-step quaternion, inverse
 	/// world inertia, and cleared force/torque directly into this stream.
