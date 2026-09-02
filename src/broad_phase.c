@@ -12,6 +12,9 @@
 #include "physics_world.h"
 #include "platform.h"
 #include "shape.h"
+#if defined( BOX3D_METAL )
+#include "metal_backend.h"
+#endif
 
 #include <string.h>
 
@@ -384,6 +387,55 @@ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void
 	b3TracyCZoneEnd( pair_task );
 }
 
+#if defined( BOX3D_METAL )
+typedef struct b3MetalFindPairsContext
+{
+	b3World* world;
+	const b3MetalPairQueryRecord* records;
+	const b3MetalPairCandidate* candidates;
+} b3MetalFindPairsContext;
+
+// Implements b3ParallelForCallback. Metal performs only the dynamic-tree
+// traversal; this task deliberately reuses the complete CPU callback for
+// de-duplication, filters, compounds, joints, sensors, and custom user code.
+static void b3FindPairsMetalTask( int startIndex, int endIndex, int workerIndex, void* context )
+{
+	b3TracyCZoneNC( pair_metal_consume, "Pair Metal Consume", b3_colorAquamarine, true );
+	B3_UNUSED( workerIndex );
+	b3MetalFindPairsContext* metalContext = context;
+	b3World* world = metalContext->world;
+	b3BroadPhase* bp = &world->broadPhase;
+
+	b3QueryPairContext queryContext = { 0 };
+	queryContext.world = world;
+	queryContext.compoundShapeIndex = B3_NULL_INDEX;
+	queryContext.compoundProxyId = B3_NULL_INDEX;
+	for ( int i = startIndex; i < endIndex; ++i )
+	{
+		queryContext.moveResult = bp->moveResults + i;
+		queryContext.moveResult->pairList = NULL;
+
+		int queryProxyKey = bp->moveArray.data[i];
+		b3BodyType queryType = B3_PROXY_TYPE( queryProxyKey );
+		int queryProxyId = B3_PROXY_ID( queryProxyKey );
+		const b3DynamicTree* queryTree = bp->trees + queryType;
+		queryContext.queryProxyKey = queryProxyKey;
+		queryContext.queryShapeIndex = (int)b3DynamicTree_GetUserData( queryTree, queryProxyId );
+		queryContext.aabb = b3DynamicTree_GetAABB( queryTree, queryProxyId );
+		B3_VALIDATE( world->shapes.data[queryContext.queryShapeIndex].type != b3_compoundShape );
+
+		const b3MetalPairQueryRecord* record = metalContext->records + i;
+		for ( uint32_t candidateIndex = 0; candidateIndex < record->count; ++candidateIndex )
+		{
+			const b3MetalPairCandidate* candidate = metalContext->candidates + record->offset + candidateIndex;
+			queryContext.queryTreeType = (b3BodyType)candidate->treeType;
+			b3PairQueryCallback( candidate->proxyId, (uint64_t)(uint32_t)candidate->shapeIndex, &queryContext );
+		}
+	}
+	b3TracyCZoneEnd( pair_metal_consume );
+}
+#endif
+
 static void b3UpdateTreesTask( void* context )
 {
 	b3TracyCZoneNC( tree_task, "Rebuild Trees", b3_colorFireBrick, true );
@@ -423,7 +475,34 @@ void b3UpdateBroadPhasePairs( b3World* world )
 #endif
 
 	int minRange = 64;
-	b3ParallelFor( world, b3FindPairsTask, moveCount, minRange, world, "pairs" );
+	bool usedMetalPairs = false;
+#if defined( BOX3D_METAL )
+	if ( world->metalBroadPhaseEnabled && moveCount >= world->metalMinimumBodyCount )
+	{
+		const b3MetalPairQueryRecord* records = NULL;
+		const b3MetalPairCandidate* candidates = NULL;
+		int candidateCount = 0;
+		b3MetalDispatchStats stats = { 0 };
+		if ( b3MetalGeneratePairCandidates( world->metalContext, bp, bp->moveArray.data, moveCount, &records, &candidates,
+				&candidateCount, &stats ) )
+		{
+			B3_UNUSED( candidateCount );
+			b3MetalFindPairsContext metalContext = { world, records, candidates };
+			b3ParallelFor( world, b3FindPairsMetalTask, moveCount, minRange, &metalContext, "pairs metal" );
+			world->metalPairDispatchCount += 1;
+			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
+			usedMetalPairs = true;
+		}
+		else
+		{
+			world->metalPairFallbackCount += 1;
+		}
+	}
+#endif
+	if ( usedMetalPairs == false )
+	{
+		b3ParallelFor( world, b3FindPairsTask, moveCount, minRange, world, "pairs" );
+	}
 
 	b3TracyCZoneNC( create_contacts, "Create Contacts", b3_colorCoral, true );
 

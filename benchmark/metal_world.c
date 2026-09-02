@@ -54,10 +54,12 @@ int main( void )
 {
 	const int workerCount = 8;
 	bool enableFinalization = getenv( "BOX3D_METAL_FINALIZATION" ) != NULL;
+	bool enableBroadPhase = getenv( "BOX3D_METAL_BROAD_PHASE" ) != NULL;
 	bool createShapes = getenv( "BOX3D_METAL_SHAPES" ) != NULL;
-	printf( "# operation=whole_world_unconstrained substeps=4 workers=%d timing=wall_clock_step metal_finalization=%s shapes=%s\n",
-		workerCount, enableFinalization ? "on" : "off", createShapes ? "sphere_per_body" : "none" );
-	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,speedup\n" );
+	printf( "# operation=whole_world_unconstrained substeps=4 workers=%d timing=wall_clock_step metal_finalization=%s "
+		"metal_broad_phase=%s shapes=%s\n", workerCount, enableFinalization ? "on" : "off",
+		enableBroadPhase ? "on" : "off", createShapes ? "sphere_per_body" : "none" );
+	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,pair_kernel_ms,pair_dispatches,pair_fallbacks,speedup\n" );
 	const int counts[] = { 512, 2048, 8192, 32768, 131072, 524288 };
 	for ( int testIndex = 0; testIndex < (int)( sizeof( counts ) / sizeof( counts[0] ) ); ++testIndex )
 	{
@@ -79,10 +81,16 @@ int main( void )
 			fprintf( stderr, "Metal finalization enable failed\n" );
 			return 1;
 		}
+		if ( enableBroadPhase && b3World_SetMetalBroadPhase( gpuWorld, true ) == false )
+		{
+			fprintf( stderr, "Metal broad phase enable failed\n" );
+			return 1;
+		}
 		double gpuMs = TimeWorld( gpuWorld, repeats );
 		b3MetalProfile metal = b3World_GetMetalProfile( gpuWorld );
-		printf( "%d,%d,%.6f,%.6f,%.6f,%.3f\n", bodyCount, repeats, cpuMs, gpuMs,
-			metal.lastUnconstrainedGpuMilliseconds, cpuMs / gpuMs );
+		printf( "%d,%d,%.6f,%.6f,%.6f,%.6f,%llu,%llu,%.3f\n", bodyCount, repeats, cpuMs, gpuMs,
+			metal.lastUnconstrainedGpuMilliseconds, metal.lastPairGpuMilliseconds,
+			(unsigned long long)metal.pairDispatchCount, (unsigned long long)metal.pairFallbackCount, cpuMs / gpuMs );
 		b3DestroyWorld( gpuWorld );
 	}
 	return 0;

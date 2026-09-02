@@ -14,6 +14,23 @@ typedef struct b3MetalContext b3MetalContext;
 typedef struct b3ContactConstraintWide b3ContactConstraintWide;
 typedef struct b3ContactConstraint b3ContactConstraint;
 typedef struct b3ManifoldConstraint b3ManifoldConstraint;
+typedef struct b3BroadPhase b3BroadPhase;
+
+typedef struct b3MetalPairQueryRecord
+{
+	uint32_t count;
+	uint32_t offset;
+	uint32_t flags;
+	uint32_t padding;
+} b3MetalPairQueryRecord;
+
+typedef struct b3MetalPairCandidate
+{
+	int proxyId;
+	int treeType;
+	int shapeIndex;
+	int padding;
+} b3MetalPairCandidate;
 
 typedef struct b3MetalDispatchStats
 {
@@ -70,3 +87,10 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, const b3BodySim* sims,
 	int bodyCount, float invTimeStep, bool statesAreResident, const b3MetalFinalizeResult** results,
 	b3MetalDispatchStats* stats );
+
+// Traverse the existing Box3D dynamic trees on Metal. Per-move records and
+// candidates preserve move-array and tree traversal order. Returns false before
+// exposing results if the bounded Metal traversal cannot represent the step.
+bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase* broadPhase,
+	const int* moveArray, int moveCount, const b3MetalPairQueryRecord** records,
+	const b3MetalPairCandidate** candidates, int* candidateCount, b3MetalDispatchStats* stats );

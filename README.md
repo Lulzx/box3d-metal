@@ -20,10 +20,11 @@ impulses, friction, tangent velocity, twist friction, rolling resistance, and
 restitution. Contact and joint graph overflow is solved in deterministic scalar
 order inside dedicated Metal kernels. Distance joints (including springs,
 limits, and motors) and parallel joints share the GPU-resident command graph;
-other joint types fall back safely. An experimental, separately opt-in kernel
-also ports final rotation, origin offset, sleep-motion metrics, and world-inertia
-finalization. It remains off by default because current end-to-end measurements
-do not show a stable speedup.
+other joint types fall back safely. Experimental, separately opt-in stages port
+body/shape finalization and traverse Erin's existing broad-phase trees on Metal
+while retaining deterministic CPU filtering and contact creation. They remain
+off by default; shape readback is still a regression, while GPU tree traversal
+crosses over only in large measured worlds.
 See [the architecture and compatibility contract](docs/metal_architecture.md)
 for the exact supported surface and current CPU-only stages.
 
@@ -54,6 +55,7 @@ if (!b3World_EnableMetal(world, 32768)) {
 
 /* Research path: correct and fused, but not yet a measured whole-world win. */
 b3World_SetMetalFinalization(world, true);
+b3World_SetMetalBroadPhase(world, true);
 ```
 
 Inspect `b3World_GetMetalProfile(world)` to verify device selection, dispatches,

@@ -60,7 +60,7 @@ use their exact transformed primitives, while hull and aggregate geometry use
 their upstream local bounds. The kernel applies speculative and fat-AABB
 margins and emits deterministic flat results in body/shape-list order. CPU code
 still owns double-precision outward rounding, CCD, events, sleeping/island
-mutation, dynamic-tree mutation, and pair generation. It is separately opt-in
+mutation, and dynamic-tree mutation. It is separately opt-in
 because reading one 64-byte result per awake shape has not demonstrated a
 whole-world win; the next residency boundary is GPU pair generation consuming
 these bounds before any compact CPU handoff.
@@ -71,6 +71,7 @@ Enable it with:
 b3WorldId world = b3CreateWorld(&worldDef);
 bool enabled = b3World_EnableMetal(world, minimumBodyCount);
 b3World_SetMetalFinalization(world, true); // experimental
+b3World_SetMetalBroadPhase(world, true);   // experimental
 ```
 
 Use `b3World_GetMetalProfile` to verify the selected device, dispatch count,
@@ -78,9 +79,19 @@ fallback count, and last GPU execution time. `b3World_DisableMetal` releases the
 resources. `minimumBodyCount` is deliberately caller-controlled until benchmark
 coverage establishes stable defaults across Apple GPU families.
 
-Broad-phase tree mutation and queries, narrow phase, contact and joint
-preparation, unsupported joint solution, continuous collision, events, and
-sleeping/island mutation still run on the CPU. Unsupported
+An independently opt-in pair stage copies Erin's existing static, kinematic,
+and dynamic tree topology into persistent shared Metal buffers. A count pass
+traverses leaves in upstream stack order, the CPU assigns stable per-move
+offsets, and a second pass writes disjoint candidate ranges. CPU consumption
+then reuses the complete upstream callback for moved-proxy de-duplication,
+compound children, sensors, filters, joint collision overrides, and custom user
+filters. Tree heights at or above 63, shader stack overflow, changing counts,
+allocation failure, or more than 64 raw candidates per moved proxy on average
+fall back to the full CPU traversal before any partial result is consumed.
+
+Broad-phase tree mutation, narrow phase, contact and joint preparation,
+unsupported joint solution, continuous collision, events, and sleeping/island
+mutation still run on the CPU. Unsupported
 constrained worlds retain the position-only path, which may lose to the CPU once
 transfer and command-buffer latency are included. These are correct production
 paths, not yet the final performance architecture.
@@ -93,7 +104,8 @@ paths, not yet the final performance architecture.
 | Distance joints, including spring, limit, and motor modes | GPU-resident across all substeps |
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
-| Broad/narrow phase and manifolds | CPU |
+| Broad phase | Experimental opt-in Metal tree traversal; CPU tree mutation, candidate filtering, and contact creation |
+| Narrow phase and manifolds | CPU |
 | Contact preparation and impulse storage | CPU |
 | Body and awake-shape finalization | Experimental opt-in Metal kernels; CPU applies flat results and retains CCD/tree topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
@@ -153,3 +165,5 @@ performance evidence, are in
 [`benchmarks/m4-pro-finalization-2026-09-02.md`](benchmarks/m4-pro-finalization-2026-09-02.md).
 The follow-on shape-AABB implementation and result-stream measurements are in
 [`benchmarks/m4-pro-shape-finalization-2026-09-02.md`](benchmarks/m4-pro-shape-finalization-2026-09-02.md).
+Experimental dynamic-tree traversal results are in
+[`benchmarks/m4-pro-pair-generation-2026-09-02.md`](benchmarks/m4-pro-pair-generation-2026-09-02.md).

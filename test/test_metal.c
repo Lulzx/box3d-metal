@@ -6,8 +6,10 @@
 #include "box3d/box3d.h"
 
 #include "body.h"
+#include "broad_phase.h"
 #include "math_internal.h"
 #include "metal_backend.h"
+#include "physics_world.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -21,6 +23,26 @@ static float b3MetalRandomFloat( float low, float high )
 	b3MetalRandomState = 1664525u * b3MetalRandomState + 1013904223u;
 	float unit = (float)( b3MetalRandomState >> 8 ) * ( 1.0f / 16777216.0f );
 	return low + ( high - low ) * unit;
+}
+
+typedef struct b3PairCandidateCapture
+{
+	b3MetalPairCandidate* candidates;
+	int capacity;
+	int count;
+	int treeType;
+} b3PairCandidateCapture;
+
+static bool CapturePairCandidate( int proxyId, uint64_t userData, void* context )
+{
+	b3PairCandidateCapture* capture = context;
+	if ( capture->count >= capture->capacity ) return false;
+	capture->candidates[capture->count++] = (b3MetalPairCandidate){
+		.proxyId = proxyId,
+		.treeType = capture->treeType,
+		.shapeIndex = (int)userData,
+	};
+	return true;
 }
 
 static void b3IntegratePositionsReference( b3BodyState* states, int count, float h, float maxLinearSpeed,
@@ -338,6 +360,119 @@ static int MetalFinalizationTest( void )
 	return 0;
 }
 
+static int MetalPairTraversalTest( void )
+{
+	const int bodyCount = 96;
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.46f };
+	for ( int i = 0; i < bodyCount; ++i )
+	{
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = i < 24 ? b3_staticBody : i < 48 ? b3_kinematicBody : b3_dynamicBody;
+		bodyDef.position = (b3Pos){ 0.62f * (float)( i % 8 ), 0.62f * (float)( ( i / 8 ) % 4 ),
+			0.62f * (float)( i / 32 ) };
+		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+		b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+	}
+
+	b3World* world = b3GetWorldFromId( worldId );
+	b3BroadPhase* broadPhase = &world->broadPhase;
+	int moveCount = broadPhase->moveArray.count;
+	ENSURE( moveCount == bodyCount );
+	const b3MetalPairQueryRecord* gpuRecords = NULL;
+	const b3MetalPairCandidate* gpuCandidates = NULL;
+	int gpuCandidateCount = 0;
+	b3MetalDispatchStats stats = { 0 };
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
+		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
+
+	int cpuCapacity = bodyCount * bodyCount;
+	b3MetalPairCandidate* cpuCandidates = malloc( (size_t)cpuCapacity * sizeof( b3MetalPairCandidate ) );
+	ENSURE( cpuCandidates != NULL );
+	b3PairCandidateCapture capture = { .candidates = cpuCandidates, .capacity = cpuCapacity };
+	int totalCpuCount = 0;
+	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
+	{
+		int proxyKey = broadPhase->moveArray.data[moveIndex];
+		b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
+		int proxyId = B3_PROXY_ID( proxyKey );
+		b3AABB fatAABB = b3DynamicTree_GetAABB( broadPhase->trees + proxyType, proxyId );
+		capture.count = 0;
+		if ( proxyType == b3_dynamicBody )
+		{
+			capture.treeType = b3_kinematicBody;
+			b3DynamicTree_Query( broadPhase->trees + b3_kinematicBody, fatAABB, B3_DEFAULT_MASK_BITS, false,
+				CapturePairCandidate, &capture );
+			capture.treeType = b3_staticBody;
+			b3DynamicTree_Query( broadPhase->trees + b3_staticBody, fatAABB, B3_DEFAULT_MASK_BITS, false,
+				CapturePairCandidate, &capture );
+		}
+		capture.treeType = b3_dynamicBody;
+		b3DynamicTree_Query( broadPhase->trees + b3_dynamicBody, fatAABB, B3_DEFAULT_MASK_BITS, false,
+			CapturePairCandidate, &capture );
+
+		ENSURE( gpuRecords[moveIndex].flags == 0 );
+		ENSURE( gpuRecords[moveIndex].count == (uint32_t)capture.count );
+		for ( int candidateIndex = 0; candidateIndex < capture.count; ++candidateIndex )
+		{
+			const b3MetalPairCandidate* cpu = cpuCandidates + candidateIndex;
+			const b3MetalPairCandidate* gpu = gpuCandidates + gpuRecords[moveIndex].offset + candidateIndex;
+			ENSURE( cpu->proxyId == gpu->proxyId );
+			ENSURE( cpu->treeType == gpu->treeType );
+			ENSURE( cpu->shapeIndex == gpu->shapeIndex );
+		}
+		totalCpuCount += capture.count;
+	}
+	ENSURE( totalCpuCount == gpuCandidateCount );
+	printf( "    pair traversal moves=%d candidates=%d gpu=%.3f ms exactOrder=yes\n", moveCount,
+		gpuCandidateCount, stats.gpuMilliseconds );
+
+	free( cpuCandidates );
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
+static int MetalPairTraversalFallbackTest( void )
+{
+	const int bodyCount = 80;
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	ENSURE( b3World_SetMetalBroadPhase( worldId, true ) );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.filter.maskBits = 0;
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 1.0f };
+	for ( int i = 0; i < bodyCount; ++i )
+	{
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_dynamicBody;
+		bodyDef.enableSleep = false;
+		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+		b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+	}
+
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
+	printf( "    dense pair traversal dispatches=%llu fallbacks=%llu\n",
+		(unsigned long long)profile.pairDispatchCount, (unsigned long long)profile.pairFallbackCount );
+	ENSURE( profile.pairDispatchCount == 0 );
+	ENSURE( profile.pairFallbackCount == 1 );
+	ENSURE( b3World_SetMetalFinalization( worldId, true ) );
+	b3World_DisableMetal( worldId );
+	profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.enabled == false );
+	ENSURE( profile.finalizationEnabled == false );
+	ENSURE( profile.broadPhaseEnabled == false );
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
 static int MetalWorldIntegrationTest( void )
 {
 	const int count = 2048;
@@ -585,6 +720,7 @@ static int MetalConvexFrictionContactTest( void )
 	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
 	ENSURE( b3World_SetMetalFinalization( gpuWorld, true ) );
+	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, true ) );
 
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
 	shapeDef.baseMaterial.friction = 0.65f;
@@ -651,6 +787,8 @@ static int MetalConvexFrictionContactTest( void )
 		(unsigned long long)profile.contactDispatchCount, profile.lastContactGpuMilliseconds,
 		maxTransformError, maxVelocityError );
 	ENSURE( profile.contactDispatchCount == 40 );
+	ENSURE( profile.pairDispatchCount >= 1 );
+	ENSURE( profile.pairFallbackCount == 0 );
 	ENSURE( profile.finalizationDispatchCount == 10 );
 #if defined( BOX3D_DOUBLE_PRECISION )
 	ENSURE( profile.shapeDispatchCount == 0 );
@@ -1345,6 +1483,8 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalPositionIntegrationTest );
 	RUN_SUBTEST( MetalFusedIntegrationTest );
 	RUN_SUBTEST( MetalFinalizationTest );
+	RUN_SUBTEST( MetalPairTraversalTest );
+	RUN_SUBTEST( MetalPairTraversalFallbackTest );
 	RUN_SUBTEST( MetalWorldIntegrationTest );
 	RUN_SUBTEST( MetalDistanceJointContactTest );
 	RUN_SUBTEST( MetalUnsupportedJointFallbackTest );

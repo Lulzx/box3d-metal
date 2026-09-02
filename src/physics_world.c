@@ -418,6 +418,7 @@ void b3DestroyWorld( b3WorldId worldId )
 	b3MetalDestroyContext( world->metalContext );
 	world->metalContext = NULL;
 	world->metalFinalizationEnabled = false;
+	world->metalBroadPhaseEnabled = false;
 #endif
 
 	// Detach any recording before teardown. The user owns and frees the recording buffer.
@@ -582,6 +583,18 @@ bool b3World_SetMetalFinalization( b3WorldId worldId, bool enabled )
 	return true;
 }
 
+bool b3World_SetMetalBroadPhase( b3WorldId worldId, bool enabled )
+{
+	b3World* world = b3GetWorldFromId( worldId );
+	if ( world == NULL || world->locked || ( enabled && world->metalContext == NULL ) )
+	{
+		return false;
+	}
+
+	world->metalBroadPhaseEnabled = enabled;
+	return true;
+}
+
 void b3World_DisableMetal( b3WorldId worldId )
 {
 	b3World* world = b3GetUnlockedWorldFromId( worldId );
@@ -592,6 +605,8 @@ void b3World_DisableMetal( b3WorldId worldId )
 
 	b3MetalDestroyContext( world->metalContext );
 	world->metalContext = NULL;
+	world->metalFinalizationEnabled = false;
+	world->metalBroadPhaseEnabled = false;
 }
 
 b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
@@ -605,6 +620,7 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 
 	profile.enabled = world->metalContext != NULL;
 	profile.finalizationEnabled = world->metalFinalizationEnabled;
+	profile.broadPhaseEnabled = world->metalBroadPhaseEnabled;
 	profile.minimumBodyCount = world->metalMinimumBodyCount;
 	profile.positionDispatchCount = world->metalPositionDispatchCount;
 	profile.positionFallbackCount = world->metalPositionFallbackCount;
@@ -618,11 +634,14 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.finalizationFallbackCount = world->metalFinalizationFallbackCount;
 	profile.shapeDispatchCount = world->metalShapeDispatchCount;
 	profile.shapeFallbackCount = world->metalShapeFallbackCount;
+	profile.pairDispatchCount = world->metalPairDispatchCount;
+	profile.pairFallbackCount = world->metalPairFallbackCount;
 	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
 	profile.lastUnconstrainedGpuMilliseconds = world->metalLastUnconstrainedGpuMilliseconds;
 	profile.lastContactGpuMilliseconds = world->metalLastContactGpuMilliseconds;
 	profile.lastJointGpuMilliseconds = world->metalLastJointGpuMilliseconds;
 	profile.lastFinalizationGpuMilliseconds = world->metalLastFinalizationGpuMilliseconds;
+	profile.lastPairGpuMilliseconds = world->metalLastPairGpuMilliseconds;
 	if ( world->metalContext != NULL )
 	{
 		b3MetalGetDeviceName( world->metalContext, profile.deviceName, sizeof( profile.deviceName ) );

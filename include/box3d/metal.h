@@ -18,6 +18,7 @@ typedef struct b3MetalProfile
 {
 	bool enabled;
 	bool finalizationEnabled;
+	bool broadPhaseEnabled;
 	int minimumBodyCount;
 	uint64_t positionDispatchCount;
 	uint64_t positionFallbackCount;
@@ -31,11 +32,14 @@ typedef struct b3MetalProfile
 	uint64_t finalizationFallbackCount;
 	uint64_t shapeDispatchCount;
 	uint64_t shapeFallbackCount;
+	uint64_t pairDispatchCount;
+	uint64_t pairFallbackCount;
 	double lastPositionGpuMilliseconds;
 	double lastUnconstrainedGpuMilliseconds;
 	double lastContactGpuMilliseconds;
 	double lastJointGpuMilliseconds;
 	double lastFinalizationGpuMilliseconds;
+	double lastPairGpuMilliseconds;
 	char deviceName[128];
 } b3MetalProfile;
 
@@ -49,6 +53,12 @@ B3_API bool b3World_EnableMetal( b3WorldId worldId, int minimumBodyCount );
 /// separate because current whole-world benchmarks do not yet show a stable
 /// speedup; it is useful for correctness and pipeline-residency development.
 B3_API bool b3World_SetMetalFinalization( b3WorldId worldId, bool enabled );
+
+/// Opt into experimental GPU dynamic-tree traversal for broad-phase candidate
+/// generation. Candidate filtering and deterministic contact creation remain
+/// on the CPU. Any unsupported tree depth, capacity, or dispatch failure falls
+/// back to the complete CPU traversal for that step.
+B3_API bool b3World_SetMetalBroadPhase( b3WorldId worldId, bool enabled );
 
 /// Disable Metal compute and release the world's GPU resources.
 B3_API void b3World_DisableMetal( b3WorldId worldId );

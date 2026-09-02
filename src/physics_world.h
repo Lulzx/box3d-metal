@@ -269,6 +269,7 @@ typedef struct b3World
 #if defined( BOX3D_METAL )
 	struct b3MetalContext* metalContext;
 	bool metalFinalizationEnabled;
+	bool metalBroadPhaseEnabled;
 	uint64_t metalPositionDispatchCount;
 	uint64_t metalPositionFallbackCount;
 	uint64_t metalUnconstrainedDispatchCount;
@@ -281,11 +282,14 @@ typedef struct b3World
 	uint64_t metalFinalizationFallbackCount;
 	uint64_t metalShapeDispatchCount;
 	uint64_t metalShapeFallbackCount;
+	uint64_t metalPairDispatchCount;
+	uint64_t metalPairFallbackCount;
 	double metalLastPositionGpuMilliseconds;
 	double metalLastUnconstrainedGpuMilliseconds;
 	double metalLastContactGpuMilliseconds;
 	double metalLastJointGpuMilliseconds;
 	double metalLastFinalizationGpuMilliseconds;
+	double metalLastPairGpuMilliseconds;
 	int metalMinimumBodyCount;
 #endif
 
