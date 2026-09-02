@@ -64,8 +64,10 @@ capsule-capsule, bounded compact hull-sphere, and a fail-closed canonical
 box-box subset in one Metal dispatch. The box path ports Erin's face SAT,
 incident-face walk, feature-preserving clipping, deterministic four-point
 reduction, Gauss-valid edge SAT, and edge-edge contact. It currently admits
-equal canonical `b3MakeBoxHull` pairs with exactly one static body; unequal or
-dynamic-dynamic box pairs remain CPU-owned. Supported spheres, capsules, and compact hulls live in a revisioned
+canonical `b3MakeBoxHull` pairs, including dynamic-dynamic and unequal boxes,
+when each hull's largest extent is at most 16 times its smallest extent;
+high-aspect box pairs remain CPU-owned.
+Supported spheres, capsules, and compact hulls live in a revisioned
 Metal geometry registry: unchanged dispatches reuse primitive endpoints, radii,
 hull points, planes, triangles, and shape descriptors, while geometry and
 topology mutation rebuild fail-closed. Identical hull streams remain

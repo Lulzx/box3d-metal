@@ -711,6 +711,26 @@ static int MetalConvexManifoldTest( void )
 		b3BodyId boxB = b3CreateBody( worldId, &bodyDef );
 		b3CreateHullShape( boxB, &shapeDef, &box.base );
 	}
+	b3BoxHull unequalGround = b3MakeBoxHull( 4.0f, 1.0f, 1.0f );
+	b3BoxHull unequalBox = b3MakeBoxHull( 0.4f, 0.5f, 0.4f );
+	b3BodyDef unequalDef = b3DefaultBodyDef();
+	unequalDef.type = b3_staticBody;
+	unequalDef.position = (b3Pos){ base, 0.0, 4.0 * ( pairOffset + boxPairCount ) };
+	b3BodyId unequalA = b3CreateBody( worldId, &unequalDef );
+	b3CreateHullShape( unequalA, &shapeDef, &unequalGround.base );
+	unequalDef.type = b3_dynamicBody;
+	unequalDef.position.y = 1.47;
+	unequalDef.rotation = b3MakeQuatFromAxisAngle( b3Normalize( (b3Vec3){ 0.1f, 0.3f, 0.2f } ), 0.03f );
+	b3BodyId unequalB = b3CreateBody( worldId, &unequalDef );
+	b3CreateHullShape( unequalB, &shapeDef, &unequalBox.base );
+	unequalDef.position = (b3Pos){ base, 0.0, 4.0 * ( pairOffset + boxPairCount + 1 ) };
+	unequalDef.rotation = b3Quat_identity;
+	b3BodyId unequalDynamicA = b3CreateBody( worldId, &unequalDef );
+	b3CreateHullShape( unequalDynamicA, &shapeDef, &unequalGround.base );
+	unequalDef.position.y = 1.47;
+	unequalDef.rotation = b3MakeQuatFromAxisAngle( b3Normalize( (b3Vec3){ 0.1f, 0.3f, 0.2f } ), 0.03f );
+	b3BodyId unequalDynamicB = b3CreateBody( worldId, &unequalDef );
+	b3CreateHullShape( unequalDynamicB, &shapeDef, &unequalBox.base );
 
 	// Build contacts with the CPU oracle first, then exercise the batch API.
 	b3World_Step( worldId, 0.0f, 1 );
@@ -719,7 +739,7 @@ static int MetalConvexManifoldTest( void )
 	int contactCount = b3GetIdCount( &world->contactIdPool );
 	int expectedEligibleCount = pairCount + capsuleSphereCount + separatedCapsuleSphereCount + crossedCapsuleCount +
 								parallelCapsuleCount + hullSphereCount;
-	ENSURE( contactCount == expectedEligibleCount + boxPairCount + 1 );
+	ENSURE( contactCount == expectedEligibleCount + boxPairCount + 3 );
 	int* contactIndices = malloc( (size_t)contactCount * sizeof( int ) );
 	ENSURE( contactIndices != NULL );
 	int cursor = 0;
@@ -753,7 +773,7 @@ static int MetalConvexManifoldTest( void )
 	b3MetalDispatchStats stats = { 0 };
 	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &gpu, &eligibleCount, NULL,
 										   &stats ) );
-	ENSURE( eligibleCount == expectedEligibleCount + boxPairCount - 1 );
+	ENSURE( eligibleCount == expectedEligibleCount + boxPairCount + 1 );
 	ENSURE( stats.commandBufferCount == 1 );
 	float maxError = 0.0f;
 	int ineligibleCount = 0;
@@ -984,8 +1004,8 @@ static int MetalConvexManifoldTest( void )
 	ENSURE( profile.narrowPhaseGeometryReuseCount >= 2 );
 	ENSURE( profile.narrowPhaseTransformUploadCount == 1 );
 	ENSURE( profile.narrowPhaseTransformReuseCount >= 2 );
-	ENSURE( profile.lastNarrowPhaseHullShapeCount == 15 );
-	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 2 );
+	ENSURE( profile.lastNarrowPhaseHullShapeCount == 19 );
+	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 4 );
 	// The first world-owned dispatch has no prior resident authority, so its
 	// deterministic CPU-exception stream contains supported and unsupported
 	// contacts.
@@ -1010,8 +1030,8 @@ static int MetalConvexManifoldTest( void )
 	b3World_Step( worldId, 0.0f, 1 );
 	profile = b3World_GetMetalProfile( worldId );
 	ENSURE( profile.narrowPhaseGeometryUploadCount == 2 );
-	ENSURE( profile.lastNarrowPhaseHullShapeCount == 15 );
-	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 3 );
+	ENSURE( profile.lastNarrowPhaseHullShapeCount == 19 );
+	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 5 );
 	printf( "    resident hull mutation uploads=%llu shapes=%d unique=%d rebuild=yes\n",
 			(unsigned long long)profile.narrowPhaseGeometryUploadCount, profile.lastNarrowPhaseHullShapeCount,
 			profile.lastNarrowPhaseUniqueHullCount );
@@ -2685,6 +2705,11 @@ static int MetalDistanceJointContactTest( void )
 	ENSURE( profile.unconstrainedFallbackCount == 0 );
 	ENSURE( profile.contactDispatchCount == 4 );
 	ENSURE( profile.contactFallbackCount == 0 );
+	// Fourteen adjacent dynamic box pairs are Metal candidates while the
+	// high-aspect ground contacts are CPU exceptions. This locks the exception
+	// stream's contact-id mapping for mixed eligibility batches.
+	ENSURE( profile.narrowPhaseDispatchCount == 1 );
+	ENSURE( profile.lastNarrowPhaseResultCount == 30 );
 	ENSURE( profile.jointDispatchCount == 4 );
 	ENSURE( profile.jointFallbackCount == 0 );
 	ENSURE( profile.positionDispatchCount == 0 );
@@ -2880,6 +2905,9 @@ static int MetalConvexFrictionContactTest( void )
 			(unsigned long long)profile.lastBodyPropertyUploadBytes, profile.lastContactGpuMilliseconds,
 			maxTransformError, maxResidentTransformError, maxVelocityError );
 	ENSURE( profile.contactDispatchCount == 40 );
+	// Dynamic box-box stack contacts use Metal while the 80:1 ground remains a
+	// deliberate CPU exception until high-aspect projections are ported.
+	ENSURE( profile.narrowPhaseDispatchCount == 10 );
 	ENSURE( profile.pairDispatchCount >= 1 );
 	ENSURE( profile.pairFallbackCount == 0 );
 	ENSURE( profile.finalizationDispatchCount == 10 );

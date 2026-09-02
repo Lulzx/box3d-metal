@@ -1184,11 +1184,12 @@ static const char* b3_metalSource =
 	"  if(geometryA.type==3u&&geometryB.type==3u){\n"
 	"    if(geometryA.pointCount!=8u||geometryA.planeCount!=6u||geometryA.edgeCount!=24u||\n"
 	"       geometryB.pointCount!=8u||geometryB.planeCount!=6u||geometryB.edgeCount!=24u){out.eligible=0u;results[i]=out;return;}\n"
-	"    if(transformA.index>=0&&transformB.index>=0){out.eligible=0u;results[i]=out;return;}\n"
 	"    float3 lowerA=float3(3.40282347e+38f),upperA=float3(-3.40282347e+38f),lowerB=lowerA,upperB=upperA;\n"
 	"    for(uint pointIndex=0u;pointIndex<8u;++pointIndex){float3 pointA=hullPoints[geometryA.pointOffset+pointIndex].xyz;float3 pointB=hullPoints[geometryB.pointOffset+pointIndex].xyz;\n"
 	"      lowerA=min(lowerA,pointA);upperA=max(upperA,pointA);lowerB=min(lowerB,pointB);upperB=max(upperB,pointB);}\n"
-	"    if(any(fabs((upperA-lowerA)-(upperB-lowerB))>float3(p.linearSlop))){out.eligible=0u;results[i]=out;return;}\n"
+	"    float3 extentA=upperA-lowerA,extentB=upperB-lowerB;float minA=min(extentA.x,min(extentA.y,extentA.z)),maxA=max(extentA.x,max(extentA.y,extentA.z));\n"
+	"    float minB=min(extentB.x,min(extentB.y,extentB.z)),maxB=max(extentB.x,max(extentB.y,extentB.z));\n"
+	"    if(minA<=p.linearSlop||minB<=p.linearSlop||maxA>16.0f*minA||maxB>16.0f*minB){out.eligible=0u;results[i]=out;return;}\n"
 	"    float faceASeparation=-3.40282347e+38f,faceBSeparation=-3.40282347e+38f;uint faceA=0u,vertexB=0u,faceB=0u,vertexA=0u;\n"
 	"    for(uint face=0u;face<geometryA.planeCount;++face){float4 plane=hullPlanes[geometryA.planeOffset+face];\n"
 	"      float separation=3.40282347e+38f;uint support=0u;for(uint pointIndex=0u;pointIndex<geometryB.pointCount;++pointIndex){\n"
@@ -4184,12 +4185,19 @@ static bool b3MetalSupportsBoxPair( const b3World* world, const b3Shape* shapeA,
 	{
 		return false;
 	}
-	const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
-	const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
-	if ( ( bodyA->type == b3_staticBody ) == ( bodyB->type == b3_staticBody ) ) return false;
 	b3Vec3 extentA = b3Sub( shapeA->hull->aabb.upperBound, shapeA->hull->aabb.lowerBound );
 	b3Vec3 extentB = b3Sub( shapeB->hull->aabb.upperBound, shapeB->hull->aabb.lowerBound );
-	return b3LengthSquared( b3Sub( extentA, extentB ) ) <= B3_LINEAR_SLOP * B3_LINEAR_SLOP;
+	// High-aspect reference faces amplify float projection error through stacked
+	// four-point solves. Keep those on Erin's CPU SAT path until the Metal
+	// projection/cache path has an equivalent high-precision implementation.
+	float minExtentA = b3MinFloat( extentA.x, b3MinFloat( extentA.y, extentA.z ) );
+	float maxExtentA = b3MaxFloat( extentA.x, b3MaxFloat( extentA.y, extentA.z ) );
+	float minExtentB = b3MinFloat( extentB.x, b3MinFloat( extentB.y, extentB.z ) );
+	float maxExtentB = b3MaxFloat( extentB.x, b3MaxFloat( extentB.y, extentB.z ) );
+	const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
+	const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
+	return ( bodyA->type != b3_staticBody || bodyB->type != b3_staticBody ) && minExtentA > B3_LINEAR_SLOP &&
+		minExtentB > B3_LINEAR_SLOP && maxExtentA <= 16.0f * minExtentA && maxExtentB <= 16.0f * minExtentB;
 }
 
 static bool b3MetalSupportsHullSphere( const b3Shape* shapeA, const b3Shape* shapeB )
@@ -4778,6 +4786,9 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 				}
 				const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
 				const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
+				b3MetalConvexManifoldInput* input = inputs + i;
+				input->contactId = (uint32_t)contactIndex;
+				input->contactGeneration = contact->generation;
 				bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
 					( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
 					( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
@@ -4787,12 +4798,9 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 				{
 					hitEventContactIds[context->contactHitEventIdCount++] = contactIndex;
 				}
-				b3MetalConvexManifoldInput* input = inputs + i;
 				input->eligible = 1;
 				input->shapeIdA = (uint32_t)contact->shapeIdA;
 				input->shapeIdB = (uint32_t)contact->shapeIdB;
-				input->contactId = (uint32_t)contactIndex;
-				input->contactGeneration = contact->generation;
 				bool prepareEligible = world->contactRecycleDistance == 0.0f &&
 					( contact->flags & b3_simEnablePreSolveEvents ) == 0 && world->metalDefaultFrictionCallback &&
 					world->metalDefaultRestitutionCallback;
