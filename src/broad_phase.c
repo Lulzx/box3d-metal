@@ -427,9 +427,9 @@ static void b3FindPairsMetalTask( int startIndex, int endIndex, int workerIndex,
 		queryContext.moveResult = bp->moveResults + i;
 		queryContext.moveResult->pairList = NULL;
 
-		int queryProxyKey = bp->moveArray.data[i];
-		queryContext.queryProxyKey = queryProxyKey;
 		const b3MetalPairQueryRecord* record = metalContext->records + i;
+		int queryProxyKey = record->queryProxyKey;
+		queryContext.queryProxyKey = queryProxyKey;
 		queryContext.queryShapeIndex = record->queryShapeIndex;
 		queryContext.aabb = (b3AABB){
 			{ record->lowerX, record->lowerY, record->lowerZ },
@@ -485,6 +485,23 @@ void b3UpdateBroadPhasePairs( b3World* world )
 	b3BroadPhase* bp = &world->broadPhase;
 
 	int moveCount = bp->moveArray.count;
+#if defined( BOX3D_METAL )
+	int residentMoveCount = world->metalBroadPhaseEnabled ? b3MetalGetResidentPairMoveCount( world->metalContext ) : 0;
+	if ( moveCount > 0 && residentMoveCount > 0 )
+	{
+		// A CPU mutation arrived while a private finalization list was pending.
+		// Restore the CPU oracle and let its de-duplicated move array own this step.
+		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
+		{
+			world->metalPairFallbackCount += 1;
+			return;
+		}
+		moveCount = bp->moveArray.count;
+		residentMoveCount = 0;
+	}
+	bool useResidentMoves = moveCount == 0 && residentMoveCount > 0;
+	if ( useResidentMoves ) moveCount = residentMoveCount;
+#endif
 
 	if ( moveCount == 0 )
 	{
@@ -494,49 +511,71 @@ void b3UpdateBroadPhasePairs( b3World* world )
 	b3TracyCZoneNC( update_pairs, "Pairs", b3_colorMediumSlateBlue, true );
 
 	b3Stack* alloc = &world->stack;
-
-	// todo these could be in the step context
-	bp->moveResults = (b3MoveResult*)b3StackAlloc( alloc, moveCount * sizeof( b3MoveResult ), "move results" );
-	bp->movePairCapacity = 16 * moveCount;
-	bp->movePairs = (b3MovePair*)b3StackAlloc( alloc, bp->movePairCapacity * sizeof( b3MovePair ), "move pairs" );
-
-	b3AtomicStoreInt( &bp->movePairIndex, 0 );
-
+	bp->moveResults = NULL;
+	bp->movePairs = NULL;
+	int minRange = 64;
+	bool usedMetalPairs = false;
+	bool pairsAreEmpty = false;
+#if defined( BOX3D_METAL )
+	int candidateCount = 0;
+#endif
 #ifndef NDEBUG
 	extern b3AtomicInt b3_probeCount;
 	b3AtomicStoreInt( &b3_probeCount, 0 );
 #endif
-
-	int minRange = 64;
-	bool usedMetalPairs = false;
 #if defined( BOX3D_METAL )
-	if ( world->metalBroadPhaseEnabled && moveCount >= world->metalMinimumBodyCount )
+	if ( world->metalBroadPhaseEnabled && ( useResidentMoves || moveCount >= world->metalMinimumBodyCount ) )
 	{
 		const b3MetalPairQueryRecord* records = NULL;
 		const b3MetalPairCandidate* candidates = NULL;
-		int candidateCount = 0;
 		b3MetalDispatchStats stats = { 0 };
-		if ( b3MetalGeneratePairCandidates( world->metalContext, world, bp->moveArray.data, moveCount, &records, &candidates,
+		const int* moveArray = useResidentMoves ? NULL : bp->moveArray.data;
+		if ( b3MetalGeneratePairCandidates( world->metalContext, world, moveArray, moveCount, &records, &candidates,
 				&candidateCount, &stats ) )
 		{
-			B3_UNUSED( candidateCount );
-			b3MetalFindPairsContext metalContext = { world, records, candidates };
-			b3ParallelFor( world, b3FindPairsMetalTask, moveCount, minRange, &metalContext, "pairs metal" );
+			pairsAreEmpty = candidateCount == 0;
+			if ( pairsAreEmpty == false )
+			{
+				bp->moveResults = (b3MoveResult*)b3StackAlloc( alloc, moveCount * sizeof( b3MoveResult ), "move results" );
+				bp->movePairCapacity = 16 * moveCount;
+				bp->movePairs = (b3MovePair*)b3StackAlloc( alloc, bp->movePairCapacity * sizeof( b3MovePair ), "move pairs" );
+				b3AtomicStoreInt( &bp->movePairIndex, 0 );
+				b3MetalFindPairsContext metalContext = { world, records, candidates };
+				b3ParallelFor( world, b3FindPairsMetalTask, moveCount, minRange, &metalContext, "pairs metal" );
+			}
 			world->metalPairDispatchCount += 1;
+			world->metalResidentPairMoveDispatchCount += useResidentMoves ? 1 : 0;
 			world->metalPairTreeUploadCount += (uint64_t)stats.treeUploadCount;
 			world->metalPairMetadataUploadCount += (uint64_t)stats.metadataUploadCount;
 			world->metalPairSetUploadCount += (uint64_t)stats.pairSetUploadCount;
+			world->metalLastPairMoveCount = moveCount;
+			world->metalLastPairCandidateCount = candidateCount;
+			world->metalLastPairMoveUploadBytes = useResidentMoves ? 0 : (uint64_t)moveCount * sizeof( int );
 			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
 			usedMetalPairs = true;
 		}
 		else
 		{
 			world->metalPairFallbackCount += 1;
+			if ( useResidentMoves )
+			{
+				if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
+				{
+					b3TracyCZoneEnd( update_pairs );
+					return;
+				}
+				moveCount = bp->moveArray.count;
+				useResidentMoves = false;
+			}
 		}
 	}
 #endif
 	if ( usedMetalPairs == false )
 	{
+		bp->moveResults = (b3MoveResult*)b3StackAlloc( alloc, moveCount * sizeof( b3MoveResult ), "move results" );
+		bp->movePairCapacity = 16 * moveCount;
+		bp->movePairs = (b3MovePair*)b3StackAlloc( alloc, bp->movePairCapacity * sizeof( b3MovePair ), "move pairs" );
+		b3AtomicStoreInt( &bp->movePairIndex, 0 );
 		b3ParallelFor( world, b3FindPairsTask, moveCount, minRange, world, "pairs" );
 	}
 
@@ -565,7 +604,7 @@ void b3UpdateBroadPhasePairs( b3World* world )
 	// Single-threaded work
 	// - Clear move flags
 	// - Create contacts in deterministic order
-	for ( int i = 0; i < moveCount; ++i )
+	for ( int i = 0; pairsAreEmpty == false && i < moveCount; ++i )
 	{
 		b3MoveResult* result = bp->moveResults + i;
 		b3MovePair* pair = result->pairList;
@@ -602,10 +641,16 @@ void b3UpdateBroadPhasePairs( b3World* world )
 	}
 	b3Array_Clear( bp->moveArray );
 
-	b3StackFree( alloc, bp->movePairs );
-	bp->movePairs = NULL;
-	b3StackFree( alloc, bp->moveResults );
-	bp->moveResults = NULL;
+	if ( bp->movePairs != NULL )
+	{
+		b3StackFree( alloc, bp->movePairs );
+		bp->movePairs = NULL;
+	}
+	if ( bp->moveResults != NULL )
+	{
+		b3StackFree( alloc, bp->moveResults );
+		bp->moveResults = NULL;
+	}
 
 	b3ValidateSolverSets( world );
 

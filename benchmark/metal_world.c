@@ -81,7 +81,8 @@ int main( void )
 		"move_event_dispatches,move_event_syncs,last_move_event_readback_bytes,"
 		"transform_device_refreshes,pair_kernel_ms,pair_dispatches,"
 		"body_state_uploads,body_state_reuses,last_body_state_upload_bytes,body_state_revision_checks,body_state_syncs,last_body_state_readback_bytes,"
-		"body_property_uploads,body_property_reuses,last_body_property_upload_bytes,pair_fallbacks,speedup\n" );
+		"body_property_uploads,body_property_reuses,last_body_property_upload_bytes,pair_fallbacks,resident_pair_moves,"
+		"enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,last_pair_move_upload_bytes,speedup\n" );
 	const int counts[] = { 512, 2048, 8192, 32768, 131072, 524288 };
 	int testCount = selectedBodyCount > 0 ? 1 : (int)( sizeof( counts ) / sizeof( counts[0] ) );
 	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
@@ -126,7 +127,7 @@ int main( void )
 				return 1;
 			}
 		}
-		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.3f\n",
+		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%.3f\n",
 			bodyCount,
 			repeats, cpuMs, gpuMs,
 			metal.lastUnconstrainedGpuMilliseconds, (unsigned long long)metal.lastFinalizationReadbackBytes,
@@ -149,8 +150,12 @@ int main( void )
 			(unsigned long long)metal.bodyStateSyncCount,
 			(unsigned long long)metal.lastBodyStateReadbackBytes,
 			(unsigned long long)metal.bodyPropertyUploadCount, (unsigned long long)metal.bodyPropertyReuseCount,
-			(unsigned long long)metal.lastBodyPropertyUploadBytes,
-			(unsigned long long)metal.pairFallbackCount, cpuMs / gpuMs );
+				(unsigned long long)metal.lastBodyPropertyUploadBytes,
+				(unsigned long long)metal.pairFallbackCount,
+				(unsigned long long)metal.residentPairMoveDispatchCount,
+				(unsigned long long)metal.enlargedShapeTraversalBypassCount,
+				metal.lastPairMoveCount, metal.lastPairCandidateCount,
+				(unsigned long long)metal.lastPairMoveUploadBytes, cpuMs / gpuMs );
 		b3DestroyWorld( gpuWorld );
 	}
 	return 0;

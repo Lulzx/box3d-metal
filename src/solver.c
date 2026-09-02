@@ -967,8 +967,11 @@ static void b3ApplyMetalShapeResultsTask( int startIndex, int endIndex, int work
 				{ result->fatLowerX, result->fatLowerY, result->fatLowerZ },
 				{ result->fatUpperX, result->fatUpperY, result->fatUpperZ },
 			};
-			shape->flags |= b3_enlargedAABB;
-			b3SetBit( enlargedSimBitSet, result->simIndex );
+			if ( stepContext->metalTreeRefit == false )
+			{
+				shape->flags |= b3_enlargedAABB;
+				b3SetBit( enlargedSimBitSet, result->simIndex );
+			}
 		}
 		shape->metalSyncGeneration = world->metalShapeResultGeneration;
 	}
@@ -2883,20 +2886,10 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 #if defined( BOX3D_METAL )
 		if ( stepContext->metalTreeRefit )
 		{
-			b3BroadPhase* broadPhase = &world->broadPhase;
-			for ( int resultIndex = 0; resultIndex < stepContext->metalEnlargedShapeResultCount; ++resultIndex )
-			{
-				const b3MetalEnlargedShapeResult* result = stepContext->metalEnlargedShapeResults + resultIndex;
-				b3Shape* shape = world->shapes.data + result->shapeId;
-				B3_ASSERT( shape->proxyKey == result->proxyKey );
-				b3AABB fatAABB = {
-					{ result->lowerX, result->lowerY, result->lowerZ },
-					{ result->upperX, result->upperY, result->upperZ },
-				};
-				shape->fatAABB = fatAABB;
-				b3BroadPhase_EnlargeProxy( broadPhase, result->proxyKey, fatAABB );
-				shape->flags &= ~b3_enlargedAABB;
-			}
+			// The compact proxy-key list and refitted tree remain private and feed
+			// the next Metal pair query directly. CPU mirrors are restored lazily
+			// at a query, mutation, route-change, or fallback boundary.
+			world->metalEnlargedShapeTraversalBypassCount += 1;
 		}
 		else
 #endif

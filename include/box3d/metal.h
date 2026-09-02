@@ -143,6 +143,18 @@ typedef struct b3MetalProfile
 	uint64_t pairMetadataUploadCount;
 	uint64_t pairSetUploadCount;
 	uint64_t pairTreeRefitCount;
+	/// Pair queries that consumed the prior shape-finalization move list directly
+	/// from private Metal storage instead of rebuilding and uploading a CPU list.
+	uint64_t residentPairMoveDispatchCount;
+	/// Resident pair phases that omitted the CPU enlarged-shape/tree traversal.
+	uint64_t enlargedShapeTraversalBypassCount;
+	/// Proxy keys consumed by the latest pair phase and candidates returned for
+	/// deterministic CPU contact creation.
+	int lastPairMoveCount;
+	int lastPairCandidateCount;
+	/// CPU-to-Metal move-list bytes written by the latest pair phase. This is zero
+	/// when the private shape-finalization list is consumed directly.
+	uint64_t lastPairMoveUploadBytes;
 	uint64_t narrowPhaseDispatchCount;
 	uint64_t narrowPhaseFallbackCount;
 	uint64_t narrowPhaseGeometryUploadCount;
@@ -212,8 +224,11 @@ B3_API bool b3World_SetMetalFinalization( b3WorldId worldId, bool enabled );
 /// Opt into experimental GPU dynamic-tree traversal for broad-phase candidate
 /// generation. Metal also performs deterministic moved-proxy de-duplication and
 /// built-in same-body, sensor, and shape-filter rejection. A resident mirror of
-/// the pair set suppresses existing non-compound contacts. Joint/custom filtering,
-/// compounds, and deterministic contact creation retain the CPU path. Any
+/// the pair set suppresses existing non-compound contacts. Successful shape
+/// finalization feeds its private moved-proxy list directly into this stage;
+/// query, mutation, route-change, and fallback boundaries restore the CPU tree.
+/// Joint/custom filtering, compounds, and deterministic contact creation retain
+/// the CPU path. Any
 /// unsupported tree depth, capacity, or dispatch failure
 /// falls back to the complete CPU traversal for that step.
 B3_API bool b3World_SetMetalBroadPhase( b3WorldId worldId, bool enabled );

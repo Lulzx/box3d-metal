@@ -78,16 +78,18 @@ the shape count and broad-phase revision still match. Buffer growth, proxy
 creation/destruction, explicit movement, and tree rebuilds fail closed by
 forcing a CPU-oracle reseed. `shapeBoundsResidentDispatchCount` exposes this
 transition. This makes the VF64-produced bounds authoritative between eligible
-steps, but the buffer is still shared and the full result is still applied to
-CPU shapes for current public-query, mesh-contact, sensor, CCD, and fallback
-consumers.
+steps. The result buffer is private, and bounded resident routes leave both
+shape bounds and the refitted broad-phase snapshot on-device. Public queries
+and unsupported mesh-contact, sensor, CCD, mutation, and fallback consumers
+synchronize the CPU oracle explicitly.
 
 The 64-byte result allocation itself is `MTLStorageModePrivate`. On the bounded
 resident route—continuous collision disabled, no sensors, and either every
 awake shape masking out contacts or the current collision phase proving complete
 zero-exception resident convex coverage with the Metal broad phase—the command
 buffer does not encode a full result blit and the CPU does not execute the flat
-apply task. The shared handoff is only the stable 32-byte enlarged subset.
+apply task. The stable enlarged subset remains private and is consumed directly
+by the next Metal pair query.
 `b3Shape_GetAABB` and
 `b3Body_ComputeAABB` stage individual 64-byte records on demand. Mutation,
 fallback-route expansion, finalization/broad-phase disable, and context disable
@@ -258,12 +260,15 @@ refresh that table; unchanged steps do not repack it. A revisioned mirror of
 Erin's 16-byte open-addressed pair-set entries runs the same key construction,
 hash finalizer, and linear probing to suppress existing non-compound contacts.
 Compound parents stay on the CPU because their contact keys include child ids.
-When device leaf update and refit succeed, CPU proxy bookkeeping
-consumes a stable GPU-compacted 32-byte record only for each enlarged shape.
-A 256-lane hierarchical scan preserves packed shape order across blocks. This
-skips the full-result rescan, enlarged-body bit-set reduction, and second
-body/shape-list walk. The CPU tree is still enlarged for public queries and
-fallback safety.
+When device leaf update and refit succeed, a stable private record is compacted
+for each enlarged shape. A 256-lane hierarchical scan preserves packed shape
+order across blocks. The next pair dispatch consumes those proxy keys and fat
+bounds directly, and an epoch-tagged kernel marks moved leaves without clearing
+or uploading a CPU move list. This skips the full-result rescan,
+enlarged-body bit-set reduction, second body/shape-list walk, CPU proxy
+enlargement traversal, and move-list round trip. Public queries, CPU mutation,
+route changes, and dispatch failure conservatively restore every moving CPU
+leaf and repopulate Erin's move set before returning to the CPU oracle.
 The first unexpectedly dense call may submit one write-only retry after growing
 the persistent candidate buffer; the steady path submits and waits once. CPU
 consumption sends ordinary candidates directly to joint/custom filtering and
@@ -435,7 +440,7 @@ paths, not yet the final performance architecture.
 | Distance joints, including spring, limit, and motor modes | GPU-resident across all substeps |
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
-| Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
+| Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, custom/joint filtering, and contact creation remain |
 | Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Ordered callback/topology/first-touch exceptions retain the CPU path. Lazy CPU mirrors synchronize only at explicit boundaries. CPU retains cold/revision packing, manifold allocation, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
 | Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts a 112-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
@@ -571,6 +576,9 @@ loaded-host whole-world signal are recorded in
 [`benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md`](benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md).
 The follow-on removal of the steady awake-body ID scan is recorded in
 [`benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md`](benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md).
+Private enlarged-proxy residency, direct pair consumption, and the current
+whole-world measurements are recorded in
+[`benchmarks/m4-pro-resident-pair-moves-2026-09-03.md`](benchmarks/m4-pro-resident-pair-moves-2026-09-03.md).
 Fully resident convex-contact state, sim, shape-bound, and body-finalization
 ownership is recorded in
 [`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).

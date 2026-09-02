@@ -80,14 +80,32 @@ static int VerifyResidentPairTraversal( b3World* world )
 {
 	b3BroadPhase* broadPhase = &world->broadPhase;
 	int moveCount = broadPhase->moveArray.count;
+	bool residentMoves = false;
+	if ( moveCount == 0 )
+	{
+		moveCount = b3MetalGetResidentPairMoveCount( world->metalContext );
+		residentMoves = moveCount > 0;
+	}
 	ENSURE( moveCount > 0 );
 	const b3MetalPairQueryRecord* records = NULL;
 	const b3MetalPairCandidate* candidates = NULL;
 	int candidateCount = 0;
 	b3MetalDispatchStats stats = { 0 };
-	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount, &records,
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, residentMoves ? NULL : broadPhase->moveArray.data, moveCount, &records,
 										   &candidates, &candidateCount, &stats ) );
 	ENSURE( stats.treeUploadCount == 0 );
+	if ( residentMoves )
+	{
+		int totalCount = 0;
+		for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
+		{
+			ENSURE( records[moveIndex].queryProxyKey != B3_NULL_INDEX );
+			ENSURE( records[moveIndex].queryShapeIndex >= 0 );
+			totalCount += (int)records[moveIndex].count;
+		}
+		ENSURE( totalCount == candidateCount );
+		return 0;
+	}
 	int capacity = b3MaxInt( 1, candidateCount );
 	b3MetalPairCandidate* reference = malloc( (size_t)capacity * sizeof( b3MetalPairCandidate ) );
 	ENSURE( reference != NULL );
@@ -2281,11 +2299,11 @@ static int MetalShapeCompactionTest( void )
 	ENSURE( profile.shapeInputReuseCount == 1 );
 	ENSURE( profile.lastShapeResultCount == bodyCount );
 	ENSURE( profile.lastEnlargedShapeResultCount == bodyCount / 2 );
-	ENSURE( world->broadPhase.moveArray.count == bodyCount / 2 );
-	for ( int i = 0; i < bodyCount / 2; ++i )
-	{
-		ENSURE( world->broadPhase.moveArray.data[i] == movingProxyKeys[i] );
-	}
+	ENSURE( world->broadPhase.moveArray.count == 0 );
+	ENSURE( b3MetalGetResidentPairMoveCount( world->metalContext ) == bodyCount / 2 );
+	ENSURE( profile.residentPairMoveDispatchCount == 1 );
+	ENSURE( profile.enlargedShapeTraversalBypassCount == 2 );
+	ENSURE( profile.lastPairMoveUploadBytes == 0 );
 	// Public AABB access materializes just the requested shape from the shared
 	// Metal result while the rest of the CPU mirror remains deliberately stale.
 	b3Shape* queryShape = world->shapes.data + movingShapeIds[0].index1 - 1;
@@ -2305,9 +2323,11 @@ static int MetalShapeCompactionTest( void )
 	ENSURE( profile.shapeInputReuseCount == 1 );
 	ENSURE( profile.shapeResultApplyCount == 0 );
 	ENSURE( profile.shapeBoundsSyncCount == bodyCount );
-	printf( "    shape compaction enlarged=%d/%d stableOrder=yes residentBounds=%llu inputPacks=%llu inputReuses=%llu "
-			"fullApplies=%llu syncShapes=%llu\n",
+	printf( "    shape compaction enlarged=%d/%d stableOrder=yes residentMoves=%llu traversalBypasses=%llu "
+			"residentBounds=%llu inputPacks=%llu inputReuses=%llu fullApplies=%llu syncShapes=%llu\n",
 			profile.lastEnlargedShapeResultCount, profile.lastShapeResultCount,
+			(unsigned long long)profile.residentPairMoveDispatchCount,
+			(unsigned long long)profile.enlargedShapeTraversalBypassCount,
 			(unsigned long long)profile.shapeBoundsResidentDispatchCount, (unsigned long long)profile.shapeInputPackCount,
 			(unsigned long long)profile.shapeInputReuseCount, (unsigned long long)profile.shapeResultApplyCount,
 			(unsigned long long)profile.shapeBoundsSyncCount );
@@ -2606,7 +2626,9 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.shapeBoundsSyncCount == count );
 	ENSURE( profile.lastShapeResultCount == count );
 	ENSURE( 0 < profile.lastEnlargedShapeResultCount && profile.lastEnlargedShapeResultCount <= count );
-	ENSURE( gpuWorldInternal->broadPhase.moveArray.count == profile.lastEnlargedShapeResultCount );
+	ENSURE( gpuWorldInternal->broadPhase.moveArray.count == 0 );
+	ENSURE( b3MetalGetResidentPairMoveCount( gpuWorldInternal->metalContext ) == 0 );
+	ENSURE( profile.enlargedShapeTraversalBypassCount == 1 );
 	ENSURE( profile.positionDispatchCount == 0 );
 	ENSURE( profile.positionFallbackCount == 0 );
 	ENSURE( maxPositionError <= 3.0e-5f );

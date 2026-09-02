@@ -339,6 +339,11 @@ typedef struct b3World
 	uint64_t metalPairMetadataUploadCount;
 	uint64_t metalPairSetUploadCount;
 	uint64_t metalPairTreeRefitCount;
+	uint64_t metalResidentPairMoveDispatchCount;
+	uint64_t metalEnlargedShapeTraversalBypassCount;
+	int metalLastPairMoveCount;
+	int metalLastPairCandidateCount;
+	uint64_t metalLastPairMoveUploadBytes;
 	uint64_t metalPairShapeRevision;
 	uint64_t metalContactMaterialRevision;
 	uint64_t metalBodyTransformRevision;

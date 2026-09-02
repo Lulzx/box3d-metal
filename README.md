@@ -29,8 +29,11 @@ suppresses existing non-compound contacts; joint overrides, compounds, custom
 callbacks, and contact creation retain the CPU path. Tree snapshots remain in persistent Metal storage;
 ordinary awake-shape motion updates leaves and refits internal bounds on-device,
 while topology changes and unsupported CPU mutations invalidate the snapshot.
-Enlarged proxy bookkeeping consumes a stable GPU-compacted subset rather than
-rescanning every shape result or walking body shape lists again.
+Enlarged proxy bookkeeping remains in a private GPU-compacted stream rather
+than rescanning every shape result or walking body shape lists again. The next
+Metal pair query consumes that stream directly, marks moved leaves on-device,
+and performs no CPU move-list upload; the CPU shape/tree oracle is restored only
+at a query, mutation, route-change, or fallback boundary.
 Double-precision worlds use VF64 software binary64 for exact world translation
 and directed float AABB narrowing on Metal. Across unchanged resident steps,
 the prior Metal fat bounds are now the authoritative containment input; any

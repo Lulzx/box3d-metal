@@ -5340,12 +5340,13 @@ bool b3MetalSyncAllShapeBounds( b3MetalContext* context, b3World* world )
 		b3Shape* shape = world->shapes.data + shapeId;
 		if ( shape->metalResultIndex == B3_NULL_INDEX ) continue;
 		if ( b3MetalApplyShapeBoundResult( context, world, shapeId ) == false ) return false;
-		if ( results[resultIndex].enlarged != 0 && shape->proxyKey != B3_NULL_INDEX )
+		if ( shape->proxyKey != B3_NULL_INDEX && B3_PROXY_TYPE( shape->proxyKey ) != b3_staticBody )
 		{
-			// Materialize the same stable result order used by device compaction.
-			// Preserve any newer CPU mutation by restoring the union. EnlargeProxy
-			// restores the leaf, conservative ancestors, and move set; an already
-			// containing CPU leaf only needs to be buffered.
+			// The CPU tree may have missed several resident enlargements even when
+			// the latest result remained inside its prior device fat bound. Restore
+			// every moving leaf conservatively and buffer it for a complete CPU
+			// fallback. This is an explicit observation/mutation boundary, not the
+			// steady resident route.
 			b3BodyType proxyType = B3_PROXY_TYPE( shape->proxyKey );
 			int proxyId = B3_PROXY_ID( shape->proxyKey );
 			b3AABB current = broadPhase->trees[proxyType].nodes[proxyId].aabb;
