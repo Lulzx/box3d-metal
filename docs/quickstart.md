@@ -87,6 +87,9 @@ printf("shape_geometry_uploads=%llu reuses=%llu hull_shapes=%d unique_hulls=%d\n
        (unsigned long long)profile.narrowPhaseGeometryReuseCount,
        profile.lastNarrowPhaseHullShapeCount,
        profile.lastNarrowPhaseUniqueHullCount);
+printf("transform_uploads=%llu reuses=%llu\n",
+       (unsigned long long)profile.narrowPhaseTransformUploadCount,
+       (unsigned long long)profile.narrowPhaseTransformReuseCount);
 ```
 
 Dispatch counts prove that a Metal stage ran. A zero fallback count proves only
@@ -97,6 +100,7 @@ dispatch/fallback counters. Pair traversal has independent pair dispatch,
 fallback, and GPU-time fields.
 The narrow-phase geometry counters distinguish a cold/rebuilt shape registry
 from stable reuse and report supported hull-shape versus unique-hull counts.
+Transform counters independently expose body-table rebuilds and same-step reuse.
 
 ## Disable and release
 

@@ -181,7 +181,15 @@ packing. Creation, destruction, and geometry mutation rebuild fail-closed.
 Filter mutation conservatively over-invalidates because the geometry and pair
 metadata registries currently share a revision.
 
+A separate 64-byte transform record indexed by body id covers static, awake,
+and sleeping solver sets without depending on the later solver-state upload.
+The cache key combines world step, explicit transform revision, and body-slot
+count. Body create/destroy/teleport and replay seek invalidate it; solved motion
+refreshes it at the next collision phase. Double records retain all three exact
+binary64 position bit patterns for shader-side VF64 subtraction. Unsupported
+contact batches return before either registry is built.
+
 Input packing and a shared geometry result array remain; this is not yet
-resident manifold ownership. The current input and result records are 120 and
-80 bytes per contact respectively. The input references two persistent shape
-records by id but still carries CPU-packed body-transform state.
+resident manifold ownership. The current input and result records are 16 and
+80 bytes per contact respectively. The input carries eligibility and two shape
+ids; CPU contact validation and ordered result consumption remain.

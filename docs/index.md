@@ -51,6 +51,7 @@ for review.
 - [Persistent shape-input registry](benchmarks/m4-pro-shape-input-registry-2026-09-02.md)
 - [Persistent hull-geometry registry](benchmarks/m4-pro-resident-hull-geometry-2026-09-02.md)
 - [Persistent shape-geometry registry](benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md)
+- [Persistent body-transform registry](benchmarks/m4-pro-resident-body-transforms-2026-09-02.md)
 
 ## Repository map
 

@@ -37,9 +37,10 @@ capsule-sphere, capsule-capsule, and bounded compact hull-sphere local manifold
 geometry in one Metal command buffer, including ordered two-point capsule
 manifolds and feature ids. Sphere/capsule endpoints and radii plus compact hull
 descriptors live in persistent Metal buffers; identical hull point, plane, and
-boundary-triangle streams are content-deduplicated. Revision-stable dispatches
-reuse them without world-shape traversal or geometry packing. Each 120-byte
-contact input references both shapes by id. CPU
+boundary-triangle streams are content-deduplicated. A body-id registry retains
+static and awake rotations plus VF64-capable world translations for collision.
+Revision-stable dispatches reuse both registries. Each 16-byte contact input
+contains eligibility and two shape ids. CPU
 workers still own manifold persistence,
 material and pre-solve callbacks, events, and graph/island state. High-aspect
 and speculative hull-sphere contacts explicitly retain CPU GJK; other shape
@@ -113,6 +114,8 @@ deduplication evidence only; it does not convert loaded-host kernel timings into
 a whole-world performance claim.
 The resident shape-geometry checkpoint adds primitive-mutation invalidation and
 120-byte input evidence under the same no-loaded-host-timing boundary.
+The resident body-transform checkpoint reduces that input to 16 bytes and adds
+step/teleport/replay invalidation evidence, again without a loaded-host timing claim.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

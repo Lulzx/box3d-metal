@@ -32,7 +32,7 @@ The following remain CPU work:
 - broad-phase topology mutation, joint/custom/compound filtering, and contact
   creation;
 - unsupported narrow-phase pairs, speculative/high-aspect hull-sphere GJK, and
-  manifold state application; transform input packing and ordered
+  manifold state application; per-contact eligibility/id validation and ordered
   manifold-result consumption;
 - contact and joint preparation;
 - events, islands, sleeping, and CCD;

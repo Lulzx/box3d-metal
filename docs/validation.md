@@ -29,6 +29,11 @@ Direct primitive tests separately cover packed state and integration kernels.
 - Replacing the first sphere with `b3Shape_SetSphere` produces exactly the third
   geometry upload, proving the generalized primitive registry rebuilds before
   the next 120-byte-input dispatch.
+- The body-transform table records one cold upload and two same-step reuses.
+  Hull/sphere mutation leaves it resident; `b3Body_SetTransform` forces exactly
+  the second upload while geometry stays unchanged. Three solved steps advance
+  it to four uploads at subsequent collision boundaries. The contact input is
+  16 bytes.
 - Integrated unconstrained worlds with 2,048 moving sphere, capsule, and hull AABBs.
 - Exact filtered pair traversal over 607 mixed bodies and 620 proxies, including
   same-body overlaps, sensors, zero masks, and equal positive/negative groups.
@@ -150,6 +155,10 @@ The resident shape-geometry checkpoint again passed the complete matrix after
 moving sphere/capsule endpoints and radii out of the contact stream. Primitive
 mutation forces exactly one rebuild; float and VF64 oracle errors remain
 unchanged.
+
+The resident body-transform checkpoint again passed the complete matrix after
+moving float/VF64 transforms out of contact records. Teleport, solved-step, and
+replay-seek invalidation are fail-closed; oracle errors remain unchanged.
 
 ## What the tests do not prove
 
