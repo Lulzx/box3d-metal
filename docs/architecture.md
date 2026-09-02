@@ -176,9 +176,9 @@ the deterministic awake-contact index array. Fixed results carry zero, one, or
 two points with exact feature-id ordering. Each record carries explicit
 eligibility, so unsupported pairs stay on the ordinary CPU path in the same
 step. High-aspect hulls and compact speculative hull-sphere contacts retain CPU
-GJK. CPU workers apply Metal geometry through the existing contact update,
-preserving allocation, feature-id warm-start matching, material/pre-solve
-callbacks, events, recycling, and graph/island transitions.
+GJK. CPU workers apply Metal-finalized contacts through the existing contact
+update, preserving allocation, custom material/pre-solve callbacks, events,
+recycling, and graph/island transitions.
 
 Double builds carry both absolute position bit patterns and use the vendored
 VF64 exact subtraction before narrowing the relative displacement to float at
@@ -186,35 +186,37 @@ the same boundary as Box3D's CPU convex collision. Supported sphere, capsule,
 and compact hull geometry lives in a persistent registry indexed by Box3D shape
 id. The cold path packs primitive endpoints/radii, validates hulls, and
 content-deduplicates hull points, planes, and triangulated boundaries into
-64-byte shape descriptors; revision-stable dispatches skip shape traversal and
-packing. Creation, destruction, and geometry mutation rebuild fail-closed.
+96-byte geometry/material descriptors; revision-stable dispatches skip shape
+traversal and packing. Creation, destruction, geometry mutation, and a distinct
+material revision rebuild fail-closed.
 Filter mutation conservatively over-invalidates because the geometry and pair
 metadata registries currently share a revision.
 
-A separate 64-byte transform record indexed by body id covers static, awake,
+A separate 80-byte transform record indexed by body id covers static, awake,
 and sleeping solver sets without depending on the later solver-state upload.
 The cache key combines world step, explicit transform revision, and body-slot
 count. Body create/destroy/teleport and replay seek invalidate it; solved motion
-refreshes it at the next collision phase. Double records retain all three exact
+refreshes it at the next collision phase. Records also retain local centers;
+double records retain all three exact
 binary64 position bit patterns for shader-side VF64 subtraction. Unsupported
 contact batches return before either registry is built.
 
 Input packing remains; this is not yet resident manifold ownership. The input
-is 16 bytes per contact and carries eligibility plus two shape ids. Full
-80-byte results are private. A deterministic 256-lane block scan, serial block
+is 32 bytes per contact and carries eligibility, two shape ids, contact identity,
+and contact generation. Full 160-byte results are private. A deterministic 256-lane block scan, serial block
 prefix, and parallel scatter return only active results in the same command
 buffer. Each compact record carries its original contact index and remains
 ordered. CPU workers lower-bound once per parallel range and then walk the
 compact stream linearly, without a dense lookup allocation. CPU contact
 validation and manifold application remain.
-The scatter also rotates active normals and frame-A points with the resident
-body quaternion. CPU application skips matrix construction and local-to-world
-vector transforms. Points remain relative to body A's origin so exact far-world
-anchor construction and center-of-mass adjustment retain CPU semantics.
+The scatter rotates normals, constructs both center-of-mass-relative anchors
+with VF64 translation subtraction, computes default friction/restitution/rolling
+parameters and rotated tangent velocity, and feature-matches the prior impulse
+table. CPU application skips matrix construction, origin-to-COM adjustment, and
+the old per-point persistence search.
 
 The same scatter writes an identical finalized record to a persistent private
-table indexed by Box3D contact id. The 16-byte input's fourth word now carries
-that id. Compact output remains ordered by awake-contact input index for the
+table indexed by Box3D contact id. Compact output remains ordered by awake-contact input index for the
 current CPU application path, while the private copy sets `inputIndex` to the
 contact id so its address and identity are independent of input permutation.
 The table is exposed only through an explicit diagnostic/fallback blit; normal
@@ -223,7 +225,7 @@ only for contacts marked eligible in the current successful dispatch.
 
 That authority now survives into solver setup explicitly. Each collision worker
 clears a transient ownership bit before overlap and recycling decisions, then
-sets it only after a resident result passes through Box3D persistence, material,
+sets it only after a resident result passes through Box3D allocation, callback,
 and topology handling. Pre-solve callback contacts remain CPU-owned. Solver
 setup counts marked contact ids in graph-color order and exposes SIMD-wide
 coverage only when every colored convex contact is resident-table authoritative
@@ -231,9 +233,10 @@ and no convex overflow exists.
 
 That gate drives a Metal preparation kernel at the front of the existing solver
 command buffer. It reads normal and identity from the private contact-id table
-and writes the established 1,696-byte SIMD-wide constraint ABI. CPU-owned
-persistence anchors, warm-start impulses, materials, tangent velocity, body
-indices, contact generation, point feature IDs, and manifold identity live in a
+and writes the established 1,696-byte SIMD-wide constraint ABI. GPU-finalized
+anchors, persistence, normal warm starts, default materials, and tangent
+velocity flow through the shared record; body indices, custom callback results,
+contact-scope impulses, contact generation, point feature IDs, and manifold identity live in a
 generation-tagged 152-byte shared table
 indexed by contact ID. Collision workers write disjoint records during the
 existing persistence pass. Solver submission initializes tail lanes and
@@ -244,7 +247,7 @@ masses, friction centers, lever arms, relative velocities, and projected
 warm-start impulses. Mixed, recycled, callback, overflow, stale, or malformed
 sets fail closed. If another unsupported constraint rejects the Metal solver
 after CPU preparation was skipped, Box3D reruns convex preparation before the
-CPU solver fallback. CPU persistence/material table writes, graph scheduling,
+CPU solver fallback. CPU allocation/callback table writes, graph scheduling,
 events, and topology remain the next residency boundary. After restitution, a
 kernel in the same command buffer writes world-axis friction, twist, rolling,
 point normal/total impulses, and pre-solve normal velocity into a
@@ -254,9 +257,10 @@ release fallback can still consume the wide records.
 The schedule buffer is reused when graph revision and exact wide/contact counts
 match. Restitution eligibility remains current step state and is not cached.
 The 80-byte result reuses padding for contact generation and two feature IDs.
-Before the next fresh supported preparation record is staged, feature-matched
-points recover normal impulses from that GPU-authored result; friction, twist,
-and rolling terms recover at manifold scope. This makes solver warm starts
+The next scatter validates identity and generation, claims matching features in
+upstream order, and writes normal impulses plus persistence bits into the
+160-byte finalized result; friction, twist, and rolling terms recover at
+manifold scope. This makes solver warm starts
 independent of freshness in the CPU public-manifold mirror while rejecting
 destroyed/recreated contact slots.
 Successful resident solves skip the all-contact CPU impulse-store walk. During

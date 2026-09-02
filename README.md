@@ -36,16 +36,19 @@ The shape-specialized narrow-phase route now batches sphere-sphere,
 capsule-sphere, capsule-capsule, and bounded compact hull-sphere local manifold
 geometry in one Metal command buffer, including ordered two-point capsule
 manifolds and feature ids. Sphere/capsule endpoints and radii plus compact hull
-descriptors live in persistent Metal buffers; identical hull point, plane, and
+geometry/material descriptors live in persistent Metal buffers; identical hull point, plane, and
 boundary-triangle streams are content-deduplicated. A body-id registry retains
-static and awake rotations plus VF64-capable world translations for collision.
-Revision-stable dispatches reuse both registries. Each 16-byte contact input
-contains eligibility and two shape ids. Full 80-byte outputs stay in private
+static and awake rotations, local centers, and VF64-capable world translations
+for collision. Revision-stable dispatches reuse both registries. Each 32-byte
+contact input contains eligibility, shape/contact identity, and contact
+generation. Full 160-byte outputs stay in private
 Metal storage; a deterministic scan/prefix/scatter pass returns only active
 results, tagged by original contact index, in the same command buffer. The
-scatter also rotates normals and points into world axes, so CPU workers
-lower-bound once per range while retaining manifold persistence,
-material and pre-solve callbacks, events, and graph/island state. High-aspect
+scatter also produces both COM-relative anchors, feature-matches prior resident
+warm starts, and resolves default friction/restitution/rolling parameters plus
+tangent velocity. CPU workers lower-bound once per range while retaining
+manifold allocation, custom material and pre-solve callbacks, events, and
+graph/island state. High-aspect
 and speculative hull-sphere contacts explicitly retain CPU GJK; other shape
 pairs remain on the CPU. Double worlds use the vendored VF64 exact subtraction
 before narrowing relative translations to float.
@@ -56,8 +59,9 @@ Transient per-contact ownership now carries that authority through persistence,
 and topology into solver setup. Pre-solve callbacks remain CPU-owned. When every
 colored convex contact is resident-authoritative and no convex overflow exists,
 a Metal kernel now prepares Erin's SIMD-wide contact constraints in the existing
-solver command buffer. CPU persistence/material work writes a generation-tagged
-152-byte record once into a contact-ID table during the existing collision pass.
+solver command buffer. CPU workers write remaining body indices, manifold
+identity, callback results, and finalized contact state into a generation-tagged
+152-byte contact-ID record during the existing topology pass.
 Solver submission bulk-copies only a deterministic four-byte ID schedule per
 SIMD lane and no longer dereferences contacts to repack those records. Mixed,
 recycled, callback, overflow, and unsupported routes fail closed, including
@@ -76,8 +80,9 @@ exact wide/contact counts are unchanged; contact or joint insertion/removal
 invalidates it before the next solver submission.
 The post-solve record also retains contact-slot generation and each point's
 feature ID without growing beyond 80 bytes. On the next fresh supported
-collision pass, feature matching restores GPU-authored normal, friction, twist,
-and rolling warm-start impulses before the new preparation record is staged.
+collision pass, the scatter kernel claims matching features in upstream order
+and emits GPU-authored point persistence plus normal warm-start impulses;
+friction, twist, and rolling terms remain resident through staging.
 Reused contact-ID slots cannot consume stale solver state.
 
 ## Quick start
@@ -171,6 +176,9 @@ ID, ending one-step CPU/GPU comparison at `4.47e-08` velocity error.
 The lazy-sync checkpoint then removes the all-contact CPU store: four stable
 81-contact steps perform four bypasses and zero manifold syncs, while the hit
 event fixture synchronizes exactly one exception contact.
+The resident contact-finalization checkpoint moves feature persistence,
+COM-relative anchors, and default material/tangent finalization into the
+manifold scatter while preserving custom callback exceptions.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

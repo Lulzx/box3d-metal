@@ -113,6 +113,11 @@ Direct primitive tests separately cover packed state and integration kernels.
   exactly one exception sync. Contact, body, and shape data APIs plus recording
   snapshot capture independently restore a poisoned CPU mirror; a CPU fallback
   exposes no stale resident result.
+- Float and double/VF64 manifold differentials validate Metal-authored
+  COM-relative anchors, deterministic feature persistence, default material and
+  tangent finalization, plus material-registry mutation. A separate fixture
+  proves custom friction/restitution callbacks remain CPU-owned while rolling
+  and tangent values come from Metal.
 
 ## Recorded error maxima
 

@@ -105,6 +105,12 @@ and exactly one exception sync. A loaded-host 512-contact smoke records ten
 bypasses and zero syncs across ten dispatches. Its wall-clock timing is not
 accepted as performance evidence.
 
+The contact-finalization checkpoint moves feature persistence, both COM-relative
+anchors, default material mixing, and tangent velocity into the existing
+scatter. Its compact shared record grows from 80 to 160 bytes pending the next
+exception-only topology path. A loaded-host 512-contact smoke measured `0.131x`;
+that regression result is retained explicitly and is not crossover evidence.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.

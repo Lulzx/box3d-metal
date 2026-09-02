@@ -26,6 +26,7 @@ evaluation order differs.
 | Resident convex impulse extraction | 80-byte contact-ID results after restitution; all-contact CPU store bypassed, with lazy public sync and compact ordered hit-event exceptions |
 | Resident contact schedule | Reused across exact stable graph revisions/counts; contact or joint graph mutation repacks in upstream color order |
 | Resident warm-start carry | Contact generation plus feature IDs restore GPU-authored normal/friction/twist/rolling impulses on the next fresh supported collision pass |
+| Resident contact finalization | Supported convex pairs emit COM-relative anchors, feature persistence/normal warm starts, default material mixing, rolling resistance, and tangent velocity on Metal; custom callbacks remain CPU |
 | Experimental broad phase | Resident leaf update/refit plus built-in filtered candidates in exact CPU visitation order |
 | Experimental narrow phase | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere local geometry; primitive records and deduplicated compact hull streams are retained across revision-stable dispatches |
 
@@ -36,7 +37,7 @@ The following remain CPU work:
 - broad-phase topology mutation, joint/custom/compound filtering, and contact
   creation;
 - unsupported narrow-phase pairs, speculative/high-aspect hull-sphere GJK, and
-  manifold state application; per-contact eligibility/id validation and ordered
+  manifold allocation/application; per-contact eligibility/id validation and ordered
   manifold-result consumption;
 - mesh, joint, callback, mixed/recycled convex, and convex-overflow preparation;
 - explicit public/debug/snapshot manifold synchronization, final event construction, islands, sleeping, and CCD;
@@ -52,8 +53,9 @@ on Metal. Telemetry distinguishes these routes.
 
 The convex solver consumes constraints prepared on Metal when every colored
 contact owns a current private-table result and no callback or convex overflow
-exception exists. Normal and identity remain device-private. CPU persistence
-writes generation-tagged metadata by contact ID; solver submission carries only
+exception exists. Normal, identity, COM-relative anchors, point persistence,
+default materials, and tangent velocity are device-authored. CPU workers write
+remaining generation-tagged metadata by contact ID; solver submission carries only
 a four-byte ID schedule per SIMD lane. Other convex constraints and all scalar
 mesh constraints arrive CPU-prepared. The supported contact solve
 can therefore cover contacts originating from both accelerated convex pairs and
@@ -63,9 +65,9 @@ Complete resident convex sets also write compact post-solve impulses by contact
 ID and bypass upstream all-contact storage. A compact hit-enabled ID list feeds
 event exceptions; public APIs synchronize individual requested records.
 Unsupported routes retain upstream CPU storage.
-Fresh supported persistence also consumes the prior compact result as warm-start
-state. Contact generation rejects reused slots, and point feature IDs preserve
-normal impulses across manifold point reordering. Recycling routes remain
+Fresh supported scatter consumes the prior compact result as warm-start state.
+Contact generation rejects reused slots, and point feature IDs preserve normal
+impulses across manifold point reordering. Recycling routes remain
 CPU-owned at this checkpoint.
 
 Body and awake-shape finalization have an experimental, separately opt-in Metal
