@@ -31,6 +31,7 @@ readback unless explicitly labeled a primitive.
 | Distance-joint whole world | Near 131,072 bodies | 1.158x at 524,288 |
 | Parallel-joint whole world | No stable crossover | 0.974x at 1,048,576 median point |
 | Experimental GPU finalization | No crossover | 27% slower at 524,288 bodies |
+| GPU shape finalization | No crossover | 17.9% slower at 524,288 shapes |
 
 ## Interpretation
 
@@ -44,6 +45,13 @@ command graph, but its additional shared result stream made the 524,288-body
 paired median 10.500 ms versus 8.275 ms with finalization disabled. It is
 therefore an experimental opt-in, not a default optimization.
 
+The follow-on shape kernel is also correct but does not yet change ownership:
+at 524,288 bodies with one sphere each, the paired three-process median was
+52.174 ms with body/shape finalization versus 44.235 ms with finalization off,
+a 17.9% regression. The CPU still reads every 64-byte shape result, mutates the
+dynamic tree, and traverses it for pairs. GPU pair generation must consume
+resident bounds before this stage can remove that stream.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.
@@ -53,6 +61,9 @@ density, and unsupported stages can move the crossover substantially.
 ```sh
 ./scripts/bootstrap.sh ../box3d-metal-worktree
 ./scripts/run-benchmarks.sh ../box3d-metal-worktree
+BOX3D_METAL_SHAPES=1 ../box3d-metal-worktree/build/metal-release/bin/metal_world_benchmark
+BOX3D_METAL_SHAPES=1 BOX3D_METAL_FINALIZATION=1 \
+  ../box3d-metal-worktree/build/metal-release/bin/metal_world_benchmark
 ```
 
 The benchmark script prints raw CSV-like rows. Run complete executables in at

@@ -41,6 +41,7 @@ for review.
 - [Distance joints](benchmarks/m4-pro-distance-joints-2026-09-01.md)
 - [Parallel joints](benchmarks/m4-pro-parallel-joints-2026-09-02.md)
 - [Experimental body finalization](benchmarks/m4-pro-finalization-2026-09-02.md)
+- [Awake-shape AABB finalization](benchmarks/m4-pro-shape-finalization-2026-09-02.md)
 
 ## Repository map
 

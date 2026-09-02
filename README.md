@@ -9,8 +9,9 @@ accelerates fused integration, colored convex and mesh contacts, distance
 joints, parallel joints, restitution, and deterministic graph overflow. The
 original CPU implementation remains the behavioral reference and fallback.
 An experimental, separately opt-in finalization kernel also computes final
-rotation, origin offset, sleep-motion metrics, and world-space inverse inertia.
-It remains off by default because it has not demonstrated a whole-world win.
+rotation, origin offset, sleep-motion metrics, world-space inverse inertia, and
+awake-shape AABBs. It remains off by default because the CPU still consumes a
+flat result per shape and it has not demonstrated a whole-world win.
 
 ## Quick start
 
@@ -56,6 +57,7 @@ CPU work:
 | Distance joints | 1.158x at 524,288 bodies |
 | Parallel joints | No stable whole-world crossover demonstrated |
 | Experimental GPU finalization | Correct, but 27% slower at the 524,288-body paired median |
+| GPU shape finalization | Correct, but 17.9% slower at 524,288 shapes |
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

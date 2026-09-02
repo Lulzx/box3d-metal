@@ -29,7 +29,7 @@ The following remain CPU work:
 
 - broad phase, narrow phase, and manifold generation;
 - contact and joint preparation;
-- shape finalization and bounds, events, islands, sleeping, and CCD;
+- broad-phase tree mutation and pair generation, events, islands, sleeping, and CCD;
 - recording, queries, topology mutation, and public API calls;
 - filter, motor, prismatic, revolute, spherical, weld, and wheel joint solving;
 - any joint requesting force/torque threshold events.
@@ -46,18 +46,20 @@ contacts originating from Box3D's convex and mesh/height-field collision paths,
 provided preparation selected a supported representation and no unsupported
 overflow form is present. Collision detection itself remains CPU-side.
 
-Body-finalization arithmetic has an experimental, separately opt-in Metal path
-for rotation, origin offset, motion/sleep metrics, and world-space inverse
-inertia. The CPU still performs large-world position accumulation and all
-pointer-rich topology work. This path is not enabled by `b3World_EnableMetal`
-alone because current whole-world measurements are slower.
+Body and awake-shape finalization have an experimental, separately opt-in Metal
+path for rotation, origin offset, motion/sleep metrics, world-space inverse
+inertia, speculative bounds, and fat-AABB enlargement. The CPU still applies
+the flat shape results and performs pointer-rich dynamic-tree work. This path is
+not enabled by `b3World_EnableMetal` alone because current whole-world
+measurements are slower.
 
 ## Double precision
 
-Double-precision world positions remain supported through the CPU preparation
-and finalization path. `b3BodyState` and Metal constraint arithmetic are float,
-matching the baseline solver-state precision. A dedicated double-precision
-build runs the Metal differential suite.
+Double-precision world positions remain supported. Shape AABBs explicitly fall
+back to the CPU so far-world translation retains Box3D's outward-rounded
+binary64-add-then-float-narrow contract. `b3BodyState` and Metal constraint
+arithmetic are float, matching the baseline solver-state precision. A dedicated
+double-precision build runs the Metal differential suite.
 
 ## Failure behavior
 
