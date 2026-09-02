@@ -1494,12 +1494,14 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	}
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    resident contact prepare contacts=%d dispatches=%llu deviceRefreshes=%llu collisionCpu=%llu lastExceptions=%llu "
-			"schedule=%llu/%llu indexBytes=%llu "
+			"inputs=%llu/%llu/%llu coverage=%llu schedule=%llu/%llu indexBytes=%llu "
 			"legacyBytes=%zu "
 			"impulseBytes=%llu legacyImpulseBytes=%zu transformError=%.3g velocityError=%.3g\n",
 			count, (unsigned long long)profile.contactPrepareDispatchCount,
 			(unsigned long long)profile.contactPrepareDeviceRefreshCount, (unsigned long long)profile.contactCollisionCpuCount,
-			(unsigned long long)profile.lastContactCollisionExceptionCount, (unsigned long long)profile.contactSchedulePackCount,
+			(unsigned long long)profile.lastContactCollisionExceptionCount, (unsigned long long)profile.contactInputPackCount,
+			(unsigned long long)profile.contactInputReuseCount, (unsigned long long)profile.lastContactInputBytes,
+			(unsigned long long)profile.contactCoverageBypassCount, (unsigned long long)profile.contactSchedulePackCount,
 			(unsigned long long)profile.contactScheduleReuseCount, (unsigned long long)profile.lastContactPrepareIndexBytes,
 			(size_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * 144,
 			(unsigned long long)profile.lastContactImpulseResultBytes,
@@ -1513,6 +1515,10 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
 	ENSURE( profile.lastNarrowPhaseResultCount == 0 );
 	ENSURE( profile.lastNarrowPhaseResultBytes == 0 );
+	ENSURE( profile.contactInputPackCount == 2 );
+	ENSURE( profile.contactInputReuseCount == 2 );
+	ENSURE( profile.lastContactInputBytes == 0 );
+	ENSURE( profile.contactCoverageBypassCount == 3 * count );
 	ENSURE( profile.contactManifoldSyncCount == 0 );
 	ENSURE( profile.contactSchedulePackCount == 1 );
 	ENSURE( profile.contactScheduleReuseCount == 3 );
@@ -1539,6 +1545,9 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.lastContactCollisionExceptionCount == 1 );
 	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
 	ENSURE( profile.lastNarrowPhaseResultBytes == sizeof( b3MetalConvexManifoldResult ) );
+	ENSURE( profile.contactInputPackCount == 3 );
+	ENSURE( profile.contactInputReuseCount == 2 );
+	ENSURE( profile.lastContactInputBytes == count * 32u );
 	b3Shape_EnableHitEvents( cpuDynamicShapes[0], false );
 	b3Shape_EnableHitEvents( gpuDynamicShapes[0], false );
 
@@ -1569,11 +1578,113 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.lastContactCollisionExceptionCount == 1 );
 	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
 	ENSURE( profile.lastNarrowPhaseResultBytes == sizeof( b3MetalConvexManifoldResult ) );
+	ENSURE( profile.contactInputPackCount == 4 );
+	ENSURE( profile.contactInputReuseCount == 2 );
+	ENSURE( profile.lastContactInputBytes == ( count + 1 ) * 32u );
 	ENSURE( profile.lastResidentConvexContactCount == count + 1 );
 	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuAddedDynamic ), b3Body_GetLinearVelocity( gpuAddedDynamic ) ) ) <=
 			3.0e-5f );
 	b3DestroyWorld( gpuWorld );
 	b3DestroyWorld( cpuWorld );
+	return 0;
+}
+
+static int MetalContactInputRegistryMutationTest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	b3WorldId cpuWorldId = b3CreateWorld( &worldDef );
+	b3WorldId gpuWorldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( gpuWorldId, 1 ) );
+	b3World_SetContactRecycleDistance( cpuWorldId, 0.0f );
+	b3World_SetContactRecycleDistance( gpuWorldId, 0.0f );
+
+	b3BodyDef dynamicDef = b3DefaultBodyDef();
+	dynamicDef.type = b3_dynamicBody;
+	dynamicDef.enableSleep = false;
+	dynamicDef.position = (b3Pos){ 0.99, 0.0, 0.0 };
+	b3BodyId cpuVictim = b3CreateBody( cpuWorldId, &dynamicDef );
+	b3BodyId gpuVictim = b3CreateBody( gpuWorldId, &dynamicDef );
+	b3BodyDef staticDef = b3DefaultBodyDef();
+	b3BodyId cpuStatic = b3CreateBody( cpuWorldId, &staticDef );
+	b3BodyId gpuStatic = b3CreateBody( gpuWorldId, &staticDef );
+	b3BodyId cpuDynamic = b3CreateBody( cpuWorldId, &dynamicDef );
+	b3BodyId gpuDynamic = b3CreateBody( gpuWorldId, &dynamicDef );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3CreateSphereShape( cpuStatic, &shapeDef, &sphere );
+	b3CreateSphereShape( gpuStatic, &shapeDef, &sphere );
+	b3CreateSphereShape( cpuDynamic, &shapeDef, &sphere );
+	b3CreateSphereShape( gpuDynamic, &shapeDef, &sphere );
+
+	for ( int step = 0; step < 3; ++step )
+	{
+		b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
+		b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
+	}
+	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( profile.contactInputPackCount == 2 );
+	ENSURE( profile.contactInputReuseCount == 1 );
+	ENSURE( profile.contactCollisionBypassCount == 2 );
+
+	b3World* cpuWorld = b3GetWorldFromId( cpuWorldId );
+	b3World* gpuWorld = b3GetWorldFromId( gpuWorldId );
+	b3World* worlds[2] = { cpuWorld, gpuWorld };
+	b3BodyId dynamicIds[2] = { cpuDynamic, gpuDynamic };
+	b3BodyId victimIds[2] = { cpuVictim, gpuVictim };
+	for ( int worldIndex = 0; worldIndex < 2; ++worldIndex )
+	{
+		b3World* world = worlds[worldIndex];
+		b3Body* dynamicBody = b3GetBodyFullId( world, dynamicIds[worldIndex] );
+		b3Body* victimBody = b3GetBodyFullId( world, victimIds[worldIndex] );
+		int dynamicIndex = dynamicBody->localIndex;
+		int victimIndex = victimBody->localIndex;
+		ENSURE( dynamicIndex != victimIndex );
+		b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
+		B3_SWAP( awakeSet->bodySims.data[dynamicIndex], awakeSet->bodySims.data[victimIndex] );
+		B3_SWAP( awakeSet->bodyStates.data[dynamicIndex], awakeSet->bodyStates.data[victimIndex] );
+		dynamicBody->localIndex = victimIndex;
+		victimBody->localIndex = dynamicIndex;
+		for ( int contactId = 0; contactId < world->contacts.count; ++contactId )
+		{
+			b3Contact* contact = world->contacts.data + contactId;
+			if ( contact->contactId != contactId )
+				continue;
+			if ( contact->edges[0].bodyId == dynamicBody->id )
+				contact->bodySimIndexA = dynamicBody->localIndex;
+			if ( contact->edges[1].bodyId == dynamicBody->id )
+				contact->bodySimIndexB = dynamicBody->localIndex;
+		}
+	}
+	b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
+	b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
+	profile = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( profile.contactInputPackCount == 2 );
+	ENSURE( profile.contactInputReuseCount == 2 );
+	ENSURE( profile.lastContactInputBytes == 0 );
+	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
+	ENSURE( profile.contactCollisionBypassCount == 3 );
+	ENSURE( profile.contactCoverageBypassCount == 3 );
+	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuDynamic ), b3Body_GetLinearVelocity( gpuDynamic ) ) ) <= 3.0e-5f );
+
+	// Fastness is transient and deliberately not part of the cache key. The
+	// current body registry must reject the resident bypass without repacking.
+	b3GetBodySim( cpuWorld, b3GetBodyFullId( cpuWorld, cpuDynamic ) )->flags |= b3_isFast;
+	b3GetBodySim( gpuWorld, b3GetBodyFullId( gpuWorld, gpuDynamic ) )->flags |= b3_isFast;
+	b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
+	b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
+	profile = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( profile.contactInputPackCount == 2 );
+	ENSURE( profile.contactInputReuseCount == 3 );
+	ENSURE( profile.lastContactCollisionExceptionCount == 1 );
+	ENSURE( profile.contactCollisionCpuCount == 2 );
+	ENSURE( profile.contactCollisionBypassCount == 3 );
+	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuDynamic ), b3Body_GetLinearVelocity( gpuDynamic ) ) ) <= 3.0e-5f );
+	printf( "    contact input registry packs=2 reuses=3 bodyIndexSwap=yes fastException=1 coverageBypasses=3\n" );
+
+	b3DestroyWorld( gpuWorldId );
+	b3DestroyWorld( cpuWorldId );
 	return 0;
 }
 
@@ -3154,6 +3265,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalContactPreparePreSolveExceptionTest );
 	RUN_SUBTEST( MetalContactPrepareFallbackTest );
 	RUN_SUBTEST( MetalResidentContactPrepareDifferentialTest );
+	RUN_SUBTEST( MetalContactInputRegistryMutationTest );
 	RUN_SUBTEST( MetalResidentContactHitEventTest );
 	RUN_SUBTEST( MetalResidentWarmStartCarryTest );
 	RUN_SUBTEST( MetalResidentCollisionBypassFallbackTest );

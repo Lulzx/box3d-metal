@@ -111,10 +111,15 @@ synchronizations. A deterministic scan/prefix/scatter pass emits only CPU
 exceptions: an unchanged resident step returns zero shared manifold bytes and
 runs no CPU collision workers, while the hit-event and first-touch
 differentials each return exactly one ordered 160-byte record. Contact mirrors
-use a world generation instead of per-step stable-contact flag writes. The CPU
-still gathers graph contact IDs, packs the 32-byte narrow-phase input records,
-and walks graph contacts for solver coverage, so this remains a residency
-checkpoint rather than a whole-world speedup.
+use a world generation instead of per-step stable-contact flag writes. A
+revisioned contact input/order registry now retains the 32-byte records across
+unchanged pair, graph, and eligibility revisions, so stable steps neither
+gather graph contact IDs nor rewrite the input buffer. Current body indices and
+fast-body flags come from the per-step body registry. The same dispatch proves
+complete convex graph ownership and skips the solver's per-contact coverage
+walk. CPU topology, callbacks, events, unsupported geometry, and cold/revision
+rebuilds remain explicit fallback boundaries, so this remains a residency
+checkpoint rather than a universal whole-world speedup.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.

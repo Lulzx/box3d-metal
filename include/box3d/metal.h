@@ -57,6 +57,17 @@ typedef struct b3MetalProfile
 	uint64_t contactCollisionCpuCount;
 	/// CPU collision exception records emitted by the latest Metal narrow phase.
 	uint64_t lastContactCollisionExceptionCount;
+	/// Narrow-phase contact input registry rebuilds after contact/order or
+	/// eligibility mutation.
+	uint64_t contactInputPackCount;
+	/// Narrow-phase steps that reused the resident contact input/order registry.
+	uint64_t contactInputReuseCount;
+	/// Bytes written into the 32-byte contact input stream on the latest step.
+	/// Revision-stable reuse reports zero.
+	uint64_t lastContactInputBytes;
+	/// Per-contact resident-ownership checks skipped because the unchanged
+	/// collision dispatch proved complete convex graph coverage.
+	uint64_t contactCoverageBypassCount;
 	/// Individual resident manifolds materialized into the CPU mirror on a
 	/// public, debug, snapshot, route-change, or solver-fallback boundary.
 	uint64_t contactManifoldSyncCount;

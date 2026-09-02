@@ -158,6 +158,9 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 // body's center of mass. Exact VF64 subtraction is used for double-precision
 // world translations before converting the relative displacement to float,
 // matching Box3D's scalar narrow-phase boundary.
+// contactIndices may be NULL only when the revisioned contact input/order
+// registry is reusable for contactCount.
+bool b3MetalCanReuseConvexManifoldInputs( const b3MetalContext* context, const b3World* world, int contactCount );
 bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices, int contactCount,
 									const b3MetalConvexManifoldResult** results, int* resultCount, int* residentBypassCount,
 									b3MetalDispatchStats* stats );

@@ -39,6 +39,7 @@ void b3WakeSolverSet( b3World* world, int setIndex )
 	b3SolverSet* set = b3Array_Get( world->solverSets, setIndex );
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
 	b3SolverSet* disabledSet = b3Array_Get( world->solverSets, b3_disabledSet );
+	b3BumpMetalContactInputRevision( world );
 
 	b3Body* bodies = world->bodies.data;
 
@@ -160,6 +161,9 @@ void b3TrySleepIsland( b3World* world, int islandId )
 	{
 		return;
 	}
+	b3BumpMetalContactInputRevision( world );
+	if ( island->contacts.count > 0 )
+		world->constraintGraph.revision += 1;
 
 	// Sleeping contacts leave the awake narrow-phase set, so their private table
 	// slots are not guaranteed to be refreshed or preserved by later dispatches.

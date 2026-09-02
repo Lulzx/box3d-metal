@@ -333,6 +333,9 @@ b3WorldId b3CreateWorld( const b3WorldDef* def )
 	world->contactHertz = def->contactHertz;
 	world->contactDampingRatio = def->contactDampingRatio;
 	world->contactRecycleDistance = B3_CONTACT_RECYCLE_DISTANCE;
+#if defined( BOX3D_METAL )
+	world->metalContactInputRevision = 1;
+#endif
 
 	if ( def->frictionCallback == NULL )
 	{
@@ -683,6 +686,10 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.contactCollisionBypassCount = world->metalContactCollisionBypassCount;
 	profile.contactCollisionCpuCount = world->metalContactCollisionCpuCount;
 	profile.lastContactCollisionExceptionCount = world->metalLastContactCollisionExceptionCount;
+	profile.contactInputPackCount = world->metalContactInputPackCount;
+	profile.contactInputReuseCount = world->metalContactInputReuseCount;
+	profile.lastContactInputBytes = world->metalLastContactInputBytes;
+	profile.contactCoverageBypassCount = world->metalContactCoverageBypassCount;
 	profile.contactManifoldSyncCount = world->metalContactManifoldSyncCount;
 	profile.contactImpulseStoreBypassCount = world->metalContactImpulseStoreBypassCount;
 	profile.contactImpulseEventSyncCount = world->metalContactImpulseEventSyncCount;
@@ -823,12 +830,20 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 #endif
 		if ( i < prefetchEnd )
 		{
+#if defined( BOX3D_METAL )
 			int prefetchContactIndex = metalCollisionExceptionsOnly ? (int)metalResults[i + contactPrefetchDistance].contactId
 																	: contactIndices[i + contactPrefetchDistance];
+#else
+			int prefetchContactIndex = contactIndices[i + contactPrefetchDistance];
+#endif
 			b3PrefetchContact( contacts + prefetchContactIndex );
 		}
 
+#if defined( BOX3D_METAL )
 		int contactIndex = metalCollisionExceptionsOnly ? (int)metalResult->contactId : contactIndices[i];
+#else
+		int contactIndex = contactIndices[i];
+#endif
 		B3_ASSERT( contactIndex < world->contacts.count );
 
 		b3Contact* contact = contacts + contactIndex;
@@ -1149,6 +1164,32 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
 	}
 }
 
+static int* b3GatherAwakeContactIndices( b3World* world, int touchingCount, int nonTouchingCount )
+{
+	int contactCount = touchingCount + nonTouchingCount;
+	int* contactIndices = (int*)b3StackAlloc( &world->stack, contactCount * sizeof( int ), "contact indices" );
+	int contactIndex = 0;
+	for ( int i = 0; i < B3_GRAPH_COLOR_COUNT; ++i )
+	{
+		b3GraphColor* color = world->constraintGraph.colors + i;
+		for ( int j = 0; j < color->convexContacts.count; ++j )
+		{
+			contactIndices[contactIndex++] = color->convexContacts.data[j];
+		}
+		for ( int j = 0; j < color->contacts.count; ++j )
+		{
+			contactIndices[contactIndex++] = color->contacts.data[j].contactId;
+		}
+	}
+	B3_ASSERT( contactIndex == touchingCount );
+	if ( nonTouchingCount > 0 )
+	{
+		b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
+		memcpy( contactIndices + touchingCount, awakeSet->contactIndices.data, nonTouchingCount * sizeof( int ) );
+	}
+	return contactIndices;
+}
+
 // Narrow-phase collision
 static void b3Collide( b3StepContext* context )
 {
@@ -1160,12 +1201,17 @@ static void b3Collide( b3StepContext* context )
 
 	// Gather contacts from all the graph colors into a single array for easier parallel-for
 	int touchingCount = 0;
+	int touchingConvexCount = 0;
 
 	b3GraphColor* graphColors = world->constraintGraph.colors;
 	for ( int i = 0; i < B3_GRAPH_COLOR_COUNT; ++i )
 	{
+		touchingConvexCount += graphColors[i].convexContacts.count;
 		touchingCount += graphColors[i].convexContacts.count + graphColors[i].contacts.count;
 	}
+#if !defined( BOX3D_METAL )
+	B3_UNUSED( touchingConvexCount );
+#endif
 
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
 	int nonTouchingCount = awakeSet->contactIndices.count;
@@ -1178,33 +1224,14 @@ static void b3Collide( b3StepContext* context )
 		return;
 	}
 
-	int* contactIndices = (int*)b3StackAlloc( &world->stack, contactCount * sizeof( int ), "contact indices" );
-
-	int contactIndex = 0;
-	for ( int i = 0; i < B3_GRAPH_COLOR_COUNT; ++i )
+	int* contactIndices = NULL;
+#if defined( BOX3D_METAL )
+	bool reuseContactInputs = world->metalContext != NULL && contactCount >= world->metalMinimumBodyCount &&
+							  b3MetalCanReuseConvexManifoldInputs( world->metalContext, world, contactCount );
+	if ( reuseContactInputs == false )
+#endif
 	{
-		b3GraphColor* color = graphColors + i;
-		int count = color->convexContacts.count;
-		for ( int j = 0; j < count; ++j )
-		{
-			contactIndices[contactIndex] = color->convexContacts.data[j];
-			contactIndex += 1;
-		}
-
-		count = color->contacts.count;
-		for ( int j = 0; j < count; ++j )
-		{
-			contactIndices[contactIndex] = color->contacts.data[j].contactId;
-			contactIndex += 1;
-		}
-	}
-
-	B3_ASSERT( contactIndex == touchingCount );
-
-	if ( nonTouchingCount > 0 )
-	{
-		int* nonTouchingIndices = awakeSet->contactIndices.data;
-		memcpy( contactIndices + touchingCount, nonTouchingIndices, nonTouchingCount * sizeof( int ) );
+		contactIndices = b3GatherAwakeContactIndices( world, touchingCount, nonTouchingCount );
 	}
 
 	context->awakeContactIndices = contactIndices;
@@ -1227,6 +1254,9 @@ static void b3Collide( b3StepContext* context )
 
 	int cpuContactCount = contactCount;
 #if defined( BOX3D_METAL )
+	bool metalCollisionDispatched = false;
+	int metalResidentBypassCount = 0;
+	uint64_t metalCollisionGraphRevision = world->constraintGraph.revision;
 	if ( world->metalContext != NULL && contactCount >= world->metalMinimumBodyCount )
 	{
 		const b3MetalConvexManifoldResult* convexResults = NULL;
@@ -1238,6 +1268,8 @@ static void b3Collide( b3StepContext* context )
 		{
 			if ( stats.commandBufferCount > 0 )
 			{
+				metalCollisionDispatched = true;
+				metalResidentBypassCount = residentBypassCount;
 				world->metalContactManifoldGeneration += 1;
 				if ( world->metalContactManifoldGeneration == 0 )
 					world->metalContactManifoldGeneration = 1;
@@ -1246,18 +1278,20 @@ static void b3Collide( b3StepContext* context )
 				world->metalLastNarrowPhaseResultCount = resultCount;
 				world->metalNarrowPhaseDispatchCount += 1;
 				world->metalLastNarrowPhaseGpuMilliseconds = stats.gpuMilliseconds;
-				if ( residentBypassCount > 0 )
-				{
-					context->metalCollisionExceptionsOnly = true;
-					cpuContactCount = resultCount;
-					world->metalContactCollisionBypassCount += (uint64_t)residentBypassCount;
-					world->taskContexts.data[0].manifoldCounts[0] += residentBypassCount;
-				}
+				context->metalCollisionExceptionsOnly = true;
+				cpuContactCount = resultCount;
+				world->metalContactCollisionBypassCount += (uint64_t)residentBypassCount;
+				world->taskContexts.data[0].manifoldCounts[0] += residentBypassCount;
 			}
 		}
 		else
 		{
 			world->metalNarrowPhaseFallbackCount += 1;
+			if ( contactIndices == NULL )
+			{
+				contactIndices = b3GatherAwakeContactIndices( world, touchingCount, nonTouchingCount );
+				context->awakeContactIndices = contactIndices;
+			}
 		}
 	}
 #endif
@@ -1279,7 +1313,8 @@ static void b3Collide( b3StepContext* context )
 	}
 #endif
 
-	b3StackFree( &world->stack, contactIndices );
+	if ( contactIndices != NULL )
+		b3StackFree( &world->stack, contactIndices );
 	context->awakeContactIndices = NULL;
 	context->metalConvexManifolds = NULL;
 	context->metalConvexManifoldCount = 0;
@@ -1418,6 +1453,12 @@ static void b3Collide( b3StepContext* context )
 
 	b3ValidateSolverSets( world );
 	b3ValidateContacts( world );
+
+#if defined( BOX3D_METAL )
+	context->metalResidentConvexCoverageProven = metalCollisionDispatched && touchingConvexCount > 0 &&
+												 metalResidentBypassCount == touchingConvexCount &&
+												 world->constraintGraph.revision == metalCollisionGraphRevision;
+#endif
 
 	b3TracyCZoneEnd( contact_state );
 	b3TracyCZoneEnd( collide );
@@ -2538,6 +2579,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
 	B3_REC( world, WorldSetContactRecycleDistance, worldId, recycleDistance );
 
 	world->contactRecycleDistance = b3ClampFloat( recycleDistance, 0.0f, FLT_MAX );
+	b3BumpMetalContactInputRevision( world );
 }
 
 float b3World_GetContactRecycleDistance( b3WorldId worldId )
@@ -2675,6 +2717,7 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
 #if defined( BOX3D_METAL )
 	world->metalDefaultFrictionCallback = callback == NULL;
 #endif
+	b3BumpMetalContactInputRevision( world );
 }
 
 void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* callback )
@@ -2689,6 +2732,7 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
 #if defined( BOX3D_METAL )
 	world->metalDefaultRestitutionCallback = callback == NULL;
 #endif
+	b3BumpMetalContactInputRevision( world );
 }
 
 void b3World_SetWorkerCount( b3WorldId worldId, int count )
@@ -2731,6 +2775,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
 	}
 
 	b3StartRecordingIntoBuffer( world, recording );
+	b3BumpMetalContactInputRevision( world );
 }
 
 void b3World_StopRecording( b3WorldId worldId )
@@ -2742,6 +2787,7 @@ void b3World_StopRecording( b3WorldId worldId )
 	}
 
 	b3StopRecordingInternal( world );
+	b3BumpMetalContactInputRevision( world );
 }
 
 void b3World_DumpMemoryStats( b3WorldId worldId )
@@ -3732,6 +3778,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
 	}
 	world->preSolveFcn = fcn;
 	world->preSolveContext = context;
+	b3BumpMetalContactInputRevision( world );
 }
 
 void b3World_SetGravity( b3WorldId worldId, b3Vec3 gravity )

@@ -1987,17 +1987,26 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 				colorConvexContactCount > 0 ? ( ( colorConvexContactCount - 1 ) >> B3_SIMD_SHIFT ) + 1 : 0;
 			wideContactCount += colorWideConstraintCount;
 			convexContactCount += colorConvexContactCount;
-			for ( int j = 0; j < colorConvexContactCount; ++j )
+			if ( stepContext->metalResidentConvexCoverageProven )
 			{
-				int contactId = color->convexContacts.data[j];
-				const b3Contact* contact = b3Array_Get( world->contacts, contactId );
-				bool resident = ( contact->flags & b3_simMetalManifold ) != 0;
-				residentConvexContactCount += resident;
-				// A resident contact may have a deliberately stale CPU material mirror.
-				// Running the bounded restitution pass is conservative; the device
-				// preparation record contains the current authoritative coefficient.
-				residentConvexHasRestitution = residentConvexHasRestitution || resident;
+				residentConvexContactCount += colorConvexContactCount;
+				residentConvexHasRestitution = residentConvexHasRestitution || colorConvexContactCount > 0;
+#if defined( BOX3D_METAL )
+				world->metalContactCoverageBypassCount += (uint64_t)colorConvexContactCount;
+#endif
 			}
+			else
+				for ( int j = 0; j < colorConvexContactCount; ++j )
+				{
+					int contactId = color->convexContacts.data[j];
+					const b3Contact* contact = b3Array_Get( world->contacts, contactId );
+					bool resident = ( contact->flags & b3_simMetalManifold ) != 0;
+					residentConvexContactCount += resident;
+					// A resident contact may have a deliberately stale CPU material mirror.
+					// Running the bounded restitution pass is conservative; the device
+					// preparation record contains the current authoritative coefficient.
+					residentConvexHasRestitution = residentConvexHasRestitution || resident;
+				}
 			colorWideContactCounts[c] = colorWideConstraintCount;
 
 			colorContactCounts[c] = colorContactCount;

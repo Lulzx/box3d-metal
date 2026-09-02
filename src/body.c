@@ -515,8 +515,8 @@ b3AABB b3Body_ComputeAABB( b3BodyId bodyId )
 	b3Shape* shape = b3Array_Get( world->shapes, body->headShapeId );
 #if defined( BOX3D_METAL )
 	if ( world->metalShapeCpuBoundsStale && shape->metalResultIndex != B3_NULL_INDEX &&
-		shape->metalSyncGeneration != world->metalShapeResultGeneration &&
-		b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
+		 shape->metalSyncGeneration != world->metalShapeResultGeneration &&
+		 b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
 	{
 		shape->aabb = b3ComputeFatShapeAABB( shape, b3GetBodyTransformQuick( world, body ), B3_SPECULATIVE_DISTANCE );
 		shape->metalResultIndex = B3_NULL_INDEX;
@@ -528,8 +528,8 @@ b3AABB b3Body_ComputeAABB( b3BodyId bodyId )
 		shape = b3Array_Get( world->shapes, shape->nextShapeId );
 #if defined( BOX3D_METAL )
 		if ( world->metalShapeCpuBoundsStale && shape->metalResultIndex != B3_NULL_INDEX &&
-			shape->metalSyncGeneration != world->metalShapeResultGeneration &&
-			b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
+			 shape->metalSyncGeneration != world->metalShapeResultGeneration &&
+			 b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
 		{
 			shape->aabb = b3ComputeFatShapeAABB( shape, b3GetBodyTransformQuick( world, body ), B3_SPECULATIVE_DISTANCE );
 			shape->metalResultIndex = B3_NULL_INDEX;
@@ -872,7 +872,7 @@ b3BodyTOIResult b3Body_TimeOfImpactMover( b3BodyId bodyId, b3Pos origin, const b
 		B3_VALIDATE( output.state != b3_toiStateUnknown );
 
 		// Mimic behavior in b3ContinuousQueryCallback. Ignore shapes that initially overlap.
-		if (0.0f < output.fraction && output.fraction < result.fraction)
+		if ( 0.0f < output.fraction && output.fraction < result.fraction )
 		{
 			input.maxFraction = output.fraction;
 
@@ -2505,6 +2505,7 @@ void b3Body_EnableHitEvents( b3BodyId bodyId, bool flag )
 		shape->flags = flag ? shape->flags | b3_enableHitEvents : shape->flags & ~b3_enableHitEvents;
 		shapeId = shape->nextShapeId;
 	}
+	b3BumpMetalContactInputRevision( world );
 }
 
 b3WorldId b3Body_GetWorld( b3BodyId bodyId )

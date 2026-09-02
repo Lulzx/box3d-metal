@@ -128,6 +128,11 @@ struct b3MetalContext
 	NSUInteger pairBlockCapacity;
 	id<MTLBuffer> convexManifoldInputBuffer;
 	NSUInteger convexManifoldInputCapacity;
+	int convexManifoldInputCount;
+	int convexManifoldCandidateCount;
+	uint64_t convexManifoldInputPairRevision;
+	uint64_t convexManifoldInputGraphRevision;
+	uint64_t convexManifoldInputRevision;
 	id<MTLBuffer> convexManifoldResultBuffer;
 	NSUInteger convexManifoldResultCapacity;
 	id<MTLBuffer> convexManifoldCompactBuffer;
@@ -269,7 +274,8 @@ typedef struct b3MetalBodyTransform
 	float px, py, pz;
 	uint32_t supported;
 	uint64_t pxBits, pyBits, pzBits;
-	uint64_t padding;
+	int32_t index;
+	uint32_t flags;
 	float localCenterX, localCenterY, localCenterZ, centerPadding;
 } b3MetalBodyTransform;
 
@@ -506,7 +512,7 @@ static const char* b3_metalSource =
 	"struct ConvexManifoldInput {\n"
 	"  uint eligible,shapeIdA,shapeIdB,contactId,contactGeneration,prepareEligible; int indexA,indexB;\n"
 	"};\n"
-	"struct BodyTransform { float qx,qy,qz,qw,px,py,pz; uint supported; ulong pxBits,pyBits,pzBits,padding;\n"
+	"struct BodyTransform { float qx,qy,qz,qw,px,py,pz; uint supported; ulong pxBits,pyBits,pzBits; int index; uint flags;\n"
 	"  float localCenterX,localCenterY,localCenterZ,centerPadding; };\n"
 	"struct HullTriangle { uint index1,index2,index3,face; };\n"
 	"struct ShapeGeometry { float point1X,point1Y,point1Z,radius; float point2X,point2Y,point2Z; int bodyId;\n"
@@ -975,6 +981,7 @@ static const char* b3_metalSource =
 	"     uint(geometryA.bodyId)>=p.bodyCount||uint(geometryB.bodyId)>=p.bodyCount){out.eligible=0u;results[i]=out;return;}\n"
 	"  BodyTransform transformA=bodyTransforms[geometryA.bodyId],transformB=bodyTransforms[geometryB.bodyId];\n"
 	"  if(transformA.supported==0u||transformB.supported==0u){out.eligible=0u;results[i]=out;return;}float3 d;\n"
+	"  if(((transformA.flags|transformB.flags)&0x40u)!=0u)out.residentFlags|=4u;\n"
 	"#if defined(B3_DOUBLE_PRECISION)\n"
 	"  d=float3(b3_vf64_difference(transformB.pxBits,transformA.pxBits),\n"
 	"           b3_vf64_difference(transformB.pyBits,transformA.pyBits),\n"
@@ -1030,7 +1037,7 @@ static const char* b3_metalSource =
 	"  out.separation1=distance-radius;out.feature1=0u;results[i]=out;\n"
 	"}\n"
 	"inline uint b3_manifold_stable(const ConvexManifoldResult r,const ConvexManifoldInput in,const device ImpulseResult* previous,const device PrepareInput* prepareTable,constant ManifoldCompactParams& p){\n"
-	"  if(p.p0==0u||r.eligible==0u||r.touching==0u||r.pointCount==0u||r.pointCount>2u||(in.prepareEligible&2u)==0u||in.contactId>=p.previousCount)return 0u;\n"
+	"  if(p.p0==0u||r.eligible==0u||r.touching==0u||r.pointCount==0u||r.pointCount>2u||(r.residentFlags&4u)!=0u||(in.prepareEligible&2u)==0u||in.contactId>=p.previousCount)return 0u;\n"
 	"  ImpulseResult old=previous[in.contactId];if(old.contactId!=in.contactId||old.generation!=p.previousGeneration||old.contactGeneration!=in.contactGeneration||old.pointCount==0u||old.pointCount>2u)return 0u;\n"
 	"  PrepareInput prep=prepareTable[in.contactId];return prep.contactId==in.contactId&&prep.contactGeneration==in.contactGeneration&&prep.manifold!=0ul; }\n"
 	"inline uint b3_manifold_matches(const ConvexManifoldResult r,const ConvexManifoldInput in,const device ImpulseResult* previous){ImpulseResult old=previous[in.contactId];uint claimed=0u,matches=0u;\n"
@@ -1080,14 +1087,14 @@ static const char* b3_metalSource =
 	"          if(pointIndex==0u)r.normalImpulse1=old.points[oldIndex].normalImpulse;else r.normalImpulse2=old.points[oldIndex].normalImpulse;\n"
 	"          r.persistedBits|=1u<<pointIndex;claimed|=bit;break;}}}}}\n"
 	"  if(oldValid!=0u&&(inputs[i].prepareEligible&1u)!=0u&&r.touching!=0u&&r.pointCount>0u&&r.pointCount<=2u){PrepareInput prep=prepareTable[contactId];\n"
-	"    if(prep.contactId==contactId&&prep.contactGeneration==inputs[i].contactGeneration&&prep.manifold!=0ul){prep.indexA=inputs[i].indexA;prep.indexB=inputs[i].indexB;prep.generation=p.currentGeneration;\n"
+	"    if(prep.contactId==contactId&&prep.contactGeneration==inputs[i].contactGeneration&&prep.manifold!=0ul){prep.indexA=transformA.index;prep.indexB=transformB.index;prep.generation=p.currentGeneration;\n"
 	"      prep.friction=r.friction;prep.restitution=r.restitution;prep.rollingResistance=r.rollingResistance;prep.tangentVelocityX=r.tangentVelocityX;prep.tangentVelocityY=r.tangentVelocityY;prep.tangentVelocityZ=r.tangentVelocityZ;\n"
 	"      prep.twistImpulse=old.twistImpulse;prep.frictionImpulseX=old.frictionX;prep.frictionImpulseY=old.frictionY;prep.frictionImpulseZ=old.frictionZ;\n"
 	"      prep.rollingImpulseX=old.rollingX;prep.rollingImpulseY=old.rollingY;prep.rollingImpulseZ=old.rollingZ;\n"
 	"      prep.points[0]=PreparePoint{r.p1x,r.p1y,r.p1z,r.separation1,r.anchorB1X,r.anchorB1Y,r.anchorB1Z,r.normalImpulse1,r.feature1};\n"
 	"      prep.points[1]=PreparePoint{r.p2x,r.p2y,r.p2z,r.separation2,r.anchorB2X,r.anchorB2Y,r.anchorB2Z,r.normalImpulse2,r.feature2};\n"
 	"      prepareTable[contactId]=prep;r.residentFlags|=2u;}}\n"
-	"  uint stable=p.p0!=0u&&(inputs[i].prepareEligible&2u)!=0u&&(r.residentFlags&2u)!=0u&&r.touching!=0u&&r.pointCount>0u&&r.pointCount<=2u;if(p.p0==0u||stable==0u){uint output=blocks[i/256u].offset+r.scanOffset;r.inputIndex=i;r.scanOffset=0u;r.contactId=contactId;compact[output]=r;}\n"
+	"  uint stable=p.p0!=0u&&(inputs[i].prepareEligible&2u)!=0u&&(r.residentFlags&6u)==2u&&r.touching!=0u&&r.pointCount>0u&&r.pointCount<=2u;if(p.p0==0u||stable==0u){uint output=blocks[i/256u].offset+r.scanOffset;r.inputIndex=i;r.scanOffset=0u;r.contactId=contactId;compact[output]=r;}\n"
 	"  r.inputIndex=r.contactId;table[r.contactId]=r;}\n";
 #pragma clang diagnostic pop
 
@@ -3981,6 +3988,8 @@ static bool b3MetalEnsureBodyTransformRegistry( b3MetalContext* context, const b
 		output->localCenterX = bodySim->localCenter.x;
 		output->localCenterY = bodySim->localCenter.y;
 		output->localCenterZ = bodySim->localCenter.z;
+		output->index = body->type == b3_staticBody ? B3_NULL_INDEX : body->localIndex;
+		output->flags = bodySim->flags;
 #if defined( BOX3D_DOUBLE_PRECISION )
 		memcpy( &output->pxBits, &transform.p.x, sizeof( uint64_t ) );
 		memcpy( &output->pyBits, &transform.p.y, sizeof( uint64_t ) );
@@ -3994,6 +4003,15 @@ static bool b3MetalEnsureBodyTransformRegistry( b3MetalContext* context, const b
 	return true;
 }
 
+bool b3MetalCanReuseConvexManifoldInputs( const b3MetalContext* context, const b3World* world, int contactCount )
+{
+	return context != NULL && world != NULL && contactCount > 0 && context->convexManifoldInputBuffer != nil &&
+		context->convexManifoldInputCount == contactCount &&
+		context->convexManifoldInputPairRevision == world->broadPhase.pairSetRevision &&
+		context->convexManifoldInputGraphRevision == world->constraintGraph.revision &&
+		context->convexManifoldInputRevision == world->metalContactInputRevision;
+}
+
 bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
 	int contactCount, const b3MetalConvexManifoldResult** resultsOut, int* resultCountOut, int* residentBypassCountOut,
 	b3MetalDispatchStats* stats )
@@ -4002,11 +4020,13 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 	if ( resultCountOut != NULL ) *resultCountOut = 0;
 	if ( residentBypassCountOut != NULL ) *residentBypassCountOut = 0;
 	if ( stats != NULL ) *stats = (b3MetalDispatchStats){ .bodyCount = contactCount };
-	if ( context == NULL || world == NULL || contactIndices == NULL || contactCount < 0 || resultsOut == NULL ||
+	if ( context == NULL || world == NULL || contactCount < 0 || resultsOut == NULL ||
 		 resultCountOut == NULL )
 	{
 		return false;
 	}
+	bool reuseInputs = contactIndices == NULL;
+	if ( reuseInputs && b3MetalCanReuseConvexManifoldInputs( context, world, contactCount ) == false ) return false;
 	( (b3World*)world )->metalLastNarrowPhaseResultCount = 0;
 	( (b3World*)world )->metalLastNarrowPhaseManifoldTableCount = 0;
 	context->convexManifoldTableCount = 0;
@@ -4020,29 +4040,32 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 
 	@autoreleasepool
 	{
-		int candidateCount = 0;
-		int hitEventContactCount = 0;
-		for ( int i = 0; i < contactCount; ++i )
+		int candidateCount = reuseInputs ? context->convexManifoldCandidateCount : 0;
+		int hitEventContactCount = reuseInputs ? context->contactHitEventIdCount : 0;
+		if ( reuseInputs == false )
 		{
-			int contactIndex = contactIndices[i];
-			if ( contactIndex < 0 || contactIndex >= world->contacts.count ) return false;
-			const b3Contact* contact = world->contacts.data + contactIndex;
-			if ( contact->contactId != contactIndex || contact->shapeIdA < 0 || contact->shapeIdA >= world->shapes.count ||
-				 contact->shapeIdB < 0 || contact->shapeIdB >= world->shapes.count )
+			for ( int i = 0; i < contactCount; ++i )
 			{
-				return false;
+				int contactIndex = contactIndices[i];
+				if ( contactIndex < 0 || contactIndex >= world->contacts.count ) return false;
+				const b3Contact* contact = world->contacts.data + contactIndex;
+				if ( contact->contactId != contactIndex || contact->shapeIdA < 0 || contact->shapeIdA >= world->shapes.count ||
+					 contact->shapeIdB < 0 || contact->shapeIdB >= world->shapes.count )
+				{
+					return false;
+				}
+				const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
+				const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
+				bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
+					( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
+					( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
+					b3MetalSupportsHullSphere( shapeA, shapeB );
+				candidateCount += eligible;
+				hitEventContactCount += eligible && ( ( shapeA->flags & b3_enableHitEvents ) != 0 ||
+					( shapeB->flags & b3_enableHitEvents ) != 0 );
 			}
-			const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
-			const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
-			bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
-				( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
-				( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
-				b3MetalSupportsHullSphere( shapeA, shapeB );
-			candidateCount += eligible;
-			hitEventContactCount += eligible && ( ( shapeA->flags & b3_enableHitEvents ) != 0 ||
-				( shapeB->flags & b3_enableHitEvents ) != 0 );
 		}
-		context->contactHitEventIdCount = 0;
+		if ( reuseInputs == false ) context->contactHitEventIdCount = 0;
 		if ( candidateCount == 0 ) return true;
 
 		NSUInteger inputBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldInput );
@@ -4077,64 +4100,80 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 			context->contactPrepareGeneration = 1;
 		}
 		b3MetalConvexManifoldInput* inputs = context->convexManifoldInputBuffer.contents;
-		int* hitEventContactIds = context->contactHitEventIdBuffer.contents;
-		memset( inputs, 0, inputBytes );
-		for ( int i = 0; i < contactCount; ++i )
+		if ( reuseInputs == false )
 		{
-			int contactIndex = contactIndices[i];
-			if ( contactIndex < 0 || contactIndex >= world->contacts.count ) return false;
-			const b3Contact* contact = world->contacts.data + contactIndex;
-			if ( contact->contactId != contactIndex || contact->shapeIdA < 0 || contact->shapeIdA >= world->shapes.count ||
-				 contact->shapeIdB < 0 || contact->shapeIdB >= world->shapes.count )
+			int* hitEventContactIds = context->contactHitEventIdBuffer.contents;
+			memset( inputs, 0, inputBytes );
+			for ( int i = 0; i < contactCount; ++i )
 			{
-				return false;
+				int contactIndex = contactIndices[i];
+				if ( contactIndex < 0 || contactIndex >= world->contacts.count ) return false;
+				const b3Contact* contact = world->contacts.data + contactIndex;
+				if ( contact->contactId != contactIndex || contact->shapeIdA < 0 ||
+					 contact->shapeIdA >= world->shapes.count || contact->shapeIdB < 0 ||
+					 contact->shapeIdB >= world->shapes.count )
+				{
+					return false;
+				}
+				const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
+				const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
+				bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
+					( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
+					( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
+					b3MetalSupportsHullSphere( shapeA, shapeB );
+				if ( eligible == false ) continue;
+				if ( ( shapeA->flags & b3_enableHitEvents ) != 0 || ( shapeB->flags & b3_enableHitEvents ) != 0 )
+				{
+					hitEventContactIds[context->contactHitEventIdCount++] = contactIndex;
+				}
+				b3MetalConvexManifoldInput* input = inputs + i;
+				input->eligible = 1;
+				input->shapeIdA = (uint32_t)contact->shapeIdA;
+				input->shapeIdB = (uint32_t)contact->shapeIdB;
+				input->contactId = (uint32_t)contactIndex;
+				input->contactGeneration = contact->generation;
+				bool prepareEligible = world->contactRecycleDistance == 0.0f &&
+					( contact->flags & b3_simEnablePreSolveEvents ) == 0 && world->metalDefaultFrictionCallback &&
+					world->metalDefaultRestitutionCallback;
+				input->prepareEligible = prepareEligible ? 1u : 0u;
+				if ( contact->shapeIdA >= context->convexShapeGeometryCount ||
+					 contact->shapeIdB >= context->convexShapeGeometryCount )
+				{
+					return false;
+				}
+				const b3MetalShapeGeometry* geometry = context->convexShapeGeometryBuffer.contents;
+				if ( geometry[contact->shapeIdA].supported == 0 || geometry[contact->shapeIdB].supported == 0 ) return false;
+				int bodyIdA = geometry[contact->shapeIdA].bodyId;
+				int bodyIdB = geometry[contact->shapeIdB].bodyId;
+				if ( bodyIdA < 0 || bodyIdA >= context->convexBodyTransformCount || bodyIdB < 0 ||
+					 bodyIdB >= context->convexBodyTransformCount ) return false;
+				const b3MetalBodyTransform* transforms = context->convexBodyTransformBuffer.contents;
+				if ( transforms[bodyIdA].supported == 0 || transforms[bodyIdB].supported == 0 ) return false;
+				const b3Body* bodyA = world->bodies.data + bodyIdA;
+				const b3Body* bodyB = world->bodies.data + bodyIdB;
+				input->indexA = bodyA->type == b3_staticBody ? B3_NULL_INDEX : bodyA->localIndex;
+				input->indexB = bodyB->type == b3_staticBody ? B3_NULL_INDEX : bodyB->localIndex;
+				const b3BodySim* simA = b3GetBodySim( (b3World*)world, (b3Body*)bodyA );
+				const b3BodySim* simB = b3GetBodySim( (b3World*)world, (b3Body*)bodyB );
+				bool isFast = ( simA->flags & b3_isFast ) != 0 || ( simB->flags & b3_isFast ) != 0;
+				bool bypassEligible = prepareEligible && ( contact->flags & b3_simTouchingFlag ) != 0 &&
+					( contact->flags & b3_simMetalManifold ) != 0 && contact->manifoldCount == 1 &&
+					contact->manifolds != NULL && isFast == false && ( shapeA->flags & b3_enableHitEvents ) == 0 &&
+					( shapeB->flags & b3_enableHitEvents ) == 0 && world->recording == NULL;
+				input->prepareEligible |= bypassEligible ? 2u : 0u;
 			}
-			const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
-			const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
-			bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
-				( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
-				( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
-				b3MetalSupportsHullSphere( shapeA, shapeB );
-			if ( eligible == false ) continue;
-			if ( ( shapeA->flags & b3_enableHitEvents ) != 0 || ( shapeB->flags & b3_enableHitEvents ) != 0 )
-			{
-				hitEventContactIds[context->contactHitEventIdCount++] = contactIndex;
-			}
-			b3MetalConvexManifoldInput* input = inputs + i;
-			input->eligible = 1;
-			input->shapeIdA = (uint32_t)contact->shapeIdA;
-			input->shapeIdB = (uint32_t)contact->shapeIdB;
-			input->contactId = (uint32_t)contactIndex;
-			input->contactGeneration = contact->generation;
-			bool prepareEligible = world->contactRecycleDistance == 0.0f &&
-				( contact->flags & b3_simEnablePreSolveEvents ) == 0 &&
-				world->metalDefaultFrictionCallback && world->metalDefaultRestitutionCallback;
-			input->prepareEligible = prepareEligible ? 1u : 0u;
-			if ( contact->shapeIdA >= context->convexShapeGeometryCount ||
-				 contact->shapeIdB >= context->convexShapeGeometryCount )
-			{
-				return false;
-			}
-			const b3MetalShapeGeometry* geometry = context->convexShapeGeometryBuffer.contents;
-			if ( geometry[contact->shapeIdA].supported == 0 || geometry[contact->shapeIdB].supported == 0 ) return false;
-			int bodyIdA = geometry[contact->shapeIdA].bodyId;
-			int bodyIdB = geometry[contact->shapeIdB].bodyId;
-			if ( bodyIdA < 0 || bodyIdA >= context->convexBodyTransformCount || bodyIdB < 0 ||
-				 bodyIdB >= context->convexBodyTransformCount ) return false;
-			const b3MetalBodyTransform* transforms = context->convexBodyTransformBuffer.contents;
-			if ( transforms[bodyIdA].supported == 0 || transforms[bodyIdB].supported == 0 ) return false;
-			const b3Body* bodyA = world->bodies.data + bodyIdA;
-			const b3Body* bodyB = world->bodies.data + bodyIdB;
-			input->indexA = bodyA->type == b3_staticBody ? B3_NULL_INDEX : bodyA->localIndex;
-			input->indexB = bodyB->type == b3_staticBody ? B3_NULL_INDEX : bodyB->localIndex;
-			const b3BodySim* simA = b3GetBodySim( (b3World*)world, (b3Body*)bodyA );
-			const b3BodySim* simB = b3GetBodySim( (b3World*)world, (b3Body*)bodyB );
-			bool isFast = ( simA->flags & b3_isFast ) != 0 || ( simB->flags & b3_isFast ) != 0;
-			bool bypassEligible = prepareEligible && ( contact->flags & b3_simTouchingFlag ) != 0 &&
-				( contact->flags & b3_simMetalManifold ) != 0 && contact->manifoldCount == 1 &&
-				contact->manifolds != NULL && isFast == false && ( shapeA->flags & b3_enableHitEvents ) == 0 &&
-				( shapeB->flags & b3_enableHitEvents ) == 0 && world->recording == NULL;
-			input->prepareEligible |= bypassEligible ? 2u : 0u;
+			context->convexManifoldInputCount = contactCount;
+			context->convexManifoldCandidateCount = candidateCount;
+			context->convexManifoldInputPairRevision = world->broadPhase.pairSetRevision;
+			context->convexManifoldInputGraphRevision = world->constraintGraph.revision;
+			context->convexManifoldInputRevision = world->metalContactInputRevision;
+			( (b3World*)world )->metalContactInputPackCount += 1;
+			( (b3World*)world )->metalLastContactInputBytes = inputBytes;
+		}
+		else
+		{
+			( (b3World*)world )->metalContactInputReuseCount += 1;
+			( (b3World*)world )->metalLastContactInputBytes = 0;
 		}
 
 		struct { uint32_t contactCount; float linearSlop, speculativeDistance; uint32_t bodyCount; } params = {

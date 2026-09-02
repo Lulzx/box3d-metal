@@ -1498,6 +1498,7 @@ void b3Shape_EnablePreSolveEvents( b3ShapeId shapeId, bool flag )
 
 	b3Shape* shape = b3GetShape( world, shapeId );
 	shape->flags = flag ? shape->flags | b3_enablePreSolveEvents : shape->flags & ~b3_enablePreSolveEvents;
+	b3BumpMetalContactInputRevision( world );
 }
 
 bool b3Shape_ArePreSolveEventsEnabled( b3ShapeId shapeId )
@@ -1519,6 +1520,7 @@ void b3Shape_EnableHitEvents( b3ShapeId shapeId, bool flag )
 
 	b3Shape* shape = b3GetShape( world, shapeId );
 	shape->flags = flag ? shape->flags | b3_enableHitEvents : shape->flags & ~b3_enableHitEvents;
+	b3BumpMetalContactInputRevision( world );
 }
 
 bool b3Shape_AreHitEventsEnabled( b3ShapeId shapeId )

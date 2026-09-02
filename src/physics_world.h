@@ -288,8 +288,13 @@ typedef struct b3World
 	uint64_t metalContactCollisionBypassCount;
 	uint64_t metalContactCollisionCpuCount;
 	uint64_t metalLastContactCollisionExceptionCount;
+	uint64_t metalContactInputPackCount;
+	uint64_t metalContactInputReuseCount;
+	uint64_t metalLastContactInputBytes;
+	uint64_t metalContactCoverageBypassCount;
 	uint64_t metalContactManifoldSyncCount;
 	uint64_t metalContactManifoldGeneration;
+	uint64_t metalContactInputRevision;
 	uint64_t metalContactImpulseStoreBypassCount;
 	uint64_t metalContactImpulseEventSyncCount;
 	uint64_t metalContactImpulseSyncCount;
@@ -364,6 +369,17 @@ typedef struct b3World
 	bool enableSpeculative;
 	bool inUse;
 } b3World;
+
+static inline void b3BumpMetalContactInputRevision( b3World* world )
+{
+#if defined( BOX3D_METAL )
+	world->metalContactInputRevision += 1;
+	if ( world->metalContactInputRevision == 0 )
+		world->metalContactInputRevision = 1;
+#else
+	B3_UNUSED( world );
+#endif
+}
 
 b3World* b3GetUnlockedWorldFromId( b3WorldId id );
 b3World* b3GetWorldFromId( b3WorldId id );
