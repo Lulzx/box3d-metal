@@ -131,6 +131,15 @@ bit write. `awakeIslandBitSetClearBypassCount` and
 Erin's original clear, deterministic union, split-candidate reduction, and
 reverse island traversal unchanged.
 
+Finalization arithmetic now lands in a private Metal buffer. Shape AABB
+generation and resident tree refit consume that private authority directly;
+they no longer share a CPU-visible result allocation. A checked blit populates
+a separate host mirror only because the remaining CPU body-finalization pass
+still applies transforms, move events, flags, force reset, sleep, and CCD state.
+`lastFinalizationReadbackBytes` makes this remaining transfer explicit. The
+next residency boundary can omit that blit once body transforms and move events
+have lazy CPU mirrors, without changing the device AABB/broad-phase pipeline.
+
 An independently opt-in pair stage copies Erin's existing static, kinematic,
 and dynamic tree topology into persistent shared Metal buffers. A monotonic
 broad-phase revision lets node snapshots remain resident across pair queries.

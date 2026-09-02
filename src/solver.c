@@ -1299,6 +1299,8 @@ static bool b3ExecuteMetalUnconstrainedSubsteps( b3StepContext* context, int sub
 	world->metalLastUnconstrainedGpuMilliseconds = stats.gpuMilliseconds;
 	context->metalStatesResident = true;
 	world->metalFinalizationDispatchCount += context->metalFinalizeResults != NULL ? 1 : 0;
+	world->metalLastFinalizationReadbackBytes = context->metalFinalizeResults != NULL ?
+		(uint64_t)bodyCount * sizeof( b3MetalFinalizeResult ) : 0;
 	return true;
 }
 
@@ -1384,6 +1386,8 @@ static bool b3ExecuteMetalConstraintSubsteps( b3StepContext* context )
 	}
 	context->metalStatesResident = true;
 	world->metalFinalizationDispatchCount += context->metalFinalizeResults != NULL ? 1 : 0;
+	world->metalLastFinalizationReadbackBytes = context->metalFinalizeResults != NULL ?
+		(uint64_t)bodyCount * sizeof( b3MetalFinalizeResult ) : 0;
 	return true;
 }
 
@@ -1419,6 +1423,7 @@ static void b3ExecuteMetalFinalization( b3StepContext* context, int bodyCount )
 
 	context->metalFinalizeResults = results;
 	world->metalFinalizationDispatchCount += 1;
+	world->metalLastFinalizationReadbackBytes = (uint64_t)bodyCount * sizeof( b3MetalFinalizeResult );
 	world->metalLastFinalizationGpuMilliseconds = stats.gpuMilliseconds;
 }
 #endif
@@ -1906,6 +1911,7 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 	world->metalLastResidentConvexConstraintCount = 0;
 	world->metalLastContactPrepareIndexBytes = 0;
 	world->metalLastContactImpulseResultBytes = 0;
+	world->metalLastFinalizationReadbackBytes = 0;
 #endif
 
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );

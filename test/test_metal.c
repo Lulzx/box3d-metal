@@ -1562,6 +1562,7 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.lastContactHitEventBitSetBytes == 0 );
 	ENSURE( profile.awakeIslandBitSetClearBypassCount == 4 );
 	ENSURE( profile.lastAwakeIslandBitSetBytes == 0 );
+	ENSURE( profile.lastFinalizationReadbackBytes == 0 );
 	b3Counters cpuCounters = b3World_GetCounters( cpuWorld );
 	b3Counters gpuCounters = b3World_GetCounters( gpuWorld );
 	ENSURE( cpuCounters.satCallCount == gpuCounters.satCallCount );
@@ -2385,10 +2386,11 @@ static int MetalWorldIntegrationTest( void )
 	}
 
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
-	printf( "    integrated world device=%s fusedDispatches=%llu shapeDispatches=%llu compact=%d/%d "
+	printf( "    integrated world device=%s fusedDispatches=%llu shapeDispatches=%llu compact=%d/%d finalizeBytes=%llu "
 			"fullApplies=%llu syncShapes=%llu maxPositionError=%.3g maxRotationError=%.3g maxAABBError=%.3g\n",
 			profile.deviceName, (unsigned long long)profile.unconstrainedDispatchCount,
 			(unsigned long long)profile.shapeDispatchCount, profile.lastEnlargedShapeResultCount, profile.lastShapeResultCount,
+			(unsigned long long)profile.lastFinalizationReadbackBytes,
 			(unsigned long long)profile.shapeResultApplyCount, (unsigned long long)profile.shapeBoundsSyncCount, maxPositionError,
 			maxRotationError, maxAABBError );
 	ENSURE( profile.enabled );
@@ -2396,6 +2398,7 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.unconstrainedFallbackCount == 0 );
 	ENSURE( profile.finalizationEnabled );
 	ENSURE( profile.finalizationDispatchCount == 1 );
+	ENSURE( profile.lastFinalizationReadbackBytes == (uint64_t)count * sizeof( b3MetalFinalizeResult ) );
 	ENSURE( profile.shapeDispatchCount == 1 );
 	ENSURE( profile.shapeFallbackCount == 0 );
 	ENSURE( profile.shapeCompactDispatchCount == 1 );

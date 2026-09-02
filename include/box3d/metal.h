@@ -100,6 +100,10 @@ typedef struct b3MetalProfile
 	uint64_t jointFallbackCount;
 	uint64_t finalizationDispatchCount;
 	uint64_t finalizationFallbackCount;
+	/// Bytes explicitly copied from private device finalization authority into
+	/// the latest CPU apply mirror. This remains nonzero until body transforms
+	/// and move events become lazily materialized.
+	uint64_t lastFinalizationReadbackBytes;
 	uint64_t shapeDispatchCount;
 	uint64_t shapeFallbackCount;
 	uint64_t shapeCompactDispatchCount;
