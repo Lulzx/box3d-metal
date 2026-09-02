@@ -249,7 +249,7 @@ paths, not yet the final performance architecture.
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 | Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
 | Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere local geometry is batched on Metal; compact hull geometry is deduplicated and retained across revision-stable dispatches. CPU applies persistence, materials, callbacks, and state transitions. High-aspect/speculative hull-sphere, other hull pairs, meshes, height fields, and compounds remain CPU |
-| Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal; mixed/recycled/callback/overflow sets and impulse persistence remain CPU |
+| Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. After restitution, Metal extracts an 80-byte result per active contact into a generation-tagged contact-ID table; CPU public-manifold/event synchronization consumes that table instead of rereading 1,696-byte SIMD records. Mixed/recycled/callback/overflow sets remain CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
 | Double-precision world positions | VF64 exact add plus directed narrowing produces conservative far-world AABBs on Metal |
@@ -348,6 +348,8 @@ The first resident convex contact-preparation kernel is recorded in
 The follow-on contact-ID metadata residency and four-byte lane schedule are
 recorded in
 [`benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md`](benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md).
+Compact post-solve impulse extraction and hit-event equivalence are recorded in
+[`benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md`](benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

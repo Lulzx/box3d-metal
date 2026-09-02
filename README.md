@@ -76,6 +76,11 @@ per SIMD lane; it no longer walks and dereferences every contact to repack the
 records. Normal and identity remain private on-device. Mixed, recycled, callback,
 overflow, or unsupported solver worlds fail closed to CPU preparation, including
 explicit prepare-on-fallback recovery when a later constraint rejects the route.
+After the final restitution pass, Metal writes an 80-byte compact impulse record
+per active contact into a generation-tagged contact-ID table. The CPU still
+synchronizes public manifolds and constructs hit events in upstream order, but
+reads these compact records instead of traversing the full 1,696-byte SIMD-wide
+solver constraints. Invalid or unsupported routes retain the original store path.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.

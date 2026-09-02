@@ -7,6 +7,7 @@
 
 #include "body.h"
 #include "broad_phase.h"
+#include "contact_solver.h"
 #include "math_internal.h"
 #include "manifold.h"
 #include "metal_backend.h"
@@ -1089,6 +1090,7 @@ static int MetalResidentSolverOwnershipTest( void )
 	ENSURE( profile.contactPrepareDispatchCount == 1 );
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
 	ENSURE( profile.lastContactPrepareIndexBytes == 4 * sizeof( uint32_t ) );
+	ENSURE( profile.lastContactImpulseResultBytes == sizeof( b3MetalContactImpulseResult ) );
 	b3Vec3 cpuVelocity = b3Body_GetLinearVelocity( cpuBodyB );
 	b3Vec3 gpuVelocity = b3Body_GetLinearVelocity( bodyB );
 	ENSURE( b3Length( b3Sub( cpuVelocity, gpuVelocity ) ) <= 3.0e-5f );
@@ -1106,6 +1108,7 @@ static int MetalResidentSolverOwnershipTest( void )
 	ENSURE( profile.contactPrepareDispatchCount == 1 );
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
 	ENSURE( profile.lastContactPrepareIndexBytes == 0 );
+	ENSURE( profile.lastContactImpulseResultBytes == 0 );
 
 	b3DestroyWorld( worldId );
 	b3DestroyWorld( cpuWorldId );
@@ -1352,10 +1355,12 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	}
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    resident contact prepare contacts=%d dispatches=%llu indexBytes=%llu legacyBytes=%zu "
-		"transformError=%.3g velocityError=%.3g\n",
+		"impulseBytes=%llu legacyImpulseBytes=%zu transformError=%.3g velocityError=%.3g\n",
 		count, (unsigned long long)profile.contactPrepareDispatchCount,
 		(unsigned long long)profile.lastContactPrepareIndexBytes,
 		(size_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * 144,
+		(unsigned long long)profile.lastContactImpulseResultBytes,
+		(size_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * sizeof( b3ContactConstraintWide ),
 		maxTransformError, maxVelocityError );
 	ENSURE( profile.contactPrepareDispatchCount == 4 );
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
@@ -1363,8 +1368,59 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.lastResidentConvexConstraintCount == ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH );
 	ENSURE( profile.lastContactPrepareIndexBytes ==
 		(uint64_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * sizeof( uint32_t ) );
+	ENSURE( profile.lastContactImpulseResultBytes == (uint64_t)count * sizeof( b3MetalContactImpulseResult ) );
 	ENSURE( maxTransformError <= 3.0e-4f );
 	ENSURE( maxVelocityError <= 3.0e-4f );
+	b3DestroyWorld( gpuWorld );
+	b3DestroyWorld( cpuWorld );
+	return 0;
+}
+
+static int MetalResidentContactHitEventTest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	worldDef.hitEventThreshold = 1.0f;
+	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
+	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
+	b3World_SetContactRecycleDistance( cpuWorld, 0.0f );
+	b3World_SetContactRecycleDistance( gpuWorld, 0.0f );
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3BodyDef staticDef = b3DefaultBodyDef();
+	b3BodyId cpuStatic = b3CreateBody( cpuWorld, &staticDef );
+	b3BodyId gpuStatic = b3CreateBody( gpuWorld, &staticDef );
+	b3CreateSphereShape( cpuStatic, &shapeDef, &sphere );
+	b3CreateSphereShape( gpuStatic, &shapeDef, &sphere );
+	b3BodyDef dynamicDef = b3DefaultBodyDef();
+	dynamicDef.type = b3_dynamicBody;
+	dynamicDef.enableSleep = false;
+	dynamicDef.position = (b3Pos){ 0.99, 0.0, 0.0 };
+	dynamicDef.linearVelocity = (b3Vec3){ -10.0f, 0.0f, 0.0f };
+	b3BodyId cpuDynamic = b3CreateBody( cpuWorld, &dynamicDef );
+	b3BodyId gpuDynamic = b3CreateBody( gpuWorld, &dynamicDef );
+	shapeDef.enableHitEvents = true;
+	b3CreateSphereShape( cpuDynamic, &shapeDef, &sphere );
+	b3CreateSphereShape( gpuDynamic, &shapeDef, &sphere );
+
+	b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
+	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
+	b3ContactEvents cpuEvents = b3World_GetContactEvents( cpuWorld );
+	b3ContactEvents gpuEvents = b3World_GetContactEvents( gpuWorld );
+	ENSURE( cpuEvents.hitCount == 1 );
+	ENSURE( gpuEvents.hitCount == cpuEvents.hitCount );
+	b3ContactHitEvent cpuHit = cpuEvents.hitEvents[0];
+	b3ContactHitEvent gpuHit = gpuEvents.hitEvents[0];
+	ENSURE( fabsf( cpuHit.approachSpeed - gpuHit.approachSpeed ) <= 1.0e-5f );
+	ENSURE( b3Length( b3Sub( cpuHit.normal, gpuHit.normal ) ) <= 1.0e-5f );
+	ENSURE( b3Length( b3SubPos( cpuHit.point, gpuHit.point ) ) <= 1.0e-5f );
+	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( profile.contactPrepareDispatchCount == 1 );
+	ENSURE( profile.lastContactImpulseResultBytes == sizeof( b3MetalContactImpulseResult ) );
+	printf( "    resident hit event speed=%.3g impulseBytes=%llu cpuGpuMatch=yes\n",
+		gpuHit.approachSpeed, (unsigned long long)profile.lastContactImpulseResultBytes );
 	b3DestroyWorld( gpuWorld );
 	b3DestroyWorld( cpuWorld );
 	return 0;
@@ -2627,6 +2683,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalContactPreparePreSolveExceptionTest );
 	RUN_SUBTEST( MetalContactPrepareFallbackTest );
 	RUN_SUBTEST( MetalResidentContactPrepareDifferentialTest );
+	RUN_SUBTEST( MetalResidentContactHitEventTest );
 	RUN_SUBTEST( MetalPairTraversalTest );
 	RUN_SUBTEST( MetalExistingPairFilterTest );
 	RUN_SUBTEST( MetalPairTraversalFallbackTest );

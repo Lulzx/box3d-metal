@@ -36,6 +36,9 @@ typedef struct b3MetalProfile
 	/// post-persistence metadata table is retained by contact id and is not
 	/// repacked into this stream.
 	uint64_t lastContactPrepareIndexBytes;
+	/// Bytes Metal authored for active contact-id-indexed impulse results in the
+	/// latest successful resident convex solve.
+	uint64_t lastContactImpulseResultBytes;
 	uint64_t jointDispatchCount;
 	uint64_t jointFallbackCount;
 	uint64_t finalizationDispatchCount;

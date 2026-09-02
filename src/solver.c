@@ -1815,6 +1815,8 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 #if defined( BOX3D_METAL )
 	world->metalLastResidentConvexContactCount = 0;
 	world->metalLastResidentConvexConstraintCount = 0;
+	world->metalLastContactPrepareIndexBytes = 0;
+	world->metalLastContactImpulseResultBytes = 0;
 #endif
 
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
@@ -1959,7 +1961,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 #if defined( BOX3D_METAL )
 		world->metalLastResidentConvexContactCount = residentConvexContactCount;
 		world->metalLastResidentConvexConstraintCount = stepContext->metalResidentConvexConstraintCount;
-		world->metalLastContactPrepareIndexBytes = 0;
 #endif
 
 		// Prepare and store run as one flat parallel-for over the entire wide constraint range,

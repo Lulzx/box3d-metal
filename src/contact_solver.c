@@ -8,6 +8,7 @@
 #include "contact.h"
 #include "core.h"
 #include "math_internal.h"
+#include "metal_backend.h"
 #include "physics_world.h"
 #include "platform.h"
 #include "simd.h"
@@ -1832,6 +1833,16 @@ void b3StoreImpulses_Convex( b3SolverBlock block, b3StepContext* context, int wo
 	b3BitSet* hitEventBitSet = &taskContext->hitEventBitSet;
 	bool hasHitEvents = taskContext->hasHitEvents;
 	float negHitThreshold = -world->hitEventThreshold;
+	const b3MetalContactImpulseResult* impulseResults = NULL;
+	uint32_t impulseGeneration = 0;
+	int impulseResultCount = 0;
+#if defined( BOX3D_METAL )
+	if ( context->metalPrepareConvexOnGpu )
+	{
+		impulseResults = b3MetalGetResidentContactImpulseTable(
+			world->metalContext, &impulseGeneration, &impulseResultCount );
+	}
+#endif
 
 	int wideIndex = block.startIndex;
 	int endWideIndex = block.startIndex + block.count;
@@ -1876,42 +1887,70 @@ void b3StoreImpulses_Convex( b3SolverBlock block, b3StepContext* context, int wo
 					break;
 				}
 
-				b3Manifold* m = c->manifolds[lane];
+				int contactId = contactIds[contactIndex];
+				b3Contact* contact = b3Array_Get( world->contacts, contactId );
+				b3Manifold* m = impulseResults != NULL ? contact->manifolds : c->manifolds[lane];
 				if ( m == NULL )
 				{
 					continue;
 				}
 
-				float f1 = frictionImpulse1[lane];
-				float f2 = frictionImpulse2[lane];
-				m->frictionImpulse = (b3Vec3){
-					f1 * tangent1X[lane] + f2 * tangent2X[lane],
-					f1 * tangent1Y[lane] + f2 * tangent2Y[lane],
-					f1 * tangent1Z[lane] + f2 * tangent2Z[lane],
-				};
-				m->twistImpulse = twistImpulse[lane];
-				m->rollingImpulse = (b3Vec3){
-					rollingImpulseX[lane],
-					rollingImpulseY[lane],
-					rollingImpulseZ[lane],
-				};
-
 				int pointCount = m->pointCount;
-				for ( int pointIndex = 0; pointIndex < pointCount; ++pointIndex )
+				const b3MetalContactImpulseResult* result = NULL;
+				if ( impulseResults != NULL && 0 <= contactId && contactId < impulseResultCount )
 				{
-					const b3ContactConstraintPointWide* cp = c->points + pointIndex;
-					const float* normalImpulse = (float*)&cp->normalImpulses;
-					const float* totalNormalImpulse = (float*)&cp->totalNormalImpulses;
-					const float* normalVelocity = (float*)&cp->relativeVelocities;
-
-					b3ManifoldPoint* mp = m->points + pointIndex;
-					mp->normalImpulse = normalImpulse[lane];
-					mp->totalNormalImpulse = totalNormalImpulse[lane];
-					mp->normalVelocity = normalVelocity[lane];
+					const b3MetalContactImpulseResult* candidate = impulseResults + contactId;
+					if ( candidate->contactId == (uint32_t)contactId && candidate->generation == impulseGeneration &&
+						candidate->pointCount == (uint32_t)pointCount && candidate->flags == 1 )
+					{
+						result = candidate;
+					}
+				}
+#if defined( BOX3D_METAL )
+				B3_ASSERT( context->metalPrepareConvexOnGpu == false || result != NULL );
+#endif
+				if ( result != NULL )
+				{
+					m->frictionImpulse = (b3Vec3){ result->frictionX, result->frictionY, result->frictionZ };
+					m->twistImpulse = result->twistImpulse;
+					m->rollingImpulse = (b3Vec3){ result->rollingX, result->rollingY, result->rollingZ };
+				}
+				else
+				{
+					float f1 = frictionImpulse1[lane];
+					float f2 = frictionImpulse2[lane];
+					m->frictionImpulse = (b3Vec3){
+						f1 * tangent1X[lane] + f2 * tangent2X[lane],
+						f1 * tangent1Y[lane] + f2 * tangent2Y[lane],
+						f1 * tangent1Z[lane] + f2 * tangent2Z[lane],
+					};
+					m->twistImpulse = twistImpulse[lane];
+					m->rollingImpulse = (b3Vec3){
+						rollingImpulseX[lane], rollingImpulseY[lane], rollingImpulseZ[lane],
+					};
 				}
 
-				int contactId = contactIds[contactIndex];
-				b3Contact* contact = b3Array_Get( world->contacts, contactId );
+				for ( int pointIndex = 0; pointIndex < pointCount; ++pointIndex )
+				{
+					b3ManifoldPoint* mp = m->points + pointIndex;
+					if ( result != NULL )
+					{
+						mp->normalImpulse = result->points[pointIndex].normalImpulse;
+						mp->totalNormalImpulse = result->points[pointIndex].totalNormalImpulse;
+						mp->normalVelocity = result->points[pointIndex].normalVelocity;
+					}
+					else
+					{
+						const b3ContactConstraintPointWide* cp = c->points + pointIndex;
+						const float* normalImpulse = (float*)&cp->normalImpulses;
+						const float* totalNormalImpulse = (float*)&cp->totalNormalImpulses;
+						const float* normalVelocity = (float*)&cp->relativeVelocities;
+						mp->normalImpulse = normalImpulse[lane];
+						mp->totalNormalImpulse = totalNormalImpulse[lane];
+						mp->normalVelocity = normalVelocity[lane];
+					}
+				}
+
 				if ( ( contact->flags & b3_simEnableHitEvent ) != 0 )
 				{
 					for ( int k = 0; k < pointCount; ++k )

@@ -55,6 +55,23 @@ typedef struct b3MetalConvexManifoldResult
 	uint32_t contactId;
 } b3MetalConvexManifoldResult;
 
+// Compact post-solve state written by Metal and indexed by contact id. This is
+// the CPU/public-manifold synchronization boundary; it avoids rereading the
+// complete SIMD-wide solver record after the command buffer completes.
+typedef struct b3MetalContactImpulseResult
+{
+	uint32_t contactId;
+	uint32_t generation;
+	uint32_t pointCount;
+	uint32_t flags;
+	float frictionX, frictionY, frictionZ, twistImpulse;
+	float rollingX, rollingY, rollingZ, padding;
+	struct
+	{
+		float normalImpulse, totalNormalImpulse, normalVelocity, padding;
+	} points[2];
+} b3MetalContactImpulseResult;
+
 typedef struct b3MetalDispatchStats
 {
 	double gpuMilliseconds;
@@ -141,6 +158,11 @@ bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalCon
 // collision pass. The narrow-phase dispatch preallocates the table, so parallel
 // collision workers only write disjoint records and never allocate.
 bool b3MetalStageResidentContactPrepare( b3MetalContext* context, const b3Contact* contact );
+
+// Return the current shared compact post-solve table. A result is authoritative
+// only when its contactId and generation match the requested entry.
+const b3MetalContactImpulseResult* b3MetalGetResidentContactImpulseTable(
+	const b3MetalContext* context, uint32_t* generation, int* resultCount );
 
 // Mark the resident tree snapshot as matching CPU bounds after a successful
 // shape-result leaf update/refit and the corresponding CPU bookkeeping pass.

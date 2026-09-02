@@ -60,6 +60,7 @@ struct b3MetalContext
 	id<MTLComputePipelineState> convexManifoldPrefixPipeline;
 	id<MTLComputePipelineState> convexManifoldScatterPipeline;
 	id<MTLComputePipelineState> prepareContactsPipeline;
+	id<MTLComputePipelineState> storeContactImpulsesPipeline;
 	id<MTLComputePipelineState> warmStartContactsPipeline;
 	id<MTLComputePipelineState> solveContactsPipeline;
 	id<MTLComputePipelineState> restitutionContactsPipeline;
@@ -162,6 +163,9 @@ struct b3MetalContext
 	NSUInteger contactPrepareIndexCapacity;
 	id<MTLBuffer> contactPrepareStatusBuffer;
 	uint32_t contactPrepareGeneration;
+	id<MTLBuffer> contactImpulseResultBuffer;
+	NSUInteger contactImpulseResultCapacity;
+	int contactImpulseResultCount;
 	id<MTLBuffer> meshContactBuffer;
 	NSUInteger meshContactCapacity;
 	id<MTLBuffer> meshManifoldBuffer;
@@ -365,6 +369,14 @@ typedef struct b3MetalContactPrepareParams
 _Static_assert( sizeof( b3MetalContactPreparePoint ) == 32, "Metal contact-prepare point ABI changed" );
 _Static_assert( sizeof( b3MetalContactPrepareInput ) == 144, "Metal contact-prepare input ABI changed" );
 _Static_assert( sizeof( b3MetalContactPrepareParams ) == 48, "Metal contact-prepare parameter ABI changed" );
+_Static_assert( sizeof( b3MetalContactImpulseResult ) == 80, "Metal contact-impulse result ABI changed" );
+
+typedef struct b3MetalContactImpulseParams
+{
+	uint32_t wideCount, tableCount, generation, padding;
+} b3MetalContactImpulseParams;
+
+_Static_assert( sizeof( b3MetalContactImpulseParams ) == 16, "Metal contact-impulse parameter ABI changed" );
 
 typedef struct b3MetalDistanceJoint
 {
@@ -1050,6 +1062,10 @@ static const char* b3_contactSource =
 	"  float rollingImpulseX,rollingImpulseY,rollingImpulseZ,padding; PreparePoint points[2]; };\n"
 	"struct PrepareParams { uint wideCount,tableCount; float warmStartScale,invTau; Softness contactSoftness; float padding0;\n"
 	"  Softness staticSoftness; uint generation; };\n"
+	"struct ImpulsePoint { float normalImpulse,totalNormalImpulse,normalVelocity,padding; };\n"
+	"struct ImpulseResult { uint contactId,generation,pointCount,flags; float frictionX,frictionY,frictionZ,twistImpulse;\n"
+	"  float rollingX,rollingY,rollingZ,padding; ImpulsePoint points[2]; };\n"
+	"struct ImpulseParams { uint wideCount,tableCount,generation,padding; };\n"
 	"struct BodyProperties { float qx,qy,qz,qw; float forceX,forceY,forceZ; float torqueX,torqueY,torqueZ; float invMass;\n"
 	"  float invInertiaLocal[9]; float invInertiaWorld[9]; float linearDamping,angularDamping,gravityScale; };\n"
 	"struct BodyW { V3W v; V3W w; V3W dp; QW dq; };\n"
@@ -1237,6 +1253,17 @@ static const char* b3_contactSource =
 	"    V3W impulse=mul3(delta,c.normal); a.w=sub3(a.w,mul_sym3(c.invIA,cross3(cp.anchorAs,impulse))); a.v=sub3(a.v,mul3(c.invMassA,impulse));\n"
 	"    b.w=add3(b.w,mul_sym3(c.invIB,cross3(cp.anchorBs,impulse))); b.v=add3(b.v,mul3(c.invMassB,impulse));\n"
 	"  } scatter_bodies(states,c.indexA,a); scatter_bodies(states,c.indexB,b);\n"
+	"}\n"
+	"kernel void b3_store_contact_impulses(const device uint* indices [[buffer(0)]],const device ContactWide* constraints [[buffer(1)]],\n"
+	"  device ImpulseResult* results [[buffer(2)]],constant ImpulseParams& p [[buffer(3)]],uint tid [[thread_position_in_grid]]){\n"
+	"  if(tid>=p.wideCount)return;const device ContactWide& c=constraints[tid];\n"
+	"  for(uint lane=0;lane<4u;++lane){uint contactId=indices[4u*tid+lane];if(contactId==0xffffffffu||contactId>=p.tableCount)continue;\n"
+	"    uint pointCount=uint(c.pointCounts[lane]);if(pointCount==0u||pointCount>2u)continue;ImpulseResult r={};r.contactId=contactId;r.generation=p.generation;r.pointCount=pointCount;r.flags=1u;\n"
+	"    float f1=c.frictionImpulse.x[lane],f2=c.frictionImpulse.y[lane];r.frictionX=f1*c.tangent1.X[lane]+f2*c.tangent2.X[lane];\n"
+	"    r.frictionY=f1*c.tangent1.Y[lane]+f2*c.tangent2.Y[lane];r.frictionZ=f1*c.tangent1.Z[lane]+f2*c.tangent2.Z[lane];r.twistImpulse=c.twistImpulse[lane];\n"
+	"    r.rollingX=c.rollingImpulse.X[lane];r.rollingY=c.rollingImpulse.Y[lane];r.rollingZ=c.rollingImpulse.Z[lane];\n"
+	"    for(uint j=0;j<pointCount;++j){r.points[j].normalImpulse=c.points[j].normalImpulses[lane];r.points[j].totalNormalImpulse=c.points[j].totalNormalImpulses[lane];r.points[j].normalVelocity=c.points[j].relativeVelocities[lane];}\n"
+	"    results[contactId]=r;}\n"
 	"}\n"
 	"void warm_mesh_one(device BodyState* states,device MeshContact* contacts,device MeshManifold* manifolds,uint index){\n"
 	"  device MeshContact& c=contacts[index];BodyS a=load_body(states,c.indexA);BodyS b=load_body(states,c.indexB);\n"
@@ -1486,6 +1513,11 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			? [device newComputePipelineStateWithFunction:prepareContactsFunction error:&error]
 			: nil;
 		[prepareContactsFunction release];
+		id<MTLFunction> storeContactImpulsesFunction = [contactLibrary newFunctionWithName:@"b3_store_contact_impulses"];
+		id<MTLComputePipelineState> storeContactImpulsesPipeline = storeContactImpulsesFunction != nil
+			? [device newComputePipelineStateWithFunction:storeContactImpulsesFunction error:&error]
+			: nil;
+		[storeContactImpulsesFunction release];
 		id<MTLFunction> warmStartFunction = [contactLibrary newFunctionWithName:@"b3_warm_start_contacts"];
 		id<MTLComputePipelineState> warmStartPipeline =
 			warmStartFunction != nil ? [device newComputePipelineStateWithFunction:warmStartFunction error:&error] : nil;
@@ -1565,7 +1597,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			 pairAddOffsetsPipeline == nil || pairUpdateLeavesPipeline == nil || pairRefitPipeline == nil ||
 			 convexManifoldPipeline == nil || convexManifoldScanPipeline == nil || convexManifoldPrefixPipeline == nil ||
 			 convexManifoldScatterPipeline == nil ||
-			 prepareContactsPipeline == nil || warmStartPipeline == nil || solvePipeline == nil ||
+			 prepareContactsPipeline == nil || storeContactImpulsesPipeline == nil || warmStartPipeline == nil || solvePipeline == nil ||
 			 restitutionPipeline == nil || warmStartMeshPipeline == nil || solveMeshPipeline == nil || restitutionMeshPipeline == nil ||
 			 warmStartOverflowPipeline == nil || solveOverflowPipeline == nil || restitutionOverflowPipeline == nil ||
 			 warmStartDistancePipeline == nil || solveDistancePipeline == nil || warmStartParallelPipeline == nil ||
@@ -1590,6 +1622,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[convexManifoldPrefixPipeline release];
 			[convexManifoldScatterPipeline release];
 			[prepareContactsPipeline release];
+			[storeContactImpulsesPipeline release];
 			[warmStartPipeline release];
 			[solvePipeline release];
 			[restitutionPipeline release];
@@ -1632,6 +1665,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[convexManifoldPrefixPipeline release];
 			[convexManifoldScatterPipeline release];
 			[prepareContactsPipeline release];
+			[storeContactImpulsesPipeline release];
 			[warmStartPipeline release];
 			[solvePipeline release];
 			[restitutionPipeline release];
@@ -1676,6 +1710,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		context->convexBodyTransformStepIndex = UINT64_MAX;
 		context->convexBodyTransformRevision = UINT64_MAX;
 		context->prepareContactsPipeline = prepareContactsPipeline;
+		context->storeContactImpulsesPipeline = storeContactImpulsesPipeline;
 		context->warmStartContactsPipeline = warmStartPipeline;
 		context->solveContactsPipeline = solvePipeline;
 		context->restitutionContactsPipeline = restitutionPipeline;
@@ -1739,6 +1774,7 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->contactPrepareTableBuffer release];
 	[context->contactPrepareIndexBuffer release];
 	[context->contactPrepareStatusBuffer release];
+	[context->contactImpulseResultBuffer release];
 	[context->meshContactBuffer release];
 	[context->meshManifoldBuffer release];
 	[context->distanceJointBuffer release];
@@ -1762,6 +1798,7 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->convexManifoldPrefixPipeline release];
 	[context->convexManifoldScatterPipeline release];
 	[context->prepareContactsPipeline release];
+	[context->storeContactImpulsesPipeline release];
 	[context->warmStartContactsPipeline release];
 	[context->solveContactsPipeline release];
 	[context->restitutionContactsPipeline release];
@@ -2227,6 +2264,30 @@ static bool b3MetalEnsureContactPrepareIndexCapacity( b3MetalContext* context, N
 		if ( context->contactPrepareStatusBuffer == nil ) return false;
 	}
 	return true;
+}
+
+static bool b3MetalEnsureContactImpulseResultCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	if ( context->contactImpulseResultCapacity < requiredBytes )
+	{
+		NSUInteger capacity = context->contactImpulseResultCapacity > 0 ? context->contactImpulseResultCapacity : 4096;
+		while ( capacity < requiredBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		memset( buffer.contents, 0, capacity );
+		[context->contactImpulseResultBuffer release];
+		context->contactImpulseResultBuffer = buffer;
+		context->contactImpulseResultCapacity = capacity;
+	}
+	return true;
+}
+
+const b3MetalContactImpulseResult* b3MetalGetResidentContactImpulseTable(
+	const b3MetalContext* context, uint32_t* generation, int* resultCount )
+{
+	if ( generation != NULL ) *generation = context != NULL ? context->contactPrepareGeneration : 0;
+	if ( resultCount != NULL ) *resultCount = context != NULL ? context->contactImpulseResultCount : 0;
+	return context != NULL && context->contactImpulseResultCount > 0 ? context->contactImpulseResultBuffer.contents : NULL;
 }
 
 b3ContactConstraintWide* b3MetalGetContactConstraintStorage( b3MetalContext* context, int constraintCount )
@@ -4066,6 +4127,7 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 	{
 		*stats = (b3MetalDispatchStats){ .bodyCount = bodyCount };
 	}
+	if ( context != NULL ) context->contactImpulseResultCount = 0;
 	if ( context == NULL || stepContext == NULL || bodyCount < 0 ||
 		( stepContext->wideContactCount <= 0 && stepContext->contactConstraintCount <= 0 &&
 		  stepContext->overflowContactConstraintCount <= 0 && stepContext->jointConstraintCount <= 0 &&
@@ -4135,6 +4197,8 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 			 ( finalizeBodies && ( b3MetalEnsureFinalizeResultCapacity( context, finalizationBytes ) == false ||
 			   b3MetalEnsureFinalizePropertiesCapacity( context, finalizePropertyBytes ) == false ) ) ||
 			 ( contactBytes > 0 && b3MetalEnsureContactCapacity( context, contactBytes ) == false ) ||
+			 ( prepareContactsOnGpu && b3MetalEnsureContactImpulseResultCapacity( context,
+			   (NSUInteger)context->convexManifoldTableCount * sizeof( b3MetalContactImpulseResult ) ) == false ) ||
 			 ( meshContactBytes > 0 && b3MetalEnsureMeshContactCapacity( context, meshContactBytes ) == false ) ||
 			 ( meshManifoldBytes > 0 && b3MetalEnsureMeshManifoldCapacity( context, meshManifoldBytes ) == false ) ||
 			 ( distanceJointBytes > 0 && b3MetalEnsureDistanceJointCapacity( context, distanceJointBytes ) == false ) ||
@@ -4260,6 +4324,7 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		NSUInteger warmWidth = b3MetalThreadgroupWidth( context->warmStartContactsPipeline );
 		NSUInteger solveWidth = b3MetalThreadgroupWidth( context->solveContactsPipeline );
 		NSUInteger restitutionWidth = b3MetalThreadgroupWidth( context->restitutionContactsPipeline );
+		NSUInteger storeImpulseWidth = b3MetalThreadgroupWidth( context->storeContactImpulsesPipeline );
 		NSUInteger warmMeshWidth = b3MetalThreadgroupWidth( context->warmStartMeshPipeline );
 		NSUInteger solveMeshWidth = b3MetalThreadgroupWidth( context->solveMeshPipeline );
 		NSUInteger restitutionMeshWidth = b3MetalThreadgroupWidth( context->restitutionMeshPipeline );
@@ -4527,6 +4592,23 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 			}
 		}
 
+		if ( prepareContactsOnGpu )
+		{
+			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+			b3MetalContactImpulseParams params = {
+				.wideCount = (uint32_t)stepContext->wideContactCount,
+				.tableCount = (uint32_t)context->convexManifoldTableCount,
+				.generation = context->contactPrepareGeneration,
+			};
+			[encoder setComputePipelineState:context->storeContactImpulsesPipeline];
+			[encoder setBuffer:context->contactPrepareIndexBuffer offset:0 atIndex:0];
+			[encoder setBuffer:context->contactConstraintBuffer offset:0 atIndex:1];
+			[encoder setBuffer:context->contactImpulseResultBuffer offset:0 atIndex:2];
+			[encoder setBytes:&params length:sizeof( params ) atIndex:3];
+			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)stepContext->wideContactCount, 1, 1 )
+				threadsPerThreadgroup:MTLSizeMake( storeImpulseWidth, 1, 1 )];
+		}
+
 		if ( finalizeBodies )
 		{
 			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -4560,6 +4642,12 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		if ( prepareContactsOnGpu && *(const uint32_t*)context->contactPrepareStatusBuffer.contents != 0 )
 		{
 			return false;
+		}
+		if ( prepareContactsOnGpu )
+		{
+			context->contactImpulseResultCount = context->convexManifoldTableCount;
+			stepContext->world->metalLastContactImpulseResultBytes =
+				(uint64_t)stepContext->world->metalLastResidentConvexContactCount * sizeof( b3MetalContactImpulseResult );
 		}
 
 		memcpy( stepContext->states, context->bodyStateBuffer.contents, stateBytes );
