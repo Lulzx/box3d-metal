@@ -18,16 +18,19 @@ For a supported constrained world, one command buffer performs:
 5. Unbiased relaxation iterations.
 6. Restitution for eligible contacts.
 7. Optionally, body and awake-shape finalization using the resident solver state.
-8. One synchronization followed by CPU impulse storage and topology work.
+8. Optional resident tree-leaf updates plus deterministic internal refit.
+9. One synchronization followed by CPU impulse storage and topology work.
 
 Pair generation is currently a separate experimental command sequence. Metal
-copies the existing three dynamic-tree node arrays, counts candidates per moved
+retains the existing three dynamic-tree node arrays, counts candidates per moved
 proxy, computes a stable hierarchical exclusive scan, and writes candidates in
 exact upstream tree and depth-first visitation order. SIMD subgroups scan fixed
 256-lane blocks, a short serial kernel prefixes block totals, and a parallel
-pass adds block offsets. A monotonic broad-phase revision retains unchanged
-node snapshots across calls; create, destroy, move, enlarge, and rebuild
-operations invalidate them. The unchanged CPU callback performs pair-set
+pass adds block offsets. A monotonic broad-phase revision retains node snapshots
+across calls. Supported awake-shape finalization writes enlarged leaf bounds
+directly and refits parents in ascending height, preserving Box3D topology and
+DFS order without a per-step tree upload. Topology changes and unsupported CPU
+mutations invalidate the snapshot. The unchanged CPU callback performs pair-set
 deduplication, body/shape/joint/custom filters, compound handling, and contact
 creation.
 
@@ -42,6 +45,8 @@ still use the independent Metal position stage if they meet the threshold.
   integration kernels.
 - Experimental finalization uses separate compact body and shape geometry
   streams so their fields do not widen the default integration record.
+- Double builds carry absolute center bits through VF64 exact binary64 addition
+  and directed float narrowing; local shape geometry remains float by design.
 - Convex and mesh contact preparation writes directly into persistent shared
   Metal allocations; no redundant constraint upload/readback is performed.
 - Distance and parallel joints are packed into compact type-dense records and
@@ -96,20 +101,19 @@ counters are route evidence, not a whole-engine GPU percentage.
 `b3World_SetMetalFinalization(world, true)` ports final rotation, body-origin
 offset, farthest-point motion and sleep metrics, world-space inverse inertia,
 and awake non-CCD shape AABBs. Supported fused solver paths append both kernels
-to their existing command buffer. Double-precision outward rounding, CCD,
-events, island sleep mutation, dynamic-tree mutation, and pair generation
-remain on the CPU. The stage is separately opt-in because consuming one flat
+to their existing command buffer. VF64 preserves double-precision outward
+rounding on Metal. CCD, events, island sleep mutation, and public shape
+bookkeeping remain on the CPU. The stage is separately opt-in because consuming one flat
 64-byte result per shape is currently slower end to end.
 
 ## Experimental pair traversal boundary
 
-`b3World_SetMetalBroadPhase(world, true)` ports raw dynamic-tree traversal, not
-tree ownership or all broad-phase logic. A bounded 64-entry private DFS stack
+`b3World_SetMetalBroadPhase(world, true)` ports resident leaf update, internal
+refit, and raw traversal, not topology ownership or all broad-phase logic. A bounded 64-entry private DFS stack
 and average-candidate capacity guard make failure explicit; excessive depth,
 candidate volume, allocation, or dispatch failure reruns the complete CPU
 traversal. The steady path counts, scans, and writes in one command buffer. If
 the exact total exceeds the geometrically retained candidate capacity, the
-first call grows the buffer and submits one write-only retry. The path still
-copies changed CPU tree nodes and reads raw candidates back. Moving worlds still
-invalidate the snapshot each step until resident leaf update/refit exists. It is
-a measured step toward residency, not yet a device-resident broad phase.
+first call grows the buffer and submits one write-only retry. Supported moving
+worlds reuse the resident topology; raw candidates still return to the CPU. It
+is a measured step toward residency, not yet a device-resident broad phase.

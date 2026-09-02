@@ -2,8 +2,9 @@
 
 ## Current limitations
 
-- Raw dynamic-tree traversal has an experimental Metal path, but CPU tree
-  mutation/rebuild, tree copying, candidate filtering, and narrow phase remain.
+- Raw dynamic-tree traversal, leaf update, and internal refit have an
+  experimental Metal path, but CPU topology, candidate filtering, and narrow
+  phase remain.
 - Manifold and constraint preparation remain CPU-side.
 - Body and awake-shape finalization have an experimental Metal path, but the CPU
   still consumes flat shape results and owns tree mutation, sleeping/island
@@ -16,9 +17,9 @@
 
 ## Evidence-led next stages
 
-1. Update or rebuild a GPU-owned broad-phase structure directly from resident
-   shape bounds so the flat per-shape result stream and CPU tree copy can
-   disappear. Stable prefixing and candidate compaction are already on-device.
+1. Make resident shape bounds authoritative for downstream GPU work and replace
+   the flat per-shape CPU bookkeeping stream with selective synchronization.
+   Leaf update, internal refit, stable prefixing, and compaction are on-device.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,

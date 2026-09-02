@@ -242,7 +242,7 @@ def quickstart_story():
         p("The body threshold is deliberately caller-selected. It is not a universal recommendation; measure your world with full-step timing."),
         p("Experimental residency stages", "h2"),
         code("b3World_SetMetalFinalization(world, true);\nb3World_SetMetalBroadPhase(world, true);"),
-        p("Finalization computes body and awake-shape results on Metal. Broad-phase mode moves raw dynamic-tree traversal plus deterministic candidate compaction; CPU tree mutation, filtering, and contact creation remain."),
+        p("Finalization computes body and awake-shape results on Metal. Broad-phase mode updates resident leaves, refits internal bounds, and compacts exact-order candidates; CPU topology, filtering, and contact creation remain."),
         p("Read route telemetry", "h2"),
         code("b3MetalProfile p = b3World_GetMetalProfile(world);\nprintf(\"%s contacts=%llu pairs=%llu pairFallbacks=%llu\\n\",\n       p.deviceName, p.contactDispatchCount,\n       p.pairDispatchCount, p.pairFallbackCount);"),
         p("Dispatch counters prove a Metal stage ran. Pair dispatch means tree traversal and compaction, not GPU tree ownership, filtering, narrow phase, CCD, sleeping, or events.", "callout"),
@@ -260,6 +260,7 @@ def architecture_story():
         ("5", "Relax", "Unbiased constraint iterations"),
         ("6", "Restitution", "Eligible convex and mesh contacts"),
         ("7", "Finalize", "Optional body state and awake-shape AABBs"),
+        ("8", "Refit + pairs", "Resident leaves, internal bounds, stable candidates"),
     ]
     return [
         p("One ordered command graph", "h1"),
@@ -283,7 +284,7 @@ def architecture_story():
         p("Deterministic overflow", "h2"),
         p("Overflow constraints may share bodies. A single Metal thread walks them in upstream order. Mixed distance/parallel overflow uses an eight-byte type/index descriptor, preserving order with one launch per phase."),
         p("Experimental pair traversal", "h2"),
-        p("Metal traverses cached copies of Box3D's dynamic trees. A hierarchical SIMD scan compacts candidates in exact upstream order in one steady-state command buffer. Snapshots remain resident until CPU bounds or topology changes; CPU filters and contact creation remain unchanged."),
+        p("Metal retains Box3D tree topology, updates enlarged leaves, refits parents by height, and compacts candidates in exact upstream order. Topology changes invalidate residency; CPU filters and contact creation remain unchanged."),
         p("Apple GPU implementation choices", "h1"),
         *bullets([
             "One command buffer per solver step amortizes submission and synchronization.",
@@ -302,7 +303,7 @@ def compatibility_story():
         ("Distance joints", "Rigid, spring, limit, motor, static bodies"),
         ("Parallel joints", "Soft alignment, torque limiting, static bodies"),
         ("Overflow", "Serial deterministic contact and mixed supported-joint order"),
-        ("Pair traversal", "Experimental exact-order raw dynamic-tree candidates"),
+        ("Broad phase", "Resident leaf/refit plus exact-order raw candidates"),
     ]
     errors = [
         ("Convex friction", "4.77e-7 transform", "3.98e-6 velocity"),
@@ -318,7 +319,7 @@ def compatibility_story():
         table(["GPU-resident surface", "Modes"], supported, [45 * mm, 117 * mm]),
         p("Explicit CPU boundary", "h2"),
         *bullets([
-            "Broad-phase tree mutation, pair filtering, narrow phase, and manifolds",
+            "Broad-phase topology, pair filtering, narrow phase, and manifolds",
             "Contact and joint preparation",
             "Events, islands, sleeping, and CCD",
             "Recording, queries, topology mutation, and public API calls",
@@ -330,7 +331,8 @@ def compatibility_story():
         p("Matching CPU and Metal worlds run for multiple steps/substeps. Transforms and linear/angular velocities are compared after each scenario. Values below are observed maxima, not universal bounds."),
         table(["Scenario", "Transform", "Velocity"], errors, [65 * mm, 48 * mm, 49 * mm]),
         p("Acceptance matrix", "h2"),
-        p("Debug and Release full suites; CPU-only Release; double-precision Metal differential tests; AddressSanitizer and UndefinedBehaviorSanitizer; warning-as-error build; shared dylib demo; CMake install audit; and clean-clone patch reconstruction."),
+        p("Float and double full suites; CPU-only Release; far-world VF64 containment; AddressSanitizer and UndefinedBehaviorSanitizer; float/double warning-as-error builds; shared dylib demo; install audit; and clean-clone reconstruction."),
+        p("At (+1e8, -1e8), all 2,048 mixed-shape GPU AABBs contained the same-world CPU oracle. One upload plus ten resident refits was observed across ten contact steps.", "callout"),
         p("<b>Failure semantics.</b> Initialization failure returns false and leaves the world usable. Unsupported work increments fallback counters. Disabling Metal releases resources without destroying the world.", "callout"),
     ]
 
@@ -370,7 +372,7 @@ def performance_story():
         *bullets([
             "Command fusion is the largest demonstrated architectural win.",
             "Body finalization is 27% slower and shape AABBs are 17.9% slower at 524,288 because CPU result streams remain.",
-            "The earlier CPU-prefix tree traversal was 6.4% faster at 524,288 shapes; the on-device scan has exact-order validation but no accepted new whole-world timing.",
+            "The earlier CPU-prefix traversal was 6.4% faster at 524,288; resident refit and VF64 have correctness evidence but no accepted new timing.",
             "Mesh contacts cross earlier than convex-wide stacks; distance joints benefit only at very large scale.",
             "Parallel joints expand compatibility without justifying default GPU routing.",
         ]),
@@ -380,7 +382,7 @@ def performance_story():
         p("Run each complete executable in at least three separate processes and compare medians. Do not use GPU kernel time alone as a whole-world claim.", "callout"),
         p("Next performance work", "h2"),
         *bullets([
-            "Build or update a GPU-owned broad phase from resident shape bounds; deterministic prefixing is now on-device.",
+            "Make resident shape bounds authoritative and replace flat CPU bookkeeping with selective synchronization.",
             "Retain state across steps and add joint types only with mode matrices and whole-world evidence.",
         ]),
     ]

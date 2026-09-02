@@ -18,8 +18,13 @@ Direct primitive tests separately cover packed state and integration kernels.
   tree type, and shape id.
 - Capacity growth requires one safe write retry; the same steady route then
   completes in one command buffer.
-- Unchanged tree snapshots produce zero repeat uploads; a bounds mutation
-  invalidates the snapshot and forces exactly one fresh upload.
+- A moving 2,048-body world reuses its resident tree with zero repeat uploads;
+  every raw candidate still matches CPU traversal and order.
+- A ten-step contact world records one initial tree upload and ten device refits.
+- At `(+1e8, -1e8)`, every VF64 AABB contains a fresh CPU oracle AABB computed
+  from the same Metal-world transform; maximum inward error is zero.
+- Disabling Metal broad phase rebuilds retained enlarged CPU nodes before the
+  next CPU step.
 - Dense pair candidate overflow with zero GPU dispatches and one CPU fallback.
 - Convex friction, tangent velocity, twist friction, and rolling resistance.
 - Convex restitution.
@@ -39,6 +44,7 @@ Direct primitive tests separately cover packed state and integration kernels.
 | Integrated unconstrained world | 1.19e-7 transform |
 | Body-finalization arithmetic | 2.29e-5 across all result floats |
 | Awake-shape AABBs | 3.81e-6 across all bound components |
+| VF64 far-world AABB containment | zero inward error across 2,048 mixed shapes |
 | Raw pair candidates | 8,081/8,081 exact, including order |
 | Distance joint plus contacts | 4.66e-10 |
 | Convex friction contacts | 4.77e-7 transform, 3.98e-6 velocity |
@@ -61,10 +67,10 @@ The completed acceptance matrix includes:
 - Debug full unit suite with Metal enabled;
 - Release full unit suite with Metal enabled;
 - Release CPU-only full unit suite;
-- double-precision Metal differential suite;
+- double-precision Metal differential and full suites;
 - AddressSanitizer full suite (`detect_leaks=0` on macOS);
 - UndefinedBehaviorSanitizer full suite;
-- warning-as-error Metal build and focused suite;
+- warning-as-error Metal builds and focused suites in float and double modes;
 - shared-library build and public demo runtime;
 - CMake install audit including headers, dylib, and package configuration;
 - `git diff --check`.

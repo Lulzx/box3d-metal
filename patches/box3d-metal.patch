@@ -22,10 +22,10 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..03774c7 100644
+index cfe16e4..0996a06 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,62 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,65 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -43,9 +43,12 @@ index cfe16e4..03774c7 100644
 +other joint types fall back safely. Experimental, separately opt-in stages port
 +body/shape finalization and traverse Erin's existing broad-phase trees on Metal
 +with deterministic on-device candidate compaction, while retaining CPU filtering
-+and contact creation. Unchanged tree snapshots remain in persistent Metal
-+storage; any CPU topology or bounds mutation invalidates them. The stages remain
-+off by default; shape readback is still a regression, while GPU tree traversal
++and contact creation. Tree snapshots remain in persistent Metal storage;
++ordinary awake-shape motion updates leaves and refits internal bounds on-device,
++while topology changes and unsupported CPU mutations invalidate the snapshot.
++Double-precision worlds use VF64 software binary64 for exact world translation
++and directed float AABB narrowing on Metal. The stages remain off by default;
++CPU shape bookkeeping/readback is still a regression, while GPU tree traversal
 +crosses over only in large measured worlds.
 +See [the architecture and compatibility contract](docs/metal_architecture.md)
 +for the exact supported surface and current CPU-only stages.
@@ -1416,10 +1419,10 @@ index 0000000..697777c
 +```
 diff --git a/docs/benchmarks/m4-pro-pair-prefix-2026-09-02.md b/docs/benchmarks/m4-pro-pair-prefix-2026-09-02.md
 new file mode 100644
-index 0000000..09c1fa0
+index 0000000..50d0c68
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-pair-prefix-2026-09-02.md
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,68 @@
 +# M4 Pro on-device pair compaction — 2026-09-02
 +
 +## Scope
@@ -1465,13 +1468,12 @@ index 0000000..09c1fa0
 +whole-world crossover remains historical evidence for the CPU-prefix version,
 +not evidence for this implementation.
 +
-+The remaining residency costs are structural. Shape results are still consumed
-+by the CPU, CPU broad-phase trees are updated and copied to Metal each step, and
-+raw candidates return to CPU filtering and contact creation. The next useful
-+boundary is a versioned GPU-resident tree whose leaves consume resident shape
-+bounds and whose internal bounds are refitted on-device. Revision caching now
-+removes copies for unchanged trees, but moving worlds still invalidate the
-+snapshot until those leaf updates move onto the GPU.
++The remaining residency costs at this checkpoint were structural. Shape results
++were still consumed by the CPU, moving broad-phase trees were copied to Metal,
++and raw candidates returned to CPU filtering and contact creation. The
++subsequent resident-refit checkpoint moved awake leaf updates and internal
++refitting onto the GPU; see
++[`m4-pro-resident-refit-vf64-2026-09-02.md`](m4-pro-resident-refit-vf64-2026-09-02.md).
 +
 +## Reproduction
 +
@@ -1599,12 +1601,77 @@ index 0000000..ba2190a
 +cmake --build build/metal-release --target metal_benchmark
 +./build/metal-release/bin/metal_benchmark
 +```
+diff --git a/docs/benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md b/docs/benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md
+new file mode 100644
+index 0000000..3d8a686
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md
+@@ -0,0 +1,59 @@
++# M4 Pro resident tree refit and VF64 AABBs — 2026-09-02
++
++## Scope
++
++This checkpoint removes the moving-world tree-upload loop from the supported
++experimental Metal path. Shape finalization writes enlarged fat AABBs into the
++resident dynamic-tree leaves. Separate dispatches refit internal nodes in
++ascending stored height, so every child is complete before its parent and Erin
++Catto's topology and depth-first traversal order remain unchanged. Worlds with
++fast/CCD bodies or an invalid resident revision use the existing fallback.
++
++Disabling Metal broad phase rebuilds enlarged CPU nodes before returning
++ownership to the ordinary CPU path. This transition is covered by the debug and
++UndefinedBehaviorSanitizer test configurations.
++
++## VF64 double-precision boundary
++
++Large-world Box3D keeps only absolute body translation in binary64. The Metal
++shape kernel now carries the original body-center bits into VF64's exact
++integer `ieee64` helpers, applies the same center-plus-delta-plus-origin sequence
++as the CPU, adds each float local bound, and narrows lower/upper results with
++the directed binary64-to-binary32 modes. The imported source is pinned to
++VF64-metal commit `729021777455da72db8809d9ef1269c677d88b3f`.
++
++The GPU's preceding float rotation can differ from the CPU by an FP32 rounding
++step, so the double path applies a scale-aware 16-epsilon local arithmetic
++envelope before exact translation. This is a deliberate conservative bound,
++not a claim that Metal and CPU AABBs are bit-identical.
++
++## Correctness evidence
++
++- A 2,048-body sphere/capsule/offset-hull world at `(+1e8, -1e8)` dispatched
++  Metal shape finalization with no double-precision fallback.
++- Every GPU AABB contained a fresh CPU `b3ComputeFatShapeAABB` result computed
++  from the same GPU-world body transform; maximum inward error was zero.
++- The separate CPU-world differential had maximum AABB component error
++  `2.03e-06` and maximum body-position error `8.94e-08`.
++- Direct resident traversal after the moving step matched every CPU candidate
++  count, proxy id, tree type, shape id, and order without uploading a tree.
++- A ten-step contact world recorded one initial tree upload and ten device
++  refits in both float and double builds.
++- Full float and double test suites passed. Focused float ASAN/UBSAN, focused
++  double UBSAN, and warning-as-error builds for both precision modes passed.
++
++## Performance status
++
++No whole-world timing is published for this checkpoint. `textunderstandingd`
++and `mediaanalysisd` were concurrently consuming substantial CPU during the
++validation window, so paired timing would not meet the repository's clean-host
++gate. Earlier finalization and pair-generation tables remain historical
++evidence for their recorded implementations, not measurements of resident
++refit or VF64.
++
++The major remaining ownership cost is the 64-byte-per-awake-shape shared result
++stream consumed by CPU shape bookkeeping. Pair traversal no longer needs that
++stream or a fresh CPU-tree upload on the supported path, but events, public
++queries, CCD bookkeeping, and CPU fallback still do. Eliminating it requires a
++resident authoritative shape-bound store plus selective CPU synchronization,
++not simply deleting the readback.
 diff --git a/docs/benchmarks/m4-pro-shape-finalization-2026-09-02.md b/docs/benchmarks/m4-pro-shape-finalization-2026-09-02.md
 new file mode 100644
-index 0000000..a1d1c04
+index 0000000..21b7859
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-shape-finalization-2026-09-02.md
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,52 @@
 +# M4 Pro GPU shape finalization — 2026-09-02
 +
 +## Scope
@@ -1621,8 +1688,10 @@ index 0000000..a1d1c04
 +offset hulls. Its worst CPU-versus-GPU AABB component error was `3.81e-06` on an
 +Apple M4 Pro. A supported contact world ran ten shape-finalization dispatches;
 +the complete float and double-precision Box3D test executables passed. Double
-+worlds deliberately retain CPU AABB generation because far-world bounds require
-+outward-rounded binary64 addition before narrowing.
++worlds at this checkpoint deliberately retained CPU AABB generation because
++far-world bounds require outward-rounded binary64 addition before narrowing.
++That limitation was removed by the later VF64 checkpoint documented in
++[`m4-pro-resident-refit-vf64-2026-09-02.md`](m4-pro-resident-refit-vf64-2026-09-02.md).
 +
 +## Whole-world result
 +
@@ -1657,10 +1726,10 @@ index 0000000..a1d1c04
 +```
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..e5ed2e6
+index 0000000..e4d1bd7
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,191 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -1722,11 +1791,16 @@ index 0000000..e5ed2e6
 +use their exact transformed primitives, while hull and aggregate geometry use
 +their upstream local bounds. The kernel applies speculative and fat-AABB
 +margins and emits deterministic flat results in body/shape-list order. CPU code
-+still owns double-precision outward rounding, CCD, events, sleeping/island
-+mutation, and dynamic-tree mutation. It is separately opt-in
++still owns CCD, events, sleeping/island mutation, and public shape bookkeeping.
++Double-precision builds use the exact integer IEEE-754 implementation from
++VF64-metal commit `729021777455da72db8809d9ef1269c677d88b3f`: body-center bits
++remain binary64 through three round-to-nearest additions, then lower and upper
++bounds narrow toward negative and positive infinity respectively. A
++scale-aware local-float arithmetic envelope makes the device result
++conservative against the CPU `b3ComputeFatShapeAABB` oracle. It is separately opt-in
 +because reading one 64-byte result per awake shape has not demonstrated a
-+whole-world win; the next residency boundary is GPU pair generation consuming
-+these bounds before any compact CPU handoff.
++whole-world win; the remaining boundary is removal of that CPU bookkeeping
++stream once all downstream consumers can use resident bounds.
 +
 +Enable it with:
 +
@@ -1744,9 +1818,13 @@ index 0000000..e5ed2e6
 +
 +An independently opt-in pair stage copies Erin's existing static, kinematic,
 +and dynamic tree topology into persistent shared Metal buffers. A monotonic
-+broad-phase revision lets unchanged node snapshots remain resident across pair
-+queries; create, destroy, move, enlarge, and rebuild operations invalidate the
-+snapshot before it can be reused. A count pass
++broad-phase revision lets node snapshots remain resident across pair queries.
++For supported non-CCD steps, shape finalization writes enlarged leaf bounds
++directly into that snapshot and deterministic height-ordered kernels refit
++kinematic and dynamic internal nodes. This preserves Erin's topology and DFS
++candidate order without a per-step tree upload. CPU create, destroy, explicit
++move, unsupported enlargement, and rebuild operations still invalidate the
++snapshot before reuse. A count pass
 +traverses leaves in upstream stack order. A deterministic 256-lane hierarchical
 +scan computes stable per-move offsets: SIMD subgroups scan each block, a short
 +serial kernel prefixes block totals, and a parallel add applies block offsets.
@@ -1760,7 +1838,7 @@ index 0000000..e5ed2e6
 +than 64 raw candidates per moved proxy on average fall back to the full CPU
 +traversal before any partial result is consumed.
 +
-+Broad-phase tree mutation, narrow phase, contact and joint preparation,
++Broad-phase topology mutation, narrow phase, contact and joint preparation,
 +unsupported joint solution, continuous collision, events, and sleeping/island
 +mutation still run on the CPU. Unsupported
 +constrained worlds retain the position-only path, which may lose to the CPU once
@@ -1775,12 +1853,12 @@ index 0000000..e5ed2e6
 +| Distance joints, including spring, limit, and motor modes | GPU-resident across all substeps |
 +| Parallel joints | GPU-resident across all substeps |
 +| Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
-+| Broad phase | Experimental opt-in Metal tree traversal; CPU tree mutation, candidate filtering, and contact creation |
++| Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; CPU topology mutation, filtering, and contact creation |
 +| Narrow phase and manifolds | CPU |
 +| Contact preparation and impulse storage | CPU |
-+| Body and awake-shape finalization | Experimental opt-in Metal kernels; CPU applies flat results and retains CCD/tree topology |
++| Body and awake-shape finalization | Experimental Metal kernels; resident bounds feed tree refit while CPU still applies flat bookkeeping results and retains CCD/topology |
 +| CCD, sleeping/island mutation, events, recording, queries | CPU |
-+| Double-precision world positions | CPU shape fallback preserves outward-rounded far-world AABBs; VF64 exact add/narrow is the candidate GPU seam |
++| Double-precision world positions | VF64 exact add plus directed narrowing produces conservative far-world AABBs on Metal |
 +| Cross-platform bit determinism | CPU only; Metal is tolerance-equivalent |
 +
 +## Target pipeline
@@ -1841,6 +1919,8 @@ index 0000000..e5ed2e6
 +The follow-on on-device stable scan, compaction, and unchanged-tree residency
 +correctness checkpoint is in
 +[`benchmarks/m4-pro-pair-prefix-2026-09-02.md`](benchmarks/m4-pro-pair-prefix-2026-09-02.md).
++Resident leaf refit and VF64 far-world validation are recorded in
++[`benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md`](benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md).
 diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
 index 2e82590..cd49acf 100644
 --- a/include/box3d/box3d.h
@@ -1857,10 +1937,10 @@ index 2e82590..cd49acf 100644
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000..9a2157c
+index 0000000..7df7ecf
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,69 @@
+@@ -0,0 +1,71 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -1897,6 +1977,8 @@ index 0000000..9a2157c
 +	uint64_t shapeFallbackCount;
 +	uint64_t pairDispatchCount;
 +	uint64_t pairFallbackCount;
++	uint64_t pairTreeUploadCount;
++	uint64_t pairTreeRefitCount;
 +	double lastPositionGpuMilliseconds;
 +	double lastUnconstrainedGpuMilliseconds;
 +	double lastContactGpuMilliseconds;
@@ -1931,10 +2013,10 @@ index 0000000..9a2157c
 +
 +/** @} */
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 941c6fb..17d7911 100644
+index 941c6fb..f4a6813 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
-@@ -101,9 +101,17 @@ set(BOX3D_INCLUDE_FILES
+@@ -101,9 +101,28 @@ set(BOX3D_INCLUDE_FILES
  	../include/box3d/constants.h
  	../include/box3d/id.h
  	../include/box3d/math_functions.h
@@ -1947,12 +2029,23 @@ index 941c6fb..17d7911 100644
 +		metal_backend.h
 +		metal_backend.m
 +	)
++	if(BOX3D_DOUBLE_PRECISION)
++		# VF64's exact IEEE-754 helpers are compiled into the runtime Metal source.
++		# Keep the readable MSL authoritative and generate only the C string wrapper.
++		file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metal_vf64_ieee.metal" B3_VF64_IEEE_SOURCE)
++		string(REPLACE "\\" "\\\\" B3_VF64_IEEE_SOURCE "${B3_VF64_IEEE_SOURCE}")
++		string(REPLACE "\"" "\\\"" B3_VF64_IEEE_SOURCE "${B3_VF64_IEEE_SOURCE}")
++		string(REPLACE "\n" "\\n\"\n\"" B3_VF64_IEEE_SOURCE "${B3_VF64_IEEE_SOURCE}")
++		file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/metal_vf64_ieee_source.h"
++			"static const char b3_vf64IEEESource[] =\n\"${B3_VF64_IEEE_SOURCE}\";\n")
++		list(APPEND BOX3D_SOURCE_FILES metal_vf64_ieee.metal)
++	endif()
 +endif()
 +
  # Hide internal functions
  # https://gcc.gnu.org/wiki/Visibility
  set(CMAKE_C_VISIBILITY_PRESET hidden)
-@@ -201,6 +209,11 @@ elseif (MINGW)
+@@ -201,6 +220,11 @@ elseif (MINGW)
  elseif (APPLE)
  	message(STATUS "Box3D on Apple")
  	target_compile_options(box3d PRIVATE -Wmissing-prototypes -Wall -Wextra -pedantic)
@@ -1965,7 +2058,7 @@ index 941c6fb..17d7911 100644
  	message(STATUS "Box3D on Emscripten")
  	# SSE2/wasm SIMD flags are set directory-wide in the top-level CMakeLists so the
 diff --git a/src/broad_phase.c b/src/broad_phase.c
-index a369ca6..cec90d0 100644
+index a369ca6..39f6de2 100644
 --- a/src/broad_phase.c
 +++ b/src/broad_phase.c
 @@ -12,9 +12,21 @@
@@ -2030,10 +2123,11 @@ index a369ca6..cec90d0 100644
  	b3BufferMove( bp, proxyKey );
  }
  
-@@ -384,13 +401,66 @@ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void
+@@ -384,17 +401,74 @@ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void
  	b3TracyCZoneEnd( pair_task );
  }
  
+-static void b3UpdateTreesTask( void* context )
 +#if defined( BOX3D_METAL )
 +typedef struct b3MetalFindPairsContext
 +{
@@ -2083,11 +2177,11 @@ index a369ca6..cec90d0 100644
 +}
 +#endif
 +
- static void b3UpdateTreesTask( void* context )
++void b3BroadPhase_RebuildTrees( b3World* world )
  {
  	b3TracyCZoneNC( tree_task, "Rebuild Trees", b3_colorFireBrick, true );
  
- 	b3World* world = (b3World*)context;
+-	b3World* world = (b3World*)context;
 -	b3DynamicTree_Rebuild( world->broadPhase.trees + b3_dynamicBody, false );
 -	b3DynamicTree_Rebuild( world->broadPhase.trees + b3_kinematicBody, false );
 +	int dynamicLeafCount = b3DynamicTree_Rebuild( world->broadPhase.trees + b3_dynamicBody, false );
@@ -2099,7 +2193,16 @@ index a369ca6..cec90d0 100644
  
  	b3TracyCZoneEnd( tree_task );
  }
-@@ -423,7 +493,34 @@ void b3UpdateBroadPhasePairs( b3World* world )
+ 
++static void b3UpdateTreesTask( void* context )
++{
++	b3BroadPhase_RebuildTrees( (b3World*)context );
++}
++
+ void b3UpdateBroadPhasePairs( b3World* world )
+ {
+ 	b3BroadPhase* bp = &world->broadPhase;
+@@ -423,13 +497,47 @@ void b3UpdateBroadPhasePairs( b3World* world )
  #endif
  
  	int minRange = 64;
@@ -2119,6 +2222,7 @@ index a369ca6..cec90d0 100644
 +			b3MetalFindPairsContext metalContext = { world, records, candidates };
 +			b3ParallelFor( world, b3FindPairsMetalTask, moveCount, minRange, &metalContext, "pairs metal" );
 +			world->metalPairDispatchCount += 1;
++			world->metalPairTreeUploadCount += (uint64_t)stats.treeUploadCount;
 +			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
 +			usedMetalPairs = true;
 +		}
@@ -2135,8 +2239,21 @@ index a369ca6..cec90d0 100644
  
  	b3TracyCZoneNC( create_contacts, "Create Contacts", b3_colorCoral, true );
  
+ 	// Task that can be done in parallel with the narrow-phase
+ 	// - rebuild the collision tree for dynamic and kinematic bodies to keep their query performance good
+-	if ( world->taskCount < B3_MAX_TASKS )
++	if ( usedMetalPairs )
++	{
++		// Keep the topology used by the resident Metal snapshot stable. CPU
++		// leaves remain conservative; Metal refits exact internal bounds.
++		world->userTreeTask = NULL;
++	}
++	else if ( world->taskCount < B3_MAX_TASKS )
+ 	{
+ 		world->userTreeTask = world->enqueueTaskFcn( &b3UpdateTreesTask, world, world->userTaskContext, "rebuild tree" );
+ 		world->taskCount += 1;
 diff --git a/src/broad_phase.h b/src/broad_phase.h
-index dcd626b..c1e6ddb 100644
+index dcd626b..dce2524 100644
 --- a/src/broad_phase.h
 +++ b/src/broad_phase.h
 @@ -27,6 +27,9 @@ typedef struct b3World b3World;
@@ -2149,6 +2266,14 @@ index dcd626b..c1e6ddb 100644
  
  	// Per body-type bit sets indexed by proxyId, marking proxies moved this step.
  	// Paired with moveArray which preserves deterministic insertion order for pair queries.
+@@ -59,6 +62,7 @@ void b3BroadPhase_EnlargeProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb );
+ int b3BroadPhase_GetShapeIndex( b3BroadPhase* bp, int proxyKey );
+ 
+ void b3UpdateBroadPhasePairs( b3World* world );
++void b3BroadPhase_RebuildTrees( b3World* world );
+ bool b3BroadPhase_TestOverlap( const b3BroadPhase* bp, int proxyKeyA, int proxyKeyB );
+ 
+ void b3ValidateBroadPhase( const b3BroadPhase* bp );
 diff --git a/src/contact_solver.c b/src/contact_solver.c
 index 48de409..ce69ae1 100644
 --- a/src/contact_solver.c
@@ -2365,10 +2490,10 @@ index d85f233..ffa6859 100644
  int b3GetWideContactConstraintByteCount( void );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000..9bb49a8
+index 0000000..3838b80
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,103 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2468,12 +2593,16 @@ index 0000000..9bb49a8
 +bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase* broadPhase,
 +	const int* moveArray, int moveCount, const b3MetalPairQueryRecord** records,
 +	const b3MetalPairCandidate** candidates, int* candidateCount, b3MetalDispatchStats* stats );
++
++// Mark the resident tree snapshot as matching CPU bounds after a successful
++// shape-result leaf update/refit and the corresponding CPU bookkeeping pass.
++void b3MetalCommitPairTreeRefit( b3MetalContext* context, const b3BroadPhase* broadPhase );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..42ac438
+index 0000000..6227071
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,2799 @@
+@@ -0,0 +1,2950 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2493,6 +2622,13 @@ index 0000000..42ac438
 +#include <stddef.h>
 +#include <stdio.h>
 +#include <string.h>
++
++#if defined( BOX3D_DOUBLE_PRECISION )
++#pragma clang diagnostic push
++#pragma clang diagnostic ignored "-Woverlength-strings"
++#include "metal_vf64_ieee_source.h"
++#pragma clang diagnostic pop
++#endif
 +
 +// These checks protect the shared C/MSL ABI. Metal's native float3 is 16-byte
 +// aligned, so the shader deliberately uses scalar fields matching this layout.
@@ -2515,6 +2651,8 @@ index 0000000..42ac438
 +	id<MTLComputePipelineState> pairScanBlocksPipeline;
 +	id<MTLComputePipelineState> pairPrefixPipeline;
 +	id<MTLComputePipelineState> pairAddOffsetsPipeline;
++	id<MTLComputePipelineState> pairUpdateLeavesPipeline;
++	id<MTLComputePipelineState> pairRefitPipeline;
 +	id<MTLComputePipelineState> warmStartContactsPipeline;
 +	id<MTLComputePipelineState> solveContactsPipeline;
 +	id<MTLComputePipelineState> restitutionContactsPipeline;
@@ -2547,6 +2685,9 @@ index 0000000..42ac438
 +	id<MTLBuffer> pairTreeBuffer;
 +	NSUInteger pairTreeCapacity;
 +	uint64_t pairTreeRevision;
++	uint32_t pairTreeOffsets[b3_bodyTypeCount];
++	uint32_t pairTreeNodeCounts[b3_bodyTypeCount];
++	uint16_t pairTreeHeights[b3_bodyTypeCount];
 +	id<MTLBuffer> pairRecordBuffer;
 +	NSUInteger pairRecordCapacity;
 +	id<MTLBuffer> pairCandidateBuffer;
@@ -2596,6 +2737,7 @@ index 0000000..42ac438
 +	float maxExtentX, maxExtentY, maxExtentZ;
 +	float centerX, centerY, centerZ;
 +	float padding;
++	uint64_t centerXBits, centerYBits, centerZBits;
 +} b3MetalFinalizeProperties;
 +
 +typedef struct b3MetalShapeInput
@@ -2603,7 +2745,7 @@ index 0000000..42ac438
 +	uint32_t bodyIndex;
 +	uint32_t shapeId;
 +	uint32_t type;
-+	uint32_t padding;
++	int32_t proxyKey;
 +	float point1X, point1Y, point1Z, radius;
 +	float point2X, point2Y, point2Z, margin;
 +	float fatLowerX, fatLowerY, fatLowerZ;
@@ -2626,7 +2768,7 @@ index 0000000..42ac438
 +} b3MetalPairBlock;
 +
 +_Static_assert( sizeof( b3MetalBodyProperties ) == 128, "Metal body property ABI changed" );
-+_Static_assert( sizeof( b3MetalFinalizeProperties ) == 40, "Metal finalization-property ABI changed" );
++_Static_assert( sizeof( b3MetalFinalizeProperties ) == 64, "Metal finalization-property ABI changed" );
 +_Static_assert( sizeof( b3MetalFinalizeResult ) == 100, "Metal finalization-result ABI changed" );
 +_Static_assert( sizeof( b3MetalShapeInput ) == 72, "Metal shape-input ABI changed" );
 +_Static_assert( sizeof( b3MetalShapeAABBResult ) == 64, "Metal shape-result ABI changed" );
@@ -2747,6 +2889,7 @@ index 0000000..42ac438
 +	"  float localCenterX, localCenterY, localCenterZ;\n"
 +	"  float maxExtentX, maxExtentY, maxExtentZ;\n"
 +	"  float centerX, centerY, centerZ; float padding;\n"
++	"  ulong centerXBits, centerYBits, centerZBits;\n"
 +	"};\n"
 +	"struct FinalizeResult {\n"
 +	"  float dpx, dpy, dpz; float qx, qy, qz, qw;\n"
@@ -2756,7 +2899,7 @@ index 0000000..42ac438
 +	"  float invInertiaWorld[9];\n"
 +	"};\n"
 +	"struct ShapeInput {\n"
-+	"  uint bodyIndex, shapeId, type, padding;\n"
++	"  uint bodyIndex, shapeId, type; int proxyKey;\n"
 +	"  float p1x,p1y,p1z,radius; float p2x,p2y,p2z,margin;\n"
 +	"  float oldLx,oldLy,oldLz,oldUx,oldUy,oldUz;\n"
 +	"};\n"
@@ -2773,6 +2916,8 @@ index 0000000..42ac438
 +	"struct PairBlock { uint sum,flags,offset,padding; };\n"
 +	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates; };\n"
 +	"struct PairPrefixParams { uint moveCount,candidateCapacity,candidateLimit,padding; };\n"
++	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
++	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
 +	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
 +	"struct ShapeParams { uint shapeCount; float extra; uint p0; uint p1; };\n"
 +	"struct FusedParams {\n"
@@ -2793,6 +2938,17 @@ index 0000000..42ac438
 +	"  float3 t2 = t1 + q.w * v;\n"
 +	"  return v + 2.0f * cross(q.xyz, t2);\n"
 +	"}\n"
++	"#if defined(B3_DOUBLE_PRECISION)\n"
++	"ulong b3_vf64_add_float(ulong a, float b) {\n"
++	"  uint flags=0; ulong bb=soft_format_to_f64_status(ulong(as_type<uint>(b)),8u,23u,127,flags);\n"
++	"  return soft_add64_status(a,bb,soft_round_near_even,flags);\n"
++	"}\n"
++	"float b3_vf64_bound(ulong center,float delta,float origin,float local,uint roundingMode) {\n"
++	"  ulong value=b3_vf64_add_float(center,delta); value=b3_vf64_add_float(value,origin);\n"
++	"  value=b3_vf64_add_float(value,local); uint flags=0;\n"
++	"  return as_type<float>(uint(soft_f64_to_format_status(value,roundingMode,8u,23u,127,flags)));\n"
++	"}\n"
++	"#endif\n"
 +	"float3x3 invert_matrix(float3x3 m) {\n"
 +	"  float det = dot(m[0], cross(m[1], m[2]));\n"
 +	"  if (fabs(det) <= 1.17549435e-35f) return float3x3(0.0f);\n"
@@ -2978,30 +3134,65 @@ index 0000000..42ac438
 +	"                               const device FinalizeResult* bodies [[buffer(1)]],\n"
 +	"                               device ShapeResult* results [[buffer(2)]],\n"
 +	"                               constant ShapeParams& p [[buffer(3)]],\n"
++	"                               const device FinalizeProperties* finalizeProps [[buffer(4)]],\n"
 +	"                               uint i [[thread_position_in_grid]]) {\n"
 +	"  if (i >= p.shapeCount) return; ShapeInput in = inputs[i]; FinalizeResult b = bodies[in.bodyIndex];\n"
-+	"  float4 q=float4(b.qx,b.qy,b.qz,b.qw); float3 position=float3(b.positionX,b.positionY,b.positionZ);\n"
-+	"  float3 lo,hi;\n"
-+	"  if (in.type == 5u) { float3 c=position+rotate(q,float3(in.p1x,in.p1y,in.p1z));\n"
-+	"    lo=c-float3(in.radius); hi=c+float3(in.radius);\n"
++	"  FinalizeProperties fp=finalizeProps[in.bodyIndex];\n"
++	"  float4 q=float4(b.qx,b.qy,b.qz,b.qw); float3 localLo,localHi;\n"
++	"  if (in.type == 5u) { float3 c=rotate(q,float3(in.p1x,in.p1y,in.p1z));\n"
++	"    localLo=c-float3(in.radius); localHi=c+float3(in.radius);\n"
 +	"  } else if (in.type == 0u) {\n"
-+	"    float3 a=position+rotate(q,float3(in.p1x,in.p1y,in.p1z));\n"
-+	"    float3 c=position+rotate(q,float3(in.p2x,in.p2y,in.p2z));\n"
-+	"    lo=min(a,c)-float3(in.radius); hi=max(a,c)+float3(in.radius);\n"
++	"    float3 a=rotate(q,float3(in.p1x,in.p1y,in.p1z));\n"
++	"    float3 c=rotate(q,float3(in.p2x,in.p2y,in.p2z));\n"
++	"    localLo=min(a,c)-float3(in.radius); localHi=max(a,c)+float3(in.radius);\n"
 +	"  } else {\n"
-+	"    float3 localLo=float3(in.p1x,in.p1y,in.p1z), localHi=float3(in.p2x,in.p2y,in.p2z);\n"
-+	"    float3 center=0.5f*(localLo+localHi), extent=0.5f*(localHi-localLo);\n"
++	"    float3 sourceLo=float3(in.p1x,in.p1y,in.p1z), sourceHi=float3(in.p2x,in.p2y,in.p2z);\n"
++	"    float3 center=0.5f*(sourceLo+sourceHi), extent=0.5f*(sourceHi-sourceLo);\n"
 +	"    float3 rx=rotate(q,float3(1,0,0)), ry=rotate(q,float3(0,1,0)), rz=rotate(q,float3(0,0,1));\n"
-+	"    float3 worldCenter=position+rotate(q,center); float3 worldExtent=abs(rx)*extent.x+abs(ry)*extent.y+abs(rz)*extent.z;\n"
-+	"    lo=worldCenter-worldExtent; hi=worldCenter+worldExtent;\n"
++	"    float3 rotatedCenter=rotate(q,center); float3 worldExtent=abs(rx)*extent.x+abs(ry)*extent.y+abs(rz)*extent.z;\n"
++	"    localLo=rotatedCenter-worldExtent; localHi=rotatedCenter+worldExtent;\n"
 +	"  }\n"
-+	"  lo-=float3(p.extra); hi+=float3(p.extra);\n"
++	"#if defined(B3_DOUBLE_PRECISION)\n"
++	"  float3 arithmeticScale=max(float3(1.0f),max(abs(localLo),abs(localHi)));\n"
++	"  float3 arithmeticSlack=1.9073486328125e-6f*arithmeticScale;\n"
++	"  localLo-=arithmeticSlack; localHi+=arithmeticSlack;\n"
++	"#endif\n"
++	"  localLo-=float3(p.extra); localHi+=float3(p.extra);\n"
++	"#if defined(B3_DOUBLE_PRECISION)\n"
++	"  float3 lo=float3(b3_vf64_bound(fp.centerXBits,b.dpx,b.originX,localLo.x,soft_round_min),\n"
++	"                   b3_vf64_bound(fp.centerYBits,b.dpy,b.originY,localLo.y,soft_round_min),\n"
++	"                   b3_vf64_bound(fp.centerZBits,b.dpz,b.originZ,localLo.z,soft_round_min));\n"
++	"  float3 hi=float3(b3_vf64_bound(fp.centerXBits,b.dpx,b.originX,localHi.x,soft_round_max),\n"
++	"                   b3_vf64_bound(fp.centerYBits,b.dpy,b.originY,localHi.y,soft_round_max),\n"
++	"                   b3_vf64_bound(fp.centerZBits,b.dpz,b.originZ,localHi.z,soft_round_max));\n"
++	"#else\n"
++	"  float3 position=float3(b.positionX,b.positionY,b.positionZ);\n"
++	"  float3 lo=position+localLo, hi=position+localHi;\n"
++	"#endif\n"
 +	"  float3 oldLo=float3(in.oldLx,in.oldLy,in.oldLz), oldHi=float3(in.oldUx,in.oldUy,in.oldUz);\n"
 +	"  bool enlarged=any(oldLo>lo)||any(hi>oldHi); float3 fatLo=oldLo, fatHi=oldHi;\n"
 +	"  if (enlarged) { fatLo=lo-float3(in.margin); fatHi=hi+float3(in.margin); }\n"
 +	"  ShapeResult out; out.shapeId=in.shapeId; out.bodyIndex=in.bodyIndex; out.enlarged=enlarged?1u:0u; out.padding=0;\n"
 +	"  out.lx=lo.x;out.ly=lo.y;out.lz=lo.z;out.ux=hi.x;out.uy=hi.y;out.uz=hi.z;\n"
 +	"  out.flx=fatLo.x;out.fly=fatLo.y;out.flz=fatLo.z;out.fux=fatHi.x;out.fuy=fatHi.y;out.fuz=fatHi.z; results[i]=out;\n"
++	"}\n"
++	"kernel void b3_pair_update_leaves(const device ShapeInput* inputs [[buffer(0)]],\n"
++	"                                  const device ShapeResult* results [[buffer(1)]],\n"
++	"                                  device TreeNode* nodes [[buffer(2)]],\n"
++	"                                  constant TreeOffsets& offsets [[buffer(3)]],uint i [[thread_position_in_grid]]) {\n"
++	"  ShapeInput in=inputs[i];ShapeResult r=results[i];if(r.enlarged==0u||in.proxyKey<0)return;\n"
++	"  uint type=uint(in.proxyKey)&3u;uint proxy=uint(in.proxyKey)>>2u;if(type>=3u)return;\n"
++	"  uint offset=type==0u?offsets.offset0:(type==1u?offsets.offset1:offsets.offset2);\n"
++	"  TreeNode n=nodes[offset+proxy];if((n.flags&4u)==0u)return;\n"
++	"  n.lx=r.flx;n.ly=r.fly;n.lz=r.flz;n.ux=r.fux;n.uy=r.fuy;n.uz=r.fuz;nodes[offset+proxy]=n;\n"
++	"}\n"
++	"kernel void b3_pair_refit(device TreeNode* nodes [[buffer(0)]],constant TreeRefitParams& p [[buffer(1)]],\n"
++	"                          uint i [[thread_position_in_grid]]) {\n"
++	"  if(i>=p.nodeCount)return;uint index=p.nodeOffset+i;TreeNode n=nodes[index];\n"
++	"  if((n.flags&1u)==0u||(n.flags&4u)!=0u||uint(n.height)!=p.targetHeight)return;\n"
++	"  TreeNode a=nodes[p.nodeOffset+n.child1],b=nodes[p.nodeOffset+n.child2];\n"
++	"  n.lx=min(a.lx,b.lx);n.ly=min(a.ly,b.ly);n.lz=min(a.lz,b.lz);\n"
++	"  n.ux=max(a.ux,b.ux);n.uy=max(a.uy,b.uy);n.uz=max(a.uz,b.uz);nodes[index]=n;\n"
 +	"}\n"
 +	"inline bool tree_overlap(TreeNode n,float3 lo,float3 hi) {\n"
 +	"  return !(n.ux<lo.x||n.lx>hi.x||n.uy<lo.y||n.ly>hi.y||n.uz<lo.z||n.lz>hi.z);\n"
@@ -3374,7 +3565,14 @@ index 0000000..42ac438
 +#pragma clang diagnostic pop
 +		}
 +		NSError* error = nil;
++#if defined( BOX3D_DOUBLE_PRECISION )
++		NSMutableString* source = [NSMutableString stringWithString:@"#include <metal_stdlib>\nusing namespace metal;\n"];
++		[source appendString:[NSString stringWithUTF8String:b3_vf64IEEESource]];
++		[source appendString:@"\n#define B3_DOUBLE_PRECISION 1\n"];
++		[source appendString:[NSString stringWithUTF8String:b3_metalSource]];
++#else
 +		NSString* source = [NSString stringWithUTF8String:b3_metalSource];
++#endif
 +		id<MTLLibrary> library = [device newLibraryWithSource:source options:options error:&error];
 +		if ( library == nil )
 +		{
@@ -3422,6 +3620,16 @@ index 0000000..42ac438
 +			? [device newComputePipelineStateWithFunction:pairAddOffsetsFunction error:&error]
 +			: nil;
 +		[pairAddOffsetsFunction release];
++		id<MTLFunction> pairUpdateLeavesFunction = [library newFunctionWithName:@"b3_pair_update_leaves"];
++		id<MTLComputePipelineState> pairUpdateLeavesPipeline = pairUpdateLeavesFunction != nil
++			? [device newComputePipelineStateWithFunction:pairUpdateLeavesFunction error:&error]
++			: nil;
++		[pairUpdateLeavesFunction release];
++		id<MTLFunction> pairRefitFunction = [library newFunctionWithName:@"b3_pair_refit"];
++		id<MTLComputePipelineState> pairRefitPipeline = pairRefitFunction != nil
++			? [device newComputePipelineStateWithFunction:pairRefitFunction error:&error]
++			: nil;
++		[pairRefitFunction release];
 +		[library release];
 +
 +		NSString* contactSource = [NSString stringWithUTF8String:b3_contactSource];
@@ -3502,7 +3710,7 @@ index 0000000..42ac438
 +		[contactLibrary release];
 +		if ( positionPipeline == nil || fusedPipeline == nil || finalizePipeline == nil || finalizeShapesPipeline == nil ||
 +			 pairCandidatesPipeline == nil || pairScanBlocksPipeline == nil || pairPrefixPipeline == nil ||
-+			 pairAddOffsetsPipeline == nil ||
++			 pairAddOffsetsPipeline == nil || pairUpdateLeavesPipeline == nil || pairRefitPipeline == nil ||
 +			 warmStartPipeline == nil || solvePipeline == nil ||
 +			 restitutionPipeline == nil || warmStartMeshPipeline == nil || solveMeshPipeline == nil || restitutionMeshPipeline == nil ||
 +			 warmStartOverflowPipeline == nil || solveOverflowPipeline == nil || restitutionOverflowPipeline == nil ||
@@ -3518,6 +3726,8 @@ index 0000000..42ac438
 +			[pairScanBlocksPipeline release];
 +			[pairPrefixPipeline release];
 +			[pairAddOffsetsPipeline release];
++			[pairUpdateLeavesPipeline release];
++			[pairRefitPipeline release];
 +			[warmStartPipeline release];
 +			[solvePipeline release];
 +			[restitutionPipeline release];
@@ -3550,6 +3760,8 @@ index 0000000..42ac438
 +			[pairScanBlocksPipeline release];
 +			[pairPrefixPipeline release];
 +			[pairAddOffsetsPipeline release];
++			[pairUpdateLeavesPipeline release];
++			[pairRefitPipeline release];
 +			[warmStartPipeline release];
 +			[solvePipeline release];
 +			[restitutionPipeline release];
@@ -3581,6 +3793,8 @@ index 0000000..42ac438
 +		context->pairScanBlocksPipeline = pairScanBlocksPipeline;
 +		context->pairPrefixPipeline = pairPrefixPipeline;
 +		context->pairAddOffsetsPipeline = pairAddOffsetsPipeline;
++		context->pairUpdateLeavesPipeline = pairUpdateLeavesPipeline;
++		context->pairRefitPipeline = pairRefitPipeline;
 +		context->warmStartContactsPipeline = warmStartPipeline;
 +		context->solveContactsPipeline = solvePipeline;
 +		context->restitutionContactsPipeline = restitutionPipeline;
@@ -3634,6 +3848,8 @@ index 0000000..42ac438
 +	[context->pairScanBlocksPipeline release];
 +	[context->pairPrefixPipeline release];
 +	[context->pairAddOffsetsPipeline release];
++	[context->pairUpdateLeavesPipeline release];
++	[context->pairRefitPipeline release];
 +	[context->warmStartContactsPipeline release];
 +	[context->solveContactsPipeline release];
 +	[context->restitutionContactsPipeline release];
@@ -3762,7 +3978,6 @@ index 0000000..42ac438
 +	return true;
 +}
 +
-+#if !defined( BOX3D_DOUBLE_PRECISION )
 +static bool b3MetalEnsureShapeCapacity( b3MetalContext* context, NSUInteger inputBytes, NSUInteger resultBytes )
 +{
 +	if ( context->shapeInputCapacity < inputBytes )
@@ -3787,7 +4002,6 @@ index 0000000..42ac438
 +	}
 +	return true;
 +}
-+#endif
 +
 +static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveBytes, NSUInteger treeBytes,
 +	NSUInteger recordBytes, NSUInteger candidateBytes, NSUInteger blockBytes )
@@ -4147,6 +4361,11 @@ index 0000000..42ac438
 +			.centerY = (float)sims[i].center.y,
 +			.centerZ = (float)sims[i].center.z,
 +		};
++#if defined( BOX3D_DOUBLE_PRECISION )
++		memcpy( &properties[i].centerXBits, &sims[i].center.x, sizeof( uint64_t ) );
++		memcpy( &properties[i].centerYBits, &sims[i].center.y, sizeof( uint64_t ) );
++		memcpy( &properties[i].centerZBits, &sims[i].center.z, sizeof( uint64_t ) );
++#endif
 +	}
 +}
 +
@@ -4154,6 +4373,8 @@ index 0000000..42ac438
 +{
 +	stepContext->metalShapeResults = NULL;
 +	stepContext->metalShapeResultCount = 0;
++	stepContext->metalTreeRefitEligible = false;
++	stepContext->metalTreeRefit = false;
 +	b3World* world = stepContext->world;
 +	b3BodySim* sims = stepContext->sims;
 +	int bodyCount = world->solverSets.data[b3_awakeSet].bodySims.count;
@@ -4163,11 +4384,6 @@ index 0000000..42ac438
 +		shapeCount += world->bodies.data[sims[i].bodyId].shapeCount;
 +	}
 +	if ( shapeCount == 0 ) return 0;
-+#if defined( BOX3D_DOUBLE_PRECISION )
-+	B3_UNUSED( context );
-+	world->metalShapeFallbackCount += 1;
-+	return 0;
-+#else
 +	if ( b3MetalEnsureShapeCapacity( context, (NSUInteger)shapeCount * sizeof( b3MetalShapeInput ),
 +		(NSUInteger)shapeCount * sizeof( b3MetalShapeAABBResult ) ) == false )
 +	{
@@ -4176,9 +4392,12 @@ index 0000000..42ac438
 +	}
 +
 +	b3MetalShapeInput* inputs = context->shapeInputBuffer.contents;
++	bool treeRefitEligible = world->metalBroadPhaseEnabled && world->userTreeTask == NULL &&
++		context->pairTreeBuffer != nil && context->pairTreeRevision == world->broadPhase.treeRevision;
 +	int outputIndex = 0;
 +	for ( int simIndex = 0; simIndex < bodyCount; ++simIndex )
 +	{
++		if ( sims[simIndex].flags & b3_isFast ) treeRefitEligible = false;
 +		b3Body* body = world->bodies.data + sims[simIndex].bodyId;
 +		int shapeId = body->headShapeId;
 +		while ( shapeId != B3_NULL_INDEX )
@@ -4189,6 +4408,7 @@ index 0000000..42ac438
 +				.bodyIndex = (uint32_t)simIndex,
 +				.shapeId = (uint32_t)shapeId,
 +				.type = (uint32_t)shape->type,
++				.proxyKey = shape->proxyKey,
 +				.margin = shape->aabbMargin,
 +				.fatLowerX = (float)shape->fatAABB.lowerBound.x,
 +				.fatLowerY = (float)shape->fatAABB.lowerBound.y,
@@ -4231,8 +4451,8 @@ index 0000000..42ac438
 +		}
 +	}
 +	B3_ASSERT( outputIndex == shapeCount );
++	stepContext->metalTreeRefitEligible = treeRefitEligible;
 +	return shapeCount;
-+#endif
 +}
 +
 +static void b3MetalEncodeShapeFinalization( b3MetalContext* context, id<MTLComputeCommandEncoder> encoder,
@@ -4248,8 +4468,47 @@ index 0000000..42ac438
 +	[encoder setBuffer:context->finalizeResultBuffer offset:0 atIndex:1];
 +	[encoder setBuffer:context->shapeResultBuffer offset:0 atIndex:2];
 +	[encoder setBytes:&params length:sizeof( params ) atIndex:3];
++	[encoder setBuffer:context->finalizePropertiesBuffer offset:0 atIndex:4];
 +	[encoder dispatchThreads:MTLSizeMake( (NSUInteger)shapeCount, 1, 1 )
 +		threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
++}
++
++static bool b3MetalEncodePairTreeRefit( b3MetalContext* context, id<MTLComputeCommandEncoder> encoder,
++	b3StepContext* stepContext, int shapeCount )
++{
++	if ( shapeCount == 0 || stepContext == NULL || stepContext->metalTreeRefitEligible == false ) return false;
++	struct
++	{
++		uint32_t offset0, offset1, offset2, padding;
++	} offsets = { context->pairTreeOffsets[0], context->pairTreeOffsets[1], context->pairTreeOffsets[2], 0 };
++	_Static_assert( sizeof( offsets ) == 16, "Metal tree-offset ABI changed" );
++	[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
++	[encoder setComputePipelineState:context->pairUpdateLeavesPipeline];
++	[encoder setBuffer:context->shapeInputBuffer offset:0 atIndex:0];
++	[encoder setBuffer:context->shapeResultBuffer offset:0 atIndex:1];
++	[encoder setBuffer:context->pairTreeBuffer offset:0 atIndex:2];
++	[encoder setBytes:&offsets length:sizeof( offsets ) atIndex:3];
++	[encoder dispatchThreads:MTLSizeMake( (NSUInteger)shapeCount, 1, 1 )
++		threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->pairUpdateLeavesPipeline ), 1, 1 )];
++
++	for ( int treeIndex = b3_kinematicBody; treeIndex <= b3_dynamicBody; ++treeIndex )
++	{
++		uint32_t nodeCount = context->pairTreeNodeCounts[treeIndex];
++		for ( uint32_t height = 1; height <= context->pairTreeHeights[treeIndex]; ++height )
++		{
++			struct
++			{
++				uint32_t nodeOffset, nodeCount, targetHeight, padding;
++			} params = { context->pairTreeOffsets[treeIndex], nodeCount, height, 0 };
++			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
++			[encoder setComputePipelineState:context->pairRefitPipeline];
++			[encoder setBuffer:context->pairTreeBuffer offset:0 atIndex:0];
++			[encoder setBytes:&params length:sizeof( params ) atIndex:1];
++			[encoder dispatchThreads:MTLSizeMake( nodeCount, 1, 1 ) threadsPerThreadgroup:
++				MTLSizeMake( b3MetalThreadgroupWidth( context->pairRefitPipeline ), 1, 1 )];
++		}
++	}
++	return true;
 +}
 +
 +static bool b3MetalHasRestitution( const b3ContactConstraintWide* constraints, int count )
@@ -4390,6 +4649,7 @@ index 0000000..42ac438
 +			b3MetalPackFinalizeProperties( context->finalizePropertiesBuffer.contents, sims, bodyCount );
 +		}
 +		int shapeCount = finalizationContext != NULL ? b3MetalPackShapeInputs( context, finalizationContext ) : 0;
++		bool treeRefitEncoded = false;
 +
 +		b3MetalFusedParams params = {
 +			.bodyCount = (uint32_t)bodyCount,
@@ -4444,6 +4704,7 @@ index 0000000..42ac438
 +			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
 +				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
 +			b3MetalEncodeShapeFinalization( context, encoder, shapeCount );
++			treeRefitEncoded = b3MetalEncodePairTreeRefit( context, encoder, finalizationContext, shapeCount );
 +		}
 +		[encoder endEncoding];
 +		[commandBuffer commit];
@@ -4462,7 +4723,9 @@ index 0000000..42ac438
 +		{
 +			finalizationContext->metalShapeResults = context->shapeResultBuffer.contents;
 +			finalizationContext->metalShapeResultCount = shapeCount;
++			finalizationContext->metalTreeRefit = treeRefitEncoded;
 +			finalizationContext->world->metalShapeDispatchCount += 1;
++			finalizationContext->world->metalPairTreeRefitCount += treeRefitEncoded ? 1 : 0;
 +		}
 +		if ( stats != NULL && commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime )
 +		{
@@ -4615,6 +4878,13 @@ index 0000000..42ac438
 +		{
 +			return false;
 +		}
++		for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
++		{
++			const b3DynamicTree* tree = broadPhase->trees + treeIndex;
++			context->pairTreeOffsets[treeIndex] = nodeOffsets[treeIndex];
++			context->pairTreeNodeCounts[treeIndex] = (uint32_t)tree->nodeCapacity;
++			context->pairTreeHeights[treeIndex] = tree->root == B3_NULL_INDEX ? 0 : tree->nodes[tree->root].height;
++		}
 +
 +		memcpy( context->pairMoveBuffer.contents, moveArray, moveBytes );
 +		if ( context->pairTreeRevision != broadPhase->treeRevision )
@@ -4747,6 +5017,12 @@ index 0000000..42ac438
 +	}
 +}
 +
++void b3MetalCommitPairTreeRefit( b3MetalContext* context, const b3BroadPhase* broadPhase )
++{
++	if ( context == NULL || broadPhase == NULL || context->pairTreeBuffer == nil ) return;
++	context->pairTreeRevision = broadPhase->treeRevision;
++}
++
 +bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepContext,
 +	int velocityIterations, int relaxIterations, int restitutionIterations, b3MetalDispatchStats* stats )
 +{
@@ -4833,6 +5109,7 @@ index 0000000..42ac438
 +
 +		memcpy( context->bodyStateBuffer.contents, stepContext->states, stateBytes );
 +		b3MetalPackBodyProperties( context->bodyPropertiesBuffer.contents, stepContext->sims, bodyCount );
++		bool treeRefitEncoded = false;
 +		if ( finalizeBodies )
 +		{
 +			b3MetalPackFinalizeProperties( context->finalizePropertiesBuffer.contents, stepContext->sims, bodyCount );
@@ -5195,6 +5472,7 @@ index 0000000..42ac438
 +			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
 +				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
 +			b3MetalEncodeShapeFinalization( context, encoder, shapeCount );
++			treeRefitEncoded = b3MetalEncodePairTreeRefit( context, encoder, stepContext, shapeCount );
 +		}
 +
 +		[encoder endEncoding];
@@ -5211,7 +5489,9 @@ index 0000000..42ac438
 +		{
 +			stepContext->metalShapeResults = context->shapeResultBuffer.contents;
 +			stepContext->metalShapeResultCount = shapeCount;
++			stepContext->metalTreeRefit = treeRefitEncoded;
 +			stepContext->world->metalShapeDispatchCount += 1;
++			stepContext->world->metalPairTreeRefitCount += treeRefitEncoded ? 1 : 0;
 +		}
 +		if ( contactBytes > 0 && constraintsAlreadyShared == false )
 +		{
@@ -5273,8 +5553,1148 @@ index 0000000..42ac438
 +		return true;
 +	}
 +}
+diff --git a/src/metal_vf64_ieee.metal b/src/metal_vf64_ieee.metal
+new file mode 100644
+index 0000000..a4424e5
+--- /dev/null
++++ b/src/metal_vf64_ieee.metal
+@@ -0,0 +1,1134 @@
++// SPDX-FileCopyrightText: 2026 VF64-metal contributors
++// SPDX-License-Identifier: MIT
++// Derived from VF64-metal commit 729021777455da72db8809d9ef1269c677d88b3f.
++inline bool soft_is_nan(ulong a) {
++    return (a & 0x7ff0000000000000ul) == 0x7ff0000000000000ul &&
++           (a & 0x000ffffffffffffful) != 0;
++}
++inline bool soft_is_inf(ulong a) {
++    return (a & 0x7ffffffffffffffful) == 0x7ff0000000000000ul;
++}
++
++inline bool soft_is_signaling_nan(ulong a) {
++    return soft_is_nan(a) && (a & 0x0008000000000000ul) == 0;
++}
++
++inline ulong soft_propagate_nan(ulong a, ulong b) {
++    bool signalingA = soft_is_signaling_nan(a);
++    bool signalingB = soft_is_signaling_nan(b);
++    ulong source;
++    if (signalingA || signalingB) {
++        source = signalingA ? a : b;
++    } else {
++        source = soft_is_nan(a) ? a : b;
++    }
++    return source | 0x0008000000000000ul;
++}
++
++inline ulong shift_right_jam(ulong value, uint distance) {
++    if (distance == 0) return value;
++    if (distance < 64) {
++        ulong discarded = value & ((1ul << distance) - 1ul);
++        return (value >> distance) | ulong(discarded != 0);
++    }
++    return ulong(value != 0);
++}
++
++constant uint soft_round_near_even = 0;
++constant uint soft_round_min_mag = 1;
++constant uint soft_round_min = 2;
++constant uint soft_round_max = 3;
++constant uint soft_round_near_max_mag = 4;
++constant uint soft_flag_inexact = 1;
++constant uint soft_flag_underflow = 2;
++constant uint soft_flag_overflow = 4;
++constant uint soft_flag_infinite = 8;
++constant uint soft_flag_invalid = 16;
++
++inline bool soft_should_increment(
++    bool sign, ulong roundBits, ulong significand, uint roundingMode
++) {
++    if (roundBits == 0) return false;
++    if (roundingMode == soft_round_near_even) {
++        return roundBits > 4ul ||
++               (roundBits == 4ul && (significand & 1ul) != 0);
++    }
++    if (roundingMode == soft_round_near_max_mag) return roundBits >= 4ul;
++    if (roundingMode == soft_round_min) return sign;
++    if (roundingMode == soft_round_max) return !sign;
++    return false;
++}
++
++inline ulong soft_overflow_result(bool sign, uint roundingMode) {
++    bool toInfinity =
++        roundingMode == soft_round_near_even ||
++        roundingMode == soft_round_near_max_mag ||
++        (roundingMode == soft_round_min && sign) ||
++        (roundingMode == soft_round_max && !sign);
++    ulong signBit = ulong(sign) << 63;
++    return toInfinity
++        ? signBit | 0x7ff0000000000000ul
++        : signBit | 0x7feffffffffffffful;
++}
++
++inline ulong soft_round_pack_status(
++    bool sign, int exponent, ulong significandWithRound, uint roundingMode,
++    thread uint &flags
++) {
++    bool wasSubnormal = exponent <= 0;
++    if (exponent <= 0) {
++        uint distance = uint(1 - exponent);
++        significandWithRound = shift_right_jam(significandWithRound, distance);
++        exponent = 0;
++    }
++
++    ulong roundBits = significandWithRound & 7ul;
++    ulong significand = significandWithRound >> 3;
++    if (soft_should_increment(sign, roundBits, significand, roundingMode)) {
++        significand += 1ul;
++    }
++
++    if (exponent == 0) {
++        if (significand >= (1ul << 52)) exponent = 1;
++    } else if (exponent == 1 && significand < (1ul << 52)) {
++        // Subnormal operands use effective exponent 1 during alignment.
++        exponent = 0;
++    } else if (significand >= (1ul << 53)) {
++        significand >>= 1;
++        exponent += 1;
++    }
++    if (exponent >= 0x7ff) {
++        flags |= soft_flag_overflow | soft_flag_inexact;
++        return soft_overflow_result(sign, roundingMode);
++    }
++    if (roundBits != 0) {
++        flags |= soft_flag_inexact;
++        bool tiny = exponent == 0 ||
++            (wasSubnormal && exponent == 1 && roundBits <= 4ul);
++        if (tiny) flags |= soft_flag_underflow;
++    }
++    if (significand == 0) return ulong(sign) << 63;
++    return (ulong(sign) << 63) | (ulong(exponent) << 52) |
++           (significand & 0x000ffffffffffffful);
++}
++
++inline ulong soft_round_pack(
++    bool sign, int exponent, ulong significandWithRound, uint roundingMode
++) {
++    uint ignoredFlags = 0;
++    return soft_round_pack_status(
++        sign, exponent, significandWithRound, roundingMode, ignoredFlags
++    );
++}
++
++inline ulong soft_add64_status(
++    ulong a, ulong b, uint roundingMode, thread uint &flags
++) {
++    uint expAField = uint((a >> 52) & 0x7fful);
++    uint expBField = uint((b >> 52) & 0x7fful);
++    ulong fracA = a & 0x000ffffffffffffful;
++    ulong fracB = b & 0x000ffffffffffffful;
++    bool signA = (a >> 63) != 0;
++    bool signB = (b >> 63) != 0;
++
++    if (expAField == 0x7ffu || expBField == 0x7ffu) {
++        if (soft_is_nan(a) || soft_is_nan(b)) {
++            if (soft_is_signaling_nan(a) || soft_is_signaling_nan(b)) {
++                flags |= soft_flag_invalid;
++            }
++            return soft_propagate_nan(a, b);
++        }
++        if (soft_is_inf(a) && soft_is_inf(b) && signA != signB) {
++            flags |= soft_flag_invalid;
++            return 0x7ff8000000000000ul;
++        }
++        return soft_is_inf(a) ? a : b;
++    }
++
++    int expA = expAField == 0 ? 1 : int(expAField);
++    int expB = expBField == 0 ? 1 : int(expBField);
++    ulong sigA = fracA | (expAField == 0 ? 0ul : (1ul << 52));
++    ulong sigB = fracB | (expBField == 0 ? 0ul : (1ul << 52));
++
++    // Order by magnitude so opposite-sign subtraction is nonnegative.
++    if (expA < expB || (expA == expB && sigA < sigB)) {
++        int te = expA; expA = expB; expB = te;
++        ulong ts = sigA; sigA = sigB; sigB = ts;
++        bool tb = signA; signA = signB; signB = tb;
++    }
++
++    sigA <<= 3;
++    sigB <<= 3;
++    sigB = shift_right_jam(sigB, uint(expA - expB));
++
++    if (signA == signB) {
++        ulong sum = sigA + sigB;
++        if ((sum & (1ul << 56)) != 0) {
++            sum = shift_right_jam(sum, 1);
++            expA += 1;
++        }
++        return soft_round_pack_status(signA, expA, sum, roundingMode, flags);
++    }
++
++    ulong difference = sigA - sigB;
++    if (difference == 0) {
++        // Exact cancellation is -0 only when rounding toward -infinity.
++        return roundingMode == soft_round_min ? 0x8000000000000000ul : 0ul;
++    }
++    int leading = 63 - int(clz(difference));
++    int left = 55 - leading;
++    if (left > 0) {
++        difference <<= uint(left);
++        expA -= left;
++    }
++    return soft_round_pack_status(
++        signA, expA, difference, roundingMode, flags
++    );
++}
++
++inline ulong soft_add64_mode(ulong a, ulong b, uint roundingMode) {
++    uint ignoredFlags = 0;
++    return soft_add64_status(a, b, roundingMode, ignoredFlags);
++}
++
++inline ulong soft_add64(ulong a, ulong b) {
++    return soft_add64_mode(a, b, soft_round_near_even);
++}
++
++inline ulong soft_sub64_status(
++    ulong a, ulong b, uint roundingMode, thread uint &flags
++) {
++    if (soft_is_nan(a) || soft_is_nan(b)) {
++        if (soft_is_signaling_nan(a) || soft_is_signaling_nan(b)) {
++            flags |= soft_flag_invalid;
++        }
++        return soft_propagate_nan(a, b);
++    }
++    return soft_add64_status(
++        a, b ^ 0x8000000000000000ul, roundingMode, flags
++    );
++}
++
++inline ulong soft_sub64_mode(ulong a, ulong b, uint roundingMode) {
++    uint ignoredFlags = 0;
++    return soft_sub64_status(a, b, roundingMode, ignoredFlags);
++}
++
++inline ulong soft_sub64(ulong a, ulong b) {
++    return soft_sub64_mode(a, b, soft_round_near_even);
++}
++
++struct soft_normalized {
++    ulong significand;
++    int exponent;
++};
++
++inline soft_normalized soft_normalize_operand(uint exponentField, ulong fraction) {
++    if (exponentField != 0) {
++        return soft_normalized{fraction | (1ul << 52), int(exponentField)};
++    }
++    int leading = 63 - int(clz(fraction));
++    int left = 52 - leading;
++    return soft_normalized{fraction << uint(left), 1 - left};
++}
++
++inline ulong round_shift_u128_status(
++    ulong hi, ulong lo, int distance, bool sign, uint roundingMode,
++    thread bool &wasInexact, thread bool &wasAboveHalf
++) {
++    if (distance <= 0) return lo;
++    ulong quotient;
++    bool greaterHalf = false;
++    bool exactlyHalf = false;
++    if (distance < 64) {
++        uint d = uint(distance);
++        quotient = (hi << (64u - d)) | (lo >> d);
++        ulong remainder = lo & ((1ul << d) - 1ul);
++        ulong halfwayBit = 1ul << (d - 1u);
++        greaterHalf = remainder > halfwayBit;
++        exactlyHalf = remainder == halfwayBit;
++    } else if (distance == 64) {
++        quotient = hi;
++        ulong halfwayBit = 1ul << 63;
++        greaterHalf = lo > halfwayBit;
++        exactlyHalf = lo == halfwayBit;
++    } else if (distance < 128) {
++        uint d = uint(distance - 64);
++        quotient = hi >> d;
++        ulong highRemainder = hi & ((1ul << d) - 1ul);
++        ulong halfwayBit = 1ul << (d - 1u);
++        greaterHalf = highRemainder > halfwayBit || (highRemainder == halfwayBit && lo != 0);
++        exactlyHalf = highRemainder == halfwayBit && lo == 0;
++    } else {
++        quotient = 0ul;
++        greaterHalf = false;
++        exactlyHalf = false;
++        wasInexact = hi != 0 || lo != 0;
++        wasAboveHalf = false;
++        ulong syntheticRoundBits = wasInexact ? 1ul : 0ul;
++        if (soft_should_increment(sign, syntheticRoundBits, quotient, roundingMode)) {
++            quotient += 1ul;
++        }
++        return quotient;
++    }
++    ulong roundBits = greaterHalf ? 5ul : (exactlyHalf ? 4ul : 0ul);
++    wasInexact = greaterHalf || exactlyHalf;
++    wasAboveHalf = greaterHalf;
++    if (!wasInexact) {
++        if (distance < 64) {
++            wasInexact = (lo & ((1ul << uint(distance)) - 1ul)) != 0;
++        } else if (distance == 64) {
++            wasInexact = lo != 0;
++        } else {
++            uint d = uint(distance - 64);
++            wasInexact = (hi & ((1ul << d) - 1ul)) != 0 || lo != 0;
++        }
++        if (wasInexact) roundBits = 1ul;
++    }
++    if (soft_should_increment(sign, roundBits, quotient, roundingMode)) quotient += 1ul;
++    return quotient;
++}
++
++inline ulong round_shift_u128(
++    ulong hi, ulong lo, int distance, bool sign, uint roundingMode
++) {
++    bool ignoredInexact = false;
++    bool ignoredAboveHalf = false;
++    return round_shift_u128_status(
++        hi, lo, distance, sign, roundingMode, ignoredInexact,
++        ignoredAboveHalf
++    );
++}
++
++inline ulong soft_mul64_status(
++    ulong a, ulong b, uint roundingMode, thread uint &flags
++) {
++    bool sign = ((a ^ b) >> 63) != 0;
++    uint expAField = uint((a >> 52) & 0x7fful);
++    uint expBField = uint((b >> 52) & 0x7fful);
++    ulong fracA = a & 0x000ffffffffffffful;
++    ulong fracB = b & 0x000ffffffffffffful;
++
++    if (expAField == 0x7ffu || expBField == 0x7ffu) {
++        if (soft_is_nan(a) || soft_is_nan(b)) {
++            if (soft_is_signaling_nan(a) || soft_is_signaling_nan(b)) {
++                flags |= soft_flag_invalid;
++            }
++            return soft_propagate_nan(a, b);
++        }
++        bool zeroA = (a & 0x7ffffffffffffffful) == 0;
++        bool zeroB = (b & 0x7ffffffffffffffful) == 0;
++        if (zeroA || zeroB) {
++            flags |= soft_flag_invalid;
++            return 0x7ff8000000000000ul;
++        }
++        return (ulong(sign) << 63) | 0x7ff0000000000000ul;
++    }
++    if ((expAField == 0 && fracA == 0) || (expBField == 0 && fracB == 0)) {
++        return ulong(sign) << 63;
++    }
++
++    soft_normalized na = soft_normalize_operand(expAField, fracA);
++    soft_normalized nb = soft_normalize_operand(expBField, fracB);
++    ulong lo = na.significand * nb.significand;
++    ulong hi = mulhi(na.significand, nb.significand);
++    int top = 127 - int(clz(hi));
++    int exponent = na.exponent + nb.exponent - 1023 + (top - 104);
++    int shift = top - 52;
++    bool subnormal = exponent <= 0;
++    if (subnormal) shift += 1 - exponent;
++    bool inexact = false;
++    bool aboveHalf = false;
++    ulong significand = round_shift_u128_status(
++        hi, lo, shift, sign, roundingMode, inexact, aboveHalf
++    );
++
++    if (subnormal) {
++        if (significand >= (1ul << 52)) exponent = 1;
++        else exponent = 0;
++    } else if (significand >= (1ul << 53)) {
++        significand >>= 1;
++        exponent += 1;
++    }
++    if (exponent >= 0x7ff) {
++        flags |= soft_flag_overflow | soft_flag_inexact;
++        return soft_overflow_result(sign, roundingMode);
++    }
++    if (inexact) {
++        flags |= soft_flag_inexact;
++        bool tiny = exponent == 0 ||
++            (subnormal && exponent == 1 && !aboveHalf);
++        if (tiny) flags |= soft_flag_underflow;
++    }
++    if (significand == 0) return ulong(sign) << 63;
++    return (ulong(sign) << 63) | (ulong(exponent) << 52) |
++           (significand & 0x000ffffffffffffful);
++}
++
++inline ulong soft_mul64_mode(ulong a, ulong b, uint roundingMode) {
++    uint ignoredFlags = 0;
++    return soft_mul64_status(a, b, roundingMode, ignoredFlags);
++}
++
++inline ulong soft_mul64(ulong a, ulong b) {
++    return soft_mul64_mode(a, b, soft_round_near_even);
++}
++
++inline ulong soft_div64_status(
++    ulong a, ulong b, uint roundingMode, thread uint &flags
++) {
++    bool sign = ((a ^ b) >> 63) != 0;
++    uint expAField = uint((a >> 52) & 0x7fful);
++    uint expBField = uint((b >> 52) & 0x7fful);
++    ulong fracA = a & 0x000ffffffffffffful;
++    ulong fracB = b & 0x000ffffffffffffful;
++    bool zeroA = expAField == 0 && fracA == 0;
++    bool zeroB = expBField == 0 && fracB == 0;
++
++    if (soft_is_nan(a) || soft_is_nan(b)) {
++        if (soft_is_signaling_nan(a) || soft_is_signaling_nan(b)) {
++            flags |= soft_flag_invalid;
++        }
++        return soft_propagate_nan(a, b);
++    }
++    if (soft_is_inf(a)) {
++        if (soft_is_inf(b)) {
++            flags |= soft_flag_invalid;
++            return 0x7ff8000000000000ul;
++        }
++        return (ulong(sign) << 63) | 0x7ff0000000000000ul;
++    }
++    if (soft_is_inf(b)) return ulong(sign) << 63;
++    if (zeroB) {
++        if (zeroA) {
++            flags |= soft_flag_invalid;
++            return 0x7ff8000000000000ul;
++        }
++        flags |= soft_flag_infinite;
++        return (ulong(sign) << 63) | 0x7ff0000000000000ul;
++    }
++    if (zeroA) return ulong(sign) << 63;
++
++    soft_normalized na = soft_normalize_operand(expAField, fracA);
++    soft_normalized nb = soft_normalize_operand(expBField, fracB);
++    int exponent = na.exponent - nb.exponent + 1023;
++    ulong remainder = na.significand;
++    if (remainder < nb.significand) {
++        remainder <<= 1;
++        exponent -= 1;
++    }
++
++    // Generate the hidden bit, 52 stored significand bits, and three rounding
++    // bits. The residual is then jammed into the low bit as sticky state.
++    ulong quotientWithRound = 0;
++    for (uint bit = 0; bit < 56; ++bit) {
++        quotientWithRound <<= 1;
++        if (remainder >= nb.significand) {
++            quotientWithRound |= 1ul;
++            remainder -= nb.significand;
++        }
++        remainder <<= 1;
++    }
++    if (remainder != 0) quotientWithRound |= 1ul;
++    return soft_round_pack_status(
++        sign, exponent, quotientWithRound, roundingMode, flags
++    );
++}
++
++inline ulong soft_div64_mode(ulong a, ulong b, uint roundingMode) {
++    uint ignoredFlags = 0;
++    return soft_div64_status(a, b, roundingMode, ignoredFlags);
++}
++
++inline ulong soft_div64(ulong a, ulong b) {
++    return soft_div64_mode(a, b, soft_round_near_even);
++}
++
++inline ulong soft_sqrt64_status(
++    ulong a, uint roundingMode, thread uint &flags
++) {
++    uint exponentField = uint((a >> 52) & 0x7fful);
++    ulong fraction = a & 0x000ffffffffffffful;
++    bool sign = (a >> 63) != 0;
++
++    if (soft_is_nan(a)) {
++        if (soft_is_signaling_nan(a)) flags |= soft_flag_invalid;
++        return a | 0x0008000000000000ul;
++    }
++    if (soft_is_inf(a)) {
++        if (sign) flags |= soft_flag_invalid;
++        return sign ? 0x7ff8000000000000ul : a;
++    }
++    if (exponentField == 0 && fraction == 0) return a;
++    if (sign) {
++        flags |= soft_flag_invalid;
++        return 0x7ff8000000000000ul;
++    }
++
++    soft_normalized operand = soft_normalize_operand(exponentField, fraction);
++    int unbiasedExponent = operand.exponent - 1023;
++    ulong adjustedSignificand = operand.significand;
++    if ((unbiasedExponent & 1) != 0) {
++        adjustedSignificand <<= 1;
++        unbiasedExponent -= 1;
++    }
++
++    // Compute floor(sqrt(adjustedSignificand << 58)). This is the normalized
++    // 53-bit result plus three rounding bits. Feeding two radicand bits per
++    // iteration keeps the partial remainder below 2^59, so ulong is enough.
++    ulong rootWithRound = 0;
++    ulong remainder = 0;
++    for (uint pairIndex = 0; pairIndex < 56; ++pairIndex) {
++        int radicandBit = 110 - int(pairIndex * 2);
++        ulong pair = 0;
++        if (radicandBit >= 58) {
++            pair = (adjustedSignificand >> uint(radicandBit - 58)) & 3ul;
++        }
++        remainder = (remainder << 2) | pair;
++        rootWithRound <<= 1;
++        ulong trial = (rootWithRound << 1) | 1ul;
++        if (remainder >= trial) {
++            remainder -= trial;
++            rootWithRound |= 1ul;
++        }
++    }
++    if (remainder != 0) rootWithRound |= 1ul;
++    int resultExponent = unbiasedExponent / 2 + 1023;
++    return soft_round_pack_status(
++        false, resultExponent, rootWithRound, roundingMode, flags
++    );
++}
++
++inline ulong soft_sqrt64_mode(ulong a, uint roundingMode) {
++    uint ignoredFlags = 0;
++    return soft_sqrt64_status(a, roundingMode, ignoredFlags);
++}
++
++inline ulong soft_sqrt64(ulong a) {
++    return soft_sqrt64_mode(a, soft_round_near_even);
++}
++
++struct soft_u128 {
++    ulong hi;
++    ulong lo;
++};
++
++inline soft_u128 soft_add128(soft_u128 a, soft_u128 b) {
++    ulong lo = a.lo + b.lo;
++    return soft_u128{a.hi + b.hi + ulong(lo < a.lo), lo};
++}
++
++inline soft_u128 soft_sub128(soft_u128 a, soft_u128 b) {
++    ulong lo = a.lo - b.lo;
++    return soft_u128{a.hi - b.hi - ulong(a.lo < b.lo), lo};
++}
++
++inline soft_u128 soft_shift_right_jam128(soft_u128 a, uint distance) {
++    if (distance == 0) return a;
++    if (distance < 64) {
++        ulong discarded = a.lo & ((1ul << distance) - 1ul);
++        return soft_u128{
++            a.hi >> distance,
++            (a.hi << (64u - distance)) | (a.lo >> distance) |
++                ulong(discarded != 0)
++        };
++    }
++    if (distance == 64) {
++        return soft_u128{0, a.hi | ulong(a.lo != 0)};
++    }
++    if (distance < 128) {
++        uint shift = distance - 64;
++        ulong discarded = a.hi & ((1ul << shift) - 1ul);
++        return soft_u128{
++            0,
++            (a.hi >> shift) | ulong(discarded != 0 || a.lo != 0)
++        };
++    }
++    return soft_u128{0, ulong(a.hi != 0 || a.lo != 0)};
++}
++
++inline soft_u128 soft_shift_left128(soft_u128 a, uint distance) {
++    if (distance == 0) return a;
++    return soft_u128{
++        (a.hi << distance) | (a.lo >> (64u - distance)),
++        a.lo << distance
++    };
++}
++
++inline ulong soft_finish_fma_status(
++    bool sign, int exponent, ulong significand, uint roundingMode,
++    thread uint &flags
++) {
++    ulong roundIncrement = 0x200ul;
++    if (roundingMode != soft_round_near_even &&
++        roundingMode != soft_round_near_max_mag) {
++        bool towardSign = roundingMode ==
++            (sign ? soft_round_min : soft_round_max);
++        roundIncrement = towardSign ? 0x3fful : 0ul;
++    }
++
++    ulong roundedInput = significand;
++    bool tiny = false;
++    if (exponent < 0) {
++        tiny = exponent < -1 ||
++            significand + roundIncrement < 0x8000000000000000ul;
++        roundedInput = shift_right_jam(significand, uint(-exponent));
++    }
++    ulong roundBits = roundedInput & 0x3fful;
++    bool overflow = exponent > 0x7fd ||
++        (exponent == 0x7fd &&
++         significand + roundIncrement >= 0x8000000000000000ul);
++    if (overflow) {
++        flags |= soft_flag_overflow | soft_flag_inexact;
++    } else if (roundBits != 0) {
++        flags |= soft_flag_inexact;
++        if (tiny) flags |= soft_flag_underflow;
++    }
++
++    return soft_round_pack(
++        sign, exponent + 1, shift_right_jam(significand, 7), roundingMode
++    );
++}
++
++inline ulong soft_fma64_status(
++    ulong a, ulong b, ulong c, uint roundingMode, thread uint &flags
++) {
++    bool signProduct = ((a ^ b) >> 63) != 0;
++    bool signC = (c >> 63) != 0;
++    uint expAField = uint((a >> 52) & 0x7fful);
++    uint expBField = uint((b >> 52) & 0x7fful);
++    uint expCField = uint((c >> 52) & 0x7fful);
++    ulong fracA = a & 0x000ffffffffffffful;
++    ulong fracB = b & 0x000ffffffffffffful;
++    ulong fracC = c & 0x000ffffffffffffful;
++    bool zeroA = expAField == 0 && fracA == 0;
++    bool zeroB = expBField == 0 && fracB == 0;
++
++    if (soft_is_nan(a) || soft_is_nan(b)) {
++        if (soft_is_signaling_nan(a) || soft_is_signaling_nan(b) ||
++            soft_is_signaling_nan(c)) {
++            flags |= soft_flag_invalid;
++        }
++        ulong ab = soft_propagate_nan(a, b);
++        return soft_is_nan(c) ? soft_propagate_nan(ab, c) : ab;
++    }
++    if (soft_is_inf(a) || soft_is_inf(b)) {
++        if (zeroA || zeroB) {
++            flags |= soft_flag_invalid;
++            ulong invalidProduct = 0x7ff8000000000000ul;
++            return soft_is_nan(c)
++                ? soft_propagate_nan(invalidProduct, c)
++                : invalidProduct;
++        }
++        if (soft_is_nan(c)) {
++            if (soft_is_signaling_nan(c)) flags |= soft_flag_invalid;
++            return c | 0x0008000000000000ul;
++        }
++        ulong productInfinity =
++            (ulong(signProduct) << 63) | 0x7ff0000000000000ul;
++        if (soft_is_inf(c) && signProduct != signC) {
++            flags |= soft_flag_invalid;
++            return 0x7ff8000000000000ul;
++        }
++        return productInfinity;
++    }
++    if (soft_is_nan(c)) {
++        if (soft_is_signaling_nan(c)) flags |= soft_flag_invalid;
++        return c | 0x0008000000000000ul;
++    }
++    if (soft_is_inf(c)) return c;
++    if (zeroA || zeroB) {
++        bool zeroC = expCField == 0 && fracC == 0;
++        if (zeroC && signProduct != signC) {
++            return roundingMode == soft_round_min
++                ? 0x8000000000000000ul : 0ul;
++        }
++        return c;
++    }
++
++    soft_normalized na = soft_normalize_operand(expAField, fracA);
++    soft_normalized nb = soft_normalize_operand(expBField, fracB);
++    int exponent = na.exponent + nb.exponent - 0x3fe;
++    ulong sigA = na.significand << 10;
++    ulong sigB = nb.significand << 10;
++    soft_u128 product = soft_u128{mulhi(sigA, sigB), sigA * sigB};
++    if (product.hi < 0x2000000000000000ul) {
++        exponent -= 1;
++        product = soft_add128(product, product);
++    }
++
++    bool zeroC = expCField == 0 && fracC == 0;
++    if (zeroC) {
++        exponent -= 1;
++        ulong significand = (product.hi << 1) | ulong(product.lo != 0);
++        return soft_finish_fma_status(
++            signProduct, exponent, significand, roundingMode, flags
++        );
++    }
++
++    soft_normalized nc = soft_normalize_operand(expCField, fracC);
++    ulong sigC = nc.significand << 9;
++    int exponentDifference = exponent - nc.exponent;
++    soft_u128 alignedC = soft_u128{0, 0};
++    if (exponentDifference < 0) {
++        exponent = nc.exponent;
++        if (signProduct == signC || exponentDifference < -1) {
++            product.hi = shift_right_jam(
++                product.hi, uint(-exponentDifference)
++            );
++        } else {
++            product = soft_shift_right_jam128(product, 1);
++        }
++    } else if (exponentDifference > 0) {
++        alignedC = soft_shift_right_jam128(
++            soft_u128{sigC, 0}, uint(exponentDifference)
++        );
++    }
++
++    ulong significand;
++    bool signResult = signProduct;
++    if (signProduct == signC) {
++        if (exponentDifference <= 0) {
++            significand = (sigC + product.hi) | ulong(product.lo != 0);
++        } else {
++            product = soft_add128(product, alignedC);
++            significand = product.hi | ulong(product.lo != 0);
++        }
++        if (significand < 0x4000000000000000ul) {
++            exponent -= 1;
++            significand <<= 1;
++        }
++    } else {
++        if (exponentDifference < 0) {
++            signResult = signC;
++            product = soft_sub128(soft_u128{sigC, 0}, product);
++        } else if (exponentDifference == 0) {
++            product.hi -= sigC;
++            if ((product.hi | product.lo) == 0) {
++                return roundingMode == soft_round_min
++                    ? 0x8000000000000000ul : 0ul;
++            }
++            if ((product.hi >> 63) != 0) {
++                signResult = !signResult;
++                product = soft_sub128(soft_u128{0, 0}, product);
++            }
++        } else {
++            product = soft_sub128(product, alignedC);
++        }
++
++        if (product.hi == 0) {
++            exponent -= 64;
++            product.hi = product.lo;
++            product.lo = 0;
++        }
++        int shiftDistance = int(clz(product.hi)) - 1;
++        if (shiftDistance < 0) {
++            significand = shift_right_jam(product.hi, 1);
++            exponent += 1;
++        } else {
++            exponent -= shiftDistance;
++            product = soft_shift_left128(product, uint(shiftDistance));
++            significand = product.hi;
++        }
++        significand |= ulong(product.lo != 0);
++    }
++    return soft_finish_fma_status(
++        signResult, exponent, significand, roundingMode, flags
++    );
++}
++
++inline ulong soft_fma64_mode(ulong a, ulong b, ulong c, uint roundingMode) {
++    uint ignoredFlags = 0;
++    return soft_fma64_status(a, b, c, roundingMode, ignoredFlags);
++}
++
++inline ulong soft_fma64(ulong a, ulong b, ulong c) {
++    return soft_fma64_mode(a, b, c, soft_round_near_even);
++}
++
++inline bool soft_equal64_status(
++    ulong a, ulong b, bool signaling, thread uint &flags
++) {
++    bool nanA = soft_is_nan(a);
++    bool nanB = soft_is_nan(b);
++    if (nanA || nanB) {
++        if (signaling || soft_is_signaling_nan(a) ||
++            soft_is_signaling_nan(b)) {
++            flags |= soft_flag_invalid;
++        }
++        return false;
++    }
++    ulong magnitudeA = a & 0x7ffffffffffffffful;
++    ulong magnitudeB = b & 0x7ffffffffffffffful;
++    return a == b || ((magnitudeA | magnitudeB) == 0);
++}
++
++inline bool soft_less64_status(
++    ulong a, ulong b, bool orEqual, bool quiet, thread uint &flags
++) {
++    bool nanA = soft_is_nan(a);
++    bool nanB = soft_is_nan(b);
++    if (nanA || nanB) {
++        if (!quiet || soft_is_signaling_nan(a) ||
++            soft_is_signaling_nan(b)) {
++            flags |= soft_flag_invalid;
++        }
++        return false;
++    }
++
++    ulong magnitudeA = a & 0x7ffffffffffffffful;
++    ulong magnitudeB = b & 0x7ffffffffffffffful;
++    bool equal = a == b || ((magnitudeA | magnitudeB) == 0);
++    if (equal) return orEqual;
++
++    bool signA = (a >> 63) != 0;
++    bool signB = (b >> 63) != 0;
++    if (signA != signB) return signA;
++    return signA ? a > b : a < b;
++}
++
++inline ulong soft_round_to_int64_status(
++    ulong a, uint roundingMode, bool exact, thread uint &flags
++) {
++    uint exponentField = uint((a >> 52) & 0x7fful);
++    ulong fraction = a & 0x000ffffffffffffful;
++    bool sign = (a >> 63) != 0;
++
++    if (exponentField == 0x7ffu) {
++        if (fraction != 0) {
++            if (soft_is_signaling_nan(a)) flags |= soft_flag_invalid;
++            return a | 0x0008000000000000ul;
++        }
++        return a;
++    }
++    ulong magnitude = a & 0x7ffffffffffffffful;
++    if (magnitude == 0 || exponentField >= 1075u) return a;
++
++    if (exponentField < 1023u) {
++        if (exact) flags |= soft_flag_inexact;
++        bool toOne = false;
++        ulong halfValue = 0x3fe0000000000000ul;
++        if (roundingMode == soft_round_near_even) {
++            toOne = magnitude > halfValue;
++        } else if (roundingMode == soft_round_near_max_mag) {
++            toOne = magnitude >= halfValue;
++        } else if (roundingMode == soft_round_min) {
++            toOne = sign;
++        } else if (roundingMode == soft_round_max) {
++            toOne = !sign;
++        }
++        return toOne
++            ? (ulong(sign) << 63) | 0x3ff0000000000000ul
++            : ulong(sign) << 63;
++    }
++
++    uint fractionalBits = 1075u - exponentField;
++    ulong mask = (1ul << fractionalBits) - 1ul;
++    ulong discarded = magnitude & mask;
++    if (discarded == 0) return a;
++    if (exact) flags |= soft_flag_inexact;
++
++    ulong truncated = magnitude & ~mask;
++    ulong halfValue = 1ul << (fractionalBits - 1u);
++    bool increment = false;
++    if (roundingMode == soft_round_near_even) {
++        increment = discarded > halfValue ||
++            (discarded == halfValue &&
++             ((truncated >> fractionalBits) & 1ul) != 0);
++    } else if (roundingMode == soft_round_near_max_mag) {
++        increment = discarded >= halfValue;
++    } else if (roundingMode == soft_round_min) {
++        increment = sign;
++    } else if (roundingMode == soft_round_max) {
++        increment = !sign;
++    }
++    if (increment) truncated += 1ul << fractionalBits;
++    return (ulong(sign) << 63) | truncated;
++}
++
++inline ulong soft_pack_exact64(bool sign, int exponent, ulong magnitude) {
++    if (magnitude == 0) return ulong(sign) << 63;
++    int leading = 63 - int(clz(magnitude));
++    int left = 52 - leading;
++    ulong significand = magnitude << uint(left);
++    return soft_round_pack(
++        sign, exponent - left, significand << 3, soft_round_near_even
++    );
++}
++
++inline ulong soft_remainder64_status(
++    ulong a, ulong b, thread uint &flags
++) {
++    uint expAField = uint((a >> 52) & 0x7fful);
++    uint expBField = uint((b >> 52) & 0x7fful);
++    ulong fracA = a & 0x000ffffffffffffful;
++    ulong fracB = b & 0x000ffffffffffffful;
++    bool signA = (a >> 63) != 0;
++
++    if (soft_is_nan(a) || soft_is_nan(b)) {
++        if (soft_is_signaling_nan(a) || soft_is_signaling_nan(b)) {
++            flags |= soft_flag_invalid;
++        }
++        return soft_propagate_nan(a, b);
++    }
++    if (soft_is_inf(a) || (expBField == 0 && fracB == 0)) {
++        flags |= soft_flag_invalid;
++        return 0x7ff8000000000000ul;
++    }
++    if (soft_is_inf(b) || (expAField == 0 && fracA == 0)) return a;
++
++    soft_normalized na = soft_normalize_operand(expAField, fracA);
++    soft_normalized nb = soft_normalize_operand(expBField, fracB);
++    int exponentDifference = na.exponent - nb.exponent;
++    if (exponentDifference < -1) return a;
++
++    if (exponentDifference == -1) {
++        // |a / b| is below one. A tie chooses quotient zero (even).
++        if (na.significand <= nb.significand) return a;
++        ulong magnitude = (nb.significand << 1) - na.significand;
++        return soft_pack_exact64(!signA, nb.exponent - 1, magnitude);
++    }
++
++    ulong remainder = na.significand;
++    bool quotientOdd = false;
++    for (int bit = 0; bit <= exponentDifference; ++bit) {
++        bool quotientBit = remainder >= nb.significand;
++        if (quotientBit) remainder -= nb.significand;
++        if (bit == exponentDifference) {
++            quotientOdd = quotientBit;
++        } else {
++            remainder <<= 1;
++        }
++    }
++
++    ulong twiceRemainder = remainder << 1;
++    bool chooseUpper = twiceRemainder > nb.significand ||
++        (twiceRemainder == nb.significand && quotientOdd);
++    bool signResult = signA;
++    if (chooseUpper) {
++        remainder = nb.significand - remainder;
++        signResult = !signResult;
++    }
++    return soft_pack_exact64(signResult, nb.exponent, remainder);
++}
++
++inline ulong soft_uint_to_f64_status(
++    ulong magnitude, bool sign, uint roundingMode, thread uint &flags
++) {
++    if (magnitude == 0) return ulong(sign) << 63;
++    int leading = 63 - int(clz(magnitude));
++    int exponent = 1023 + leading;
++    ulong significand;
++    if (leading <= 52) {
++        significand = magnitude << uint(52 - leading);
++    } else {
++        uint shift = uint(leading - 52);
++        ulong mask = (1ul << shift) - 1ul;
++        ulong discarded = magnitude & mask;
++        significand = magnitude >> shift;
++        if (discarded != 0) {
++            flags |= soft_flag_inexact;
++            ulong halfValue = 1ul << (shift - 1u);
++            bool increment = false;
++            if (roundingMode == soft_round_near_even) {
++                increment = discarded > halfValue ||
++                    (discarded == halfValue && (significand & 1ul) != 0);
++            } else if (roundingMode == soft_round_near_max_mag) {
++                increment = discarded >= halfValue;
++            } else if (roundingMode == soft_round_min) {
++                increment = sign;
++            } else if (roundingMode == soft_round_max) {
++                increment = !sign;
++            }
++            if (increment) significand += 1ul;
++            if (significand >= (1ul << 53)) {
++                significand >>= 1;
++                exponent += 1;
++            }
++        }
++    }
++    return (ulong(sign) << 63) | (ulong(exponent) << 52) |
++        (significand & 0x000ffffffffffffful);
++}
++
++inline ulong soft_f64_to_int_status(
++    ulong a, uint roundingMode, bool exact, bool signedTarget,
++    uint targetBits, thread uint &flags
++) {
++    bool sign = (a >> 63) != 0;
++    uint exponentField = uint((a >> 52) & 0x7fful);
++    ulong fraction = a & 0x000ffffffffffffful;
++    ulong positiveOverflow = targetBits == 32
++        ? (signedTarget ? 0x000000007ffffffful : 0x00000000fffffffful)
++        : (signedTarget ? 0x7ffffffffffffffful : 0xfffffffffffffffful);
++    ulong negativeOverflow = signedTarget
++        ? (targetBits == 32 ? 0x0000000080000000ul : 0x8000000000000000ul)
++        : 0ul;
++
++    if (exponentField == 0x7ffu) {
++        flags |= soft_flag_invalid;
++        if (fraction != 0) return 0;
++        return sign ? negativeOverflow : positiveOverflow;
++    }
++
++    uint roundingFlags = 0;
++    ulong rounded = soft_round_to_int64_status(
++        a, roundingMode, exact, roundingFlags
++    );
++    bool roundedSign = (rounded >> 63) != 0;
++    uint roundedExponent = uint((rounded >> 52) & 0x7fful);
++    ulong roundedFraction = rounded & 0x000ffffffffffffful;
++    ulong magnitude = 0;
++    if (roundedExponent >= 1023u) {
++        int unbiased = int(roundedExponent) - 1023;
++        if (unbiased > 63) {
++            flags |= soft_flag_invalid;
++            return roundedSign ? negativeOverflow : positiveOverflow;
++        }
++        ulong significand = roundedFraction | (1ul << 52);
++        magnitude = unbiased >= 52
++            ? significand << uint(unbiased - 52)
++            : significand >> uint(52 - unbiased);
++    }
++
++    bool invalid = false;
++    if (!signedTarget) {
++        invalid = roundedSign && magnitude != 0;
++        if (targetBits == 32 && magnitude > 0xfffffffful) invalid = true;
++    } else {
++        ulong negativeLimit = targetBits == 32
++            ? 0x0000000080000000ul : 0x8000000000000000ul;
++        ulong positiveLimit = negativeLimit - 1ul;
++        invalid = roundedSign ? magnitude > negativeLimit
++                              : magnitude > positiveLimit;
++    }
++    if (invalid) {
++        flags |= soft_flag_invalid;
++        return roundedSign ? negativeOverflow : positiveOverflow;
++    }
++
++    flags |= roundingFlags;
++    ulong result = roundedSign && magnitude != 0
++        ? (~magnitude) + 1ul : magnitude;
++    return targetBits == 32 ? result & 0xfffffffful : result;
++}
++
++inline ulong soft_round_pack_format_status(
++    bool sign, int exponent, ulong significandWithRound, uint roundingMode,
++    uint exponentBits, uint fractionBits, thread uint &flags
++) {
++    bool wasSubnormal = exponent <= 0;
++    if (exponent <= 0) {
++        significandWithRound = shift_right_jam(
++            significandWithRound, uint(1 - exponent)
++        );
++        exponent = 0;
++    }
++
++    ulong roundBits = significandWithRound & 7ul;
++    ulong significand = significandWithRound >> 3;
++    if (soft_should_increment(sign, roundBits, significand, roundingMode)) {
++        significand += 1ul;
++    }
++    ulong hidden = 1ul << fractionBits;
++    if (exponent == 0 && significand >= hidden) {
++        exponent = 1;
++    } else if (significand >= (hidden << 1)) {
++        significand >>= 1;
++        exponent += 1;
++    }
++
++    uint exponentMax = (1u << exponentBits) - 1u;
++    ulong signBit = ulong(sign) << (exponentBits + fractionBits);
++    if (exponent >= int(exponentMax)) {
++        flags |= soft_flag_overflow | soft_flag_inexact;
++        bool toInfinity =
++            roundingMode == soft_round_near_even ||
++            roundingMode == soft_round_near_max_mag ||
++            (roundingMode == soft_round_min && sign) ||
++            (roundingMode == soft_round_max && !sign);
++        return toInfinity
++            ? signBit | (ulong(exponentMax) << fractionBits)
++            : signBit | (ulong(exponentMax - 1u) << fractionBits) |
++                (hidden - 1ul);
++    }
++    if (roundBits != 0) {
++        flags |= soft_flag_inexact;
++        bool tiny = exponent == 0 ||
++            (wasSubnormal && exponent == 1 && roundBits <= 4ul);
++        if (tiny) flags |= soft_flag_underflow;
++    }
++    if (significand == 0) return signBit;
++    return signBit | (ulong(exponent) << fractionBits) |
++        (significand & (hidden - 1ul));
++}
++
++inline ulong soft_f64_to_format_status(
++    ulong a, uint roundingMode, uint exponentBits, uint fractionBits,
++    int targetBias, thread uint &flags
++) {
++    bool sign = (a >> 63) != 0;
++    uint exponentField = uint((a >> 52) & 0x7fful);
++    ulong fraction = a & 0x000ffffffffffffful;
++    uint exponentMax = (1u << exponentBits) - 1u;
++    ulong signBit = ulong(sign) << (exponentBits + fractionBits);
++    if (exponentField == 0x7ffu) {
++        if (fraction == 0) {
++            return signBit | (ulong(exponentMax) << fractionBits);
++        }
++        if (soft_is_signaling_nan(a)) flags |= soft_flag_invalid;
++        uint payloadShift = 52u - fractionBits;
++        ulong payload = fraction >> payloadShift;
++        return signBit | (ulong(exponentMax) << fractionBits) |
++            (1ul << (fractionBits - 1u)) | payload;
++    }
++    if (exponentField == 0 && fraction == 0) return signBit;
++
++    soft_normalized operand = soft_normalize_operand(exponentField, fraction);
++    int targetExponent = operand.exponent - 1023 + targetBias;
++    uint shift = 52u - fractionBits - 3u;
++    ulong significandWithRound = shift_right_jam(
++        operand.significand, shift
++    );
++    return soft_round_pack_format_status(
++        sign, targetExponent, significandWithRound, roundingMode,
++        exponentBits, fractionBits, flags
++    );
++}
++
++inline ulong soft_format_to_f64_status(
++    ulong raw, uint exponentBits, uint fractionBits, int sourceBias,
++    thread uint &flags
++) {
++    uint signPosition = exponentBits + fractionBits;
++    bool sign = ((raw >> signPosition) & 1ul) != 0;
++    uint exponentMax = (1u << exponentBits) - 1u;
++    uint exponentField = uint((raw >> fractionBits) & ulong(exponentMax));
++    ulong fractionMask = (1ul << fractionBits) - 1ul;
++    ulong fraction = raw & fractionMask;
++    if (exponentField == exponentMax) {
++        if (fraction == 0) {
++            return (ulong(sign) << 63) | 0x7ff0000000000000ul;
++        }
++        ulong quietBit = 1ul << (fractionBits - 1u);
++        if ((fraction & quietBit) == 0) flags |= soft_flag_invalid;
++        return (ulong(sign) << 63) | 0x7ff8000000000000ul |
++            (fraction << (52u - fractionBits));
++    }
++    if (exponentField == 0 && fraction == 0) return ulong(sign) << 63;
++
++    ulong significand;
++    int adjustedExponent;
++    if (exponentField == 0) {
++        int leading = 63 - int(clz(fraction));
++        int left = int(fractionBits) - leading;
++        significand = fraction << uint(left);
++        adjustedExponent = 1 - left;
++    } else {
++        significand = fraction | (1ul << fractionBits);
++        adjustedExponent = int(exponentField);
++    }
++    int exponent64 = adjustedExponent - sourceBias + 1023;
++    ulong fraction64 = (significand & fractionMask) << (52u - fractionBits);
++    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
++}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..d75d1d3 100644
+index 29c13c7..10719db 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -5301,7 +6721,7 @@ index 29c13c7..d75d1d3 100644
  	// Detach any recording before teardown. The user owns and frees the recording buffer.
  	b3StopRecordingInternal( world );
  
-@@ -538,6 +548,108 @@ int b3GetWorldCount( void )
+@@ -538,6 +548,123 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -5348,6 +6768,14 @@ index 29c13c7..d75d1d3 100644
 +		return false;
 +	}
 +
++	if ( world->metalBroadPhaseEnabled && enabled == false )
++	{
++		// Metal pair traversal deliberately retains enlarged CPU tree nodes while
++		// its resident snapshot is refit on-device. Restore the ordinary CPU tree
++		// invariant before returning control to the CPU broad-phase.
++		b3BroadPhase_RebuildTrees( world );
++	}
++
 +	world->metalBroadPhaseEnabled = enabled;
 +	return true;
 +}
@@ -5358,6 +6786,11 @@ index 29c13c7..d75d1d3 100644
 +	if ( world == NULL )
 +	{
 +		return;
++	}
++
++	if ( world->metalBroadPhaseEnabled )
++	{
++		b3BroadPhase_RebuildTrees( world );
 +	}
 +
 +	b3MetalDestroyContext( world->metalContext );
@@ -5393,6 +6826,8 @@ index 29c13c7..d75d1d3 100644
 +	profile.shapeFallbackCount = world->metalShapeFallbackCount;
 +	profile.pairDispatchCount = world->metalPairDispatchCount;
 +	profile.pairFallbackCount = world->metalPairFallbackCount;
++	profile.pairTreeUploadCount = world->metalPairTreeUploadCount;
++	profile.pairTreeRefitCount = world->metalPairTreeRefitCount;
 +	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
 +	profile.lastUnconstrainedGpuMilliseconds = world->metalLastUnconstrainedGpuMilliseconds;
 +	profile.lastContactGpuMilliseconds = world->metalLastContactGpuMilliseconds;
@@ -5410,7 +6845,7 @@ index 29c13c7..d75d1d3 100644
  int b3GetMaxWorldCount( void )
  {
  	return b3_maxWorldCount;
-@@ -3473,6 +3585,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +3600,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -5423,10 +6858,10 @@ index 29c13c7..d75d1d3 100644
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8..6a4d275 100644
+index 8bd3df8..e378548 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
-@@ -266,6 +266,33 @@ typedef struct b3World
+@@ -266,6 +266,35 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
@@ -5448,6 +6883,8 @@ index 8bd3df8..6a4d275 100644
 +	uint64_t metalShapeFallbackCount;
 +	uint64_t metalPairDispatchCount;
 +	uint64_t metalPairFallbackCount;
++	uint64_t metalPairTreeUploadCount;
++	uint64_t metalPairTreeRefitCount;
 +	double metalLastPositionGpuMilliseconds;
 +	double metalLastUnconstrainedGpuMilliseconds;
 +	double metalLastContactGpuMilliseconds;
@@ -5460,13 +6897,13 @@ index 8bd3df8..6a4d275 100644
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -347,4 +374,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +376,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
 -
 diff --git a/src/solver.c b/src/solver.c
-index d8aace0..9b76e3e 100644
+index d8aace0..9d61dce 100644
 --- a/src/solver.c
 +++ b/src/solver.c
 @@ -19,6 +19,9 @@
@@ -6011,7 +7448,21 @@ index d8aace0..9b76e3e 100644
  				iterStageIndex += 1;
  			}
  			graphSyncIndex += 1;
-@@ -1462,6 +1800,10 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1444,7 +1782,12 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+ 	int awakeBodyCount = awakeSet->bodySims.count;
+ 	if ( awakeBodyCount == 0 )
+ 	{
+-		b3ValidateNoEnlarged( &world->broadPhase );
++#if defined( BOX3D_METAL )
++		if ( world->metalBroadPhaseEnabled == false )
++#endif
++		{
++			b3ValidateNoEnlarged( &world->broadPhase );
++		}
+ 		return;
+ 	}
+ 
+@@ -1462,6 +1805,10 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  		stepContext->sims = awakeSet->bodySims.data;
  		stepContext->states = awakeSet->bodyStates.data;
@@ -6022,7 +7473,7 @@ index d8aace0..9b76e3e 100644
  
  		// count contacts, joints, and colors
  		int activeColorCount = 0;
-@@ -1557,13 +1899,20 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1557,13 +1904,20 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3BlockDim jointPrepareDim = b3ComputeBlockCount( jointCount, minJointsPerBlock, maxBlockCount );
  
  		int wideContactByteCount = b3GetWideContactConstraintByteCount();
@@ -6050,7 +7501,7 @@ index d8aace0..9b76e3e 100644
  		b3GraphColor* overflow = colors + B3_OVERFLOW_INDEX;
  		int overflowCount = overflow->contacts.count;
  		int overflowManifoldCount = 0;
-@@ -1573,10 +1922,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1573,10 +1927,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			overflowManifoldCount += overflow->contacts.data[i].manifoldCount;
  		}
  
@@ -6093,7 +7544,7 @@ index d8aace0..9b76e3e 100644
  
  		// Build the span table for the flat prepare/store parallel-for while I slice the
  		// wide constraint buffer across colors. One entry per active color plus a sentinel
-@@ -1798,9 +2175,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1798,9 +2180,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		stepContext->wideContactCount = wideContactCount;
  		stepContext->manifoldConstraints = manifoldConstraints;
  		stepContext->contactConstraints = contactConstraints;
@@ -6109,7 +7560,7 @@ index d8aace0..9b76e3e 100644
  		b3AtomicStoreU32( &stepContext->atomicSyncBits, 0 );
  		b3AtomicStoreInt( &stepContext->mainClaimed, 0 );
  
-@@ -1884,7 +2267,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1884,7 +2272,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		}
  
  		// Finalize bodies. Must happen after the constraint solver and after island splitting.
@@ -6125,7 +7576,7 @@ index d8aace0..9b76e3e 100644
  
  		// Free in reverse order
  		b3StackFree( &world->stack, graphBlocks );
-@@ -1893,11 +2284,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1893,11 +2289,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3StackFree( &world->stack, convexBlocks );
  		b3StackFree( &world->stack, bodyBlocks );
  		b3StackFree( &world->stack, stages );
@@ -6148,8 +7599,59 @@ index d8aace0..9b76e3e 100644
  
  		world->profile.transforms = b3GetMilliseconds( transformTicks );
  		b3TracyCZoneEnd( update_transforms );
+@@ -2083,7 +2485,12 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+ 			world->activeTaskCount -= 1;
+ 		}
+ 
+-		b3ValidateNoEnlarged( &world->broadPhase );
++#if defined( BOX3D_METAL )
++		if ( world->metalBroadPhaseEnabled == false )
++#endif
++		{
++			b3ValidateNoEnlarged( &world->broadPhase );
++		}
+ 
+ 		// Gather bits for all sim bodies that have enlarged AABBs
+ 		b3BitSet* enlargedBodyBitSet = &world->taskContexts.data[0].enlargedSimBitSet;
+@@ -2178,7 +2585,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+ 
+ 		// Serially enlarge broad-phase proxies for bullet shapes
+ 		b3BroadPhase* broadPhase = &world->broadPhase;
+-		b3DynamicTree* dynamicTree = broadPhase->trees + b3_dynamicBody;
+ 
+ 		// Fast array access is important here
+ 		b3Body* bodyArray = world->bodies.data;
+@@ -2219,12 +2625,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+ 
+ 				int proxyKey = shape->proxyKey;
+ 				int proxyId = B3_PROXY_ID( proxyKey );
++				B3_UNUSED( proxyId );
+ 				B3_ASSERT( B3_PROXY_TYPE( proxyKey ) == b3_dynamicBody );
+ 
+ 				// all fast bullet shapes should already be in the move buffer
+ 				B3_ASSERT( b3GetBit( &broadPhase->movedProxies[b3_dynamicBody], proxyId ) );
+ 
+-				b3DynamicTree_EnlargeProxy( dynamicTree, proxyId, shape->fatAABB );
++				b3BroadPhase_EnlargeProxy( broadPhase, proxyKey, shape->fatAABB );
+ 
+ 				shapeId = shape->nextShapeId;
+ 			}
+@@ -2234,6 +2641,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+ 		b3TracyCZoneEnd( bullets );
+ 	}
+ 
++#if defined( BOX3D_METAL )
++	if ( stepContext->metalTreeRefit )
++	{
++		b3MetalCommitPairTreeRefit( world->metalContext, &world->broadPhase );
++	}
++#endif
++
+ 	b3StackFree( &world->stack, stepContext->bulletBodies );
+ 	stepContext->bulletBodies = NULL;
+ 	b3AtomicStoreInt( &stepContext->bulletBodyCount, 0 );
 diff --git a/src/solver.h b/src/solver.h
-index 7c8a1c7..92f3224 100644
+index 7c8a1c7..b1eacbc 100644
 --- a/src/solver.h
 +++ b/src/solver.h
 @@ -137,6 +137,32 @@ typedef struct b3SolverStage
@@ -6185,7 +7687,7 @@ index 7c8a1c7..92f3224 100644
  // Constraint softness
  typedef struct b3Softness
  {
-@@ -201,6 +227,13 @@ typedef struct b3StepContext
+@@ -201,6 +227,15 @@ typedef struct b3StepContext
  	// shortcut to body sims from awake set
  	b3BodySim* sims;
  
@@ -6195,11 +7697,13 @@ index 7c8a1c7..92f3224 100644
 +	const b3MetalShapeAABBResult* metalShapeResults;
 +	int metalShapeResultCount;
 +	bool metalStatesResident;
++	bool metalTreeRefitEligible;
++	bool metalTreeRefit;
 +
  	// array of all shape ids for shapes that have enlarged AABBs
  	int* enlargedShapes;
  	int enlargedShapeCount;
-@@ -224,9 +257,15 @@ typedef struct b3StepContext
+@@ -224,9 +259,15 @@ typedef struct b3StepContext
  	// Similar for mesh/overflow contact constraints
  	struct b3ManifoldConstraint* manifoldConstraints;
  	struct b3ContactConstraint* contactConstraints;
@@ -6256,10 +7760,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..4c5a033
+index 0000000..8c5e9e7
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,1526 @@
+@@ -0,0 +1,1605 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -6272,6 +7776,7 @@ index 0000000..4c5a033
 +#include "math_internal.h"
 +#include "metal_backend.h"
 +#include "physics_world.h"
++#include "shape.h"
 +
 +#include <math.h>
 +#include <stdio.h>
@@ -6305,6 +7810,57 @@ index 0000000..4c5a033
 +		.shapeIndex = (int)userData,
 +	};
 +	return true;
++}
++
++static int VerifyResidentPairTraversal( b3World* world )
++{
++	b3BroadPhase* broadPhase = &world->broadPhase;
++	int moveCount = broadPhase->moveArray.count;
++	ENSURE( moveCount > 0 );
++	const b3MetalPairQueryRecord* records = NULL;
++	const b3MetalPairCandidate* candidates = NULL;
++	int candidateCount = 0;
++	b3MetalDispatchStats stats = { 0 };
++	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
++		&records, &candidates, &candidateCount, &stats ) );
++	ENSURE( stats.treeUploadCount == 0 );
++	int capacity = b3MaxInt( 1, candidateCount );
++	b3MetalPairCandidate* reference = malloc( (size_t)capacity * sizeof( b3MetalPairCandidate ) );
++	ENSURE( reference != NULL );
++	b3PairCandidateCapture capture = { .candidates = reference, .capacity = capacity };
++	int totalCount = 0;
++	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
++	{
++		int proxyKey = broadPhase->moveArray.data[moveIndex];
++		b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
++		int proxyId = B3_PROXY_ID( proxyKey );
++		b3AABB aabb = b3DynamicTree_GetAABB( broadPhase->trees + proxyType, proxyId );
++		capture.count = 0;
++		if ( proxyType == b3_dynamicBody )
++		{
++			capture.treeType = b3_kinematicBody;
++			b3DynamicTree_Query( broadPhase->trees + b3_kinematicBody, aabb, B3_DEFAULT_MASK_BITS, false,
++				CapturePairCandidate, &capture );
++			capture.treeType = b3_staticBody;
++			b3DynamicTree_Query( broadPhase->trees + b3_staticBody, aabb, B3_DEFAULT_MASK_BITS, false,
++				CapturePairCandidate, &capture );
++		}
++		capture.treeType = b3_dynamicBody;
++		b3DynamicTree_Query( broadPhase->trees + b3_dynamicBody, aabb, B3_DEFAULT_MASK_BITS, false,
++			CapturePairCandidate, &capture );
++		ENSURE( records[moveIndex].count == (uint32_t)capture.count );
++		for ( int i = 0; i < capture.count; ++i )
++		{
++			const b3MetalPairCandidate* gpu = candidates + records[moveIndex].offset + i;
++			ENSURE( gpu->proxyId == reference[i].proxyId );
++			ENSURE( gpu->treeType == reference[i].treeType );
++			ENSURE( gpu->shapeIndex == reference[i].shapeIndex );
++		}
++		totalCount += capture.count;
++	}
++	ENSURE( totalCount == candidateCount );
++	free( reference );
++	return 0;
 +}
 +
 +static void b3IntegratePositionsReference( b3BodyState* states, int count, float h, float maxLinearSpeed,
@@ -6710,8 +8266,10 @@ index 0000000..4c5a033
 +	}
 +	ENSURE( dynamicProxyKey != B3_NULL_INDEX );
 +	int dynamicProxyId = B3_PROXY_ID( dynamicProxyKey );
-+	b3AABB unchangedAABB = b3DynamicTree_GetAABB( broadPhase->trees + b3_dynamicBody, dynamicProxyId );
-+	b3BroadPhase_EnlargeProxy( broadPhase, dynamicProxyKey, unchangedAABB );
++	b3AABB expandedAABB = b3DynamicTree_GetAABB( broadPhase->trees + b3_dynamicBody, dynamicProxyId );
++	expandedAABB.lowerBound.x -= 0.01f;
++	expandedAABB.upperBound.x += 0.01f;
++	b3BroadPhase_EnlargeProxy( broadPhase, dynamicProxyKey, expandedAABB );
 +	stats = (b3MetalDispatchStats){ 0 };
 +	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
 +		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
@@ -6772,6 +8330,7 @@ index 0000000..4c5a033
 +	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 +	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
 +	ENSURE( b3World_SetMetalFinalization( gpuWorld, true ) );
++	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, true ) );
 +
 +	b3BodyId* cpuBodies = malloc( (size_t)count * sizeof( b3BodyId ) );
 +	b3BodyId* gpuBodies = malloc( (size_t)count * sizeof( b3BodyId ) );
@@ -6785,7 +8344,12 @@ index 0000000..4c5a033
 +	{
 +		b3BodyDef bodyDef = b3DefaultBodyDef();
 +		bodyDef.type = b3_dynamicBody;
++#if defined( BOX3D_DOUBLE_PRECISION )
++		bodyDef.position = (b3Pos){ 1.0e8 + 32.0 * (double)( i % 64 ), -1.0e8 + 32.0 * (double)( i / 64 ),
++			0.1 * (double)( i % 7 ) };
++#else
 +		bodyDef.position = (b3Pos){ (float)( i % 64 ), (float)( i / 64 ), 0.1f * (float)( i % 7 ) };
++#endif
 +		bodyDef.linearVelocity = (b3Vec3){ b3MetalRandomFloat( -40.0f, 40.0f ), b3MetalRandomFloat( -40.0f, 40.0f ),
 +										  b3MetalRandomFloat( -40.0f, 40.0f ) };
 +		bodyDef.angularVelocity = (b3Vec3){ b3MetalRandomFloat( -20.0f, 20.0f ), b3MetalRandomFloat( -20.0f, 20.0f ),
@@ -6815,10 +8379,15 @@ index 0000000..4c5a033
 +
 +	b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
 +	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
++	ENSURE( VerifyResidentPairTraversal( b3GetWorldFromId( gpuWorld ) ) == 0 );
 +
 +	float maxPositionError = 0.0f;
 +	float maxRotationError = 0.0f;
 +	float maxAABBError = 0.0f;
++#if defined( BOX3D_DOUBLE_PRECISION )
++	b3World* gpuWorldInternal = b3GetWorldFromId( gpuWorld );
++	float maxOracleUnderflow = 0.0f;
++#endif
 +	for ( int i = 0; i < count; ++i )
 +	{
 +		b3WorldTransform a = b3Body_GetTransform( cpuBodies[i] );
@@ -6832,6 +8401,18 @@ index 0000000..4c5a033
 +		maxRotationError = b3MaxFloat( maxRotationError, fabsf( a.q.s - b.q.s ) );
 +		b3AABB cpuAABB = b3Shape_GetAABB( cpuShapes[i] );
 +		b3AABB gpuAABB = b3Shape_GetAABB( gpuShapes[i] );
++#if defined( BOX3D_DOUBLE_PRECISION )
++		b3Shape* gpuShape = b3Array_Get( gpuWorldInternal->shapes, gpuShapes[i].index1 - 1 );
++		b3Body* gpuBody = b3Array_Get( gpuWorldInternal->bodies, gpuShape->bodyId );
++		b3AABB oracle = b3ComputeFatShapeAABB( gpuShape, b3GetBodyTransformQuick( gpuWorldInternal, gpuBody ),
++			B3_SPECULATIVE_DISTANCE );
++		maxOracleUnderflow = b3MaxFloat( maxOracleUnderflow, gpuAABB.lowerBound.x - oracle.lowerBound.x );
++		maxOracleUnderflow = b3MaxFloat( maxOracleUnderflow, gpuAABB.lowerBound.y - oracle.lowerBound.y );
++		maxOracleUnderflow = b3MaxFloat( maxOracleUnderflow, gpuAABB.lowerBound.z - oracle.lowerBound.z );
++		maxOracleUnderflow = b3MaxFloat( maxOracleUnderflow, oracle.upperBound.x - gpuAABB.upperBound.x );
++		maxOracleUnderflow = b3MaxFloat( maxOracleUnderflow, oracle.upperBound.y - gpuAABB.upperBound.y );
++		maxOracleUnderflow = b3MaxFloat( maxOracleUnderflow, oracle.upperBound.z - gpuAABB.upperBound.z );
++#endif
 +		const float* cpuBounds = (const float*)&cpuAABB;
 +		const float* gpuBounds = (const float*)&gpuAABB;
 +		for ( int j = 0; j < 6; ++j )
@@ -6850,18 +8431,17 @@ index 0000000..4c5a033
 +	ENSURE( profile.unconstrainedFallbackCount == 0 );
 +	ENSURE( profile.finalizationEnabled );
 +	ENSURE( profile.finalizationDispatchCount == 1 );
-+#if defined( BOX3D_DOUBLE_PRECISION )
-+	ENSURE( profile.shapeDispatchCount == 0 );
-+	ENSURE( profile.shapeFallbackCount == 1 );
-+#else
 +	ENSURE( profile.shapeDispatchCount == 1 );
 +	ENSURE( profile.shapeFallbackCount == 0 );
-+#endif
 +	ENSURE( profile.positionDispatchCount == 0 );
 +	ENSURE( profile.positionFallbackCount == 0 );
 +	ENSURE( maxPositionError <= 3.0e-5f );
 +	ENSURE( maxRotationError <= 3.0e-5f );
 +	ENSURE( maxAABBError <= 5.0e-5f );
++#if defined( BOX3D_DOUBLE_PRECISION )
++	printf( "    VF64 far-world oracle underflow=%.9g\n", maxOracleUnderflow );
++	ENSURE( maxOracleUnderflow <= 0.0f );
++#endif
 +
 +	free( gpuShapes );
 +	free( cpuShapes );
@@ -7071,24 +8651,27 @@ index 0000000..4c5a033
 +	}
 +
 +	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
-+	printf( "    convex friction contacts dispatches=%llu gpu=%.3f ms transformError=%.3g velocityError=%.3g\n",
-+		(unsigned long long)profile.contactDispatchCount, profile.lastContactGpuMilliseconds,
++	printf( "    convex friction contacts dispatches=%llu treeUploads=%llu treeRefits=%llu gpu=%.3f ms "
++			"transformError=%.3g velocityError=%.3g\n",
++		(unsigned long long)profile.contactDispatchCount, (unsigned long long)profile.pairTreeUploadCount,
++		(unsigned long long)profile.pairTreeRefitCount, profile.lastContactGpuMilliseconds,
 +		maxTransformError, maxVelocityError );
 +	ENSURE( profile.contactDispatchCount == 40 );
 +	ENSURE( profile.pairDispatchCount >= 1 );
 +	ENSURE( profile.pairFallbackCount == 0 );
 +	ENSURE( profile.finalizationDispatchCount == 10 );
-+#if defined( BOX3D_DOUBLE_PRECISION )
-+	ENSURE( profile.shapeDispatchCount == 0 );
-+	ENSURE( profile.shapeFallbackCount == 10 );
-+#else
 +	ENSURE( profile.shapeDispatchCount == 10 );
 +	ENSURE( profile.shapeFallbackCount == 0 );
-+#endif
++	ENSURE( profile.pairTreeUploadCount == 1 );
++	ENSURE( profile.pairTreeRefitCount == 10 );
 +	ENSURE( profile.positionDispatchCount == 0 );
 +	ENSURE( profile.unconstrainedDispatchCount == 0 );
 +	ENSURE( maxTransformError <= 2.0e-4f );
 +	ENSURE( maxVelocityError <= 2.0e-4f );
++
++	// Disabling the resident broad-phase must restore the CPU tree invariant.
++	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, false ) );
++	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
 +
 +	b3DestroyWorld( gpuWorld );
 +	b3DestroyWorld( cpuWorld );

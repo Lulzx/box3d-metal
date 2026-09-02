@@ -14,8 +14,11 @@ awake-shape AABBs. A second experimental opt-in traverses Box3D's existing
 dynamic trees and performs deterministic candidate compaction on Metal,
 preserving upstream candidate order before the unchanged CPU filtering/contact
 callback. Unchanged tree snapshots remain in persistent Metal storage, while
-any CPU bounds or topology mutation invalidates them. Both stages remain off by
-default while the CPU still owns tree mutation and consumes shared result
+supported shape motion now updates leaves and refits internal bounds on-device.
+Topology changes and unsupported CPU mutations invalidate the snapshot.
+Double-precision worlds use VF64 exact software binary64 translation and
+directed float narrowing for conservative far-world AABBs. Both stages remain
+off by default while the CPU still owns topology and consumes shared result
 streams.
 
 ## Quick start
@@ -67,7 +70,8 @@ CPU work:
 
 The tree-traversal speedup is historical evidence for the earlier CPU-prefix
 implementation. The current on-device scan has exact-order validation, but no
-new whole-world timing is published from the loaded development machine.
+new whole-world timing is published from the loaded development machine. The
+resident-refit and VF64 checkpoint likewise publishes correctness evidence only.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

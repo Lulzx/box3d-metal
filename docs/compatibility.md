@@ -22,15 +22,15 @@ evaluation order differs.
 | Parallel joints | Soft alignment, torque limiting, static/dynamic bodies |
 | Supported contact/joint overflow | Serial GPU execution in deterministic upstream order |
 | Mixed distance/parallel colors and overflow | Supported with type-dense buffers and ordered descriptors |
-| Experimental broad-phase traversal | Raw dynamic-tree candidates in exact CPU visitation order |
+| Experimental broad phase | Resident leaf update/refit plus raw candidates in exact CPU visitation order |
 
 ## Explicit CPU boundary
 
 The following remain CPU work:
 
-- broad-phase tree mutation, pair filtering/contact creation, narrow phase, and manifold generation;
+- broad-phase topology mutation, pair filtering/contact creation, narrow phase, and manifold generation;
 - contact and joint preparation;
-- broad-phase tree mutation and pair generation, events, islands, sleeping, and CCD;
+- events, islands, sleeping, and CCD;
 - recording, queries, topology mutation, and public API calls;
 - filter, motor, prismatic, revolute, spherical, weld, and wheel joint solving;
 - any joint requesting force/torque threshold events.
@@ -50,24 +50,27 @@ overflow form is present. Collision detection itself remains CPU-side.
 Body and awake-shape finalization have an experimental, separately opt-in Metal
 path for rotation, origin offset, motion/sleep metrics, world-space inverse
 inertia, speculative bounds, and fat-AABB enlargement. The CPU still applies
-the flat shape results and performs pointer-rich dynamic-tree work. This path is
+the flat shape results and performs pointer-rich shape bookkeeping. Resident
+bounds feed the Metal tree refit directly. This path is
 not enabled by `b3World_EnableMetal` alone because current whole-world
 measurements are slower.
 
 Raw dynamic-tree traversal has another separately opt-in Metal path. It queries
 kinematic, static, and dynamic trees in upstream order and preserves each
 tree's DFS leaf order. The CPU still owns filters, pair-set checks, compounds,
-custom callbacks, deterministic contact-list construction, tree updates, and
-tree rebuilds. Excessive tree depth or candidate volume and any dispatch or
+custom callbacks, deterministic contact-list construction, topology changes,
+and CPU fallback rebuilds. Excessive tree depth or candidate volume and any dispatch or
 allocation failure fall back to the complete CPU traversal for that step.
 
 ## Double precision
 
-Double-precision world positions remain supported. Shape AABBs explicitly fall
-back to the CPU so far-world translation retains Box3D's outward-rounded
-binary64-add-then-float-narrow contract. `b3BodyState` and Metal constraint
-arithmetic are float, matching the baseline solver-state precision. A dedicated
-double-precision build runs the Metal differential suite.
+Double-precision world positions remain supported. VF64 exact integer binary64
+helpers reproduce center-plus-delta-plus-origin translation and directed float
+narrowing on Metal. A scale-aware local-float envelope keeps GPU AABBs
+conservative against the CPU oracle at far-world coordinates. `b3BodyState`,
+shape-local geometry, and Metal constraint arithmetic remain float, matching
+the baseline solver-state precision. A dedicated double-precision build runs
+the Metal differential suite.
 
 ## Failure behavior
 

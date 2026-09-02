@@ -63,7 +63,10 @@ about 3.0 ms at the largest point.
 The current implementation replaces that CPU prefix with a deterministic
 hierarchical Metal scan and compact write. A 607-proxy oracle compares all
 8,081 candidates and their per-move order exactly; steady state uses one command
-buffer. No new whole-world number is accepted because concurrent CPU and MPS
+buffer. The follow-on resident-tree path updates enlarged leaves and refits
+internal nodes on-device; a ten-step contact world uses one initial upload and
+ten refits. VF64 also removes the double-precision shape fallback with
+far-world CPU-oracle containment. No new whole-world number is accepted because concurrent CPU and MPS
 loads contaminated the available host. The earlier crossover remains evidence
 for the traversal architecture, not a benchmark of the current scan.
 
