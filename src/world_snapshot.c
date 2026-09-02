@@ -1317,6 +1317,7 @@ bool b3DeserializeIntoShell( const uint8_t* data, int size, b3World* world, b3Re
 		b3DesPodArray( r, bp->moveArray );
 
 		b3DesHashSet( r, &bp->pairSet );
+		bp->pairSetRevision += 1;
 		// Transient moveResults/movePairs stay at shell's NULL/0
 	}
 

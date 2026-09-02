@@ -171,6 +171,48 @@ typedef struct b3QueryPairContext
 	int compoundShapeIndex;
 } b3QueryPairContext;
 
+static void b3AppendMovePair( b3QueryPairContext* queryContext, b3Shape* shapeA, b3Shape* shapeB, int childIndex )
+{
+	b3World* world = queryContext->world;
+	int bodyIdA = shapeA->bodyId;
+	int bodyIdB = shapeB->bodyId;
+	b3Body* bodyA = b3Array_Get( world->bodies, bodyIdA );
+	b3Body* bodyB = b3Array_Get( world->bodies, bodyIdB );
+	if ( b3ShouldBodiesCollide( world, bodyA, bodyB ) == false )
+	{
+		return;
+	}
+
+	if ( ( shapeA->flags & b3_enableCustomFiltering ) || ( shapeB->flags & b3_enableCustomFiltering ) )
+	{
+		b3CustomFilterFcn* customFilterFcn = world->customFilterFcn;
+		if ( customFilterFcn != NULL )
+		{
+			b3ShapeId idA = { shapeA->id + 1, world->worldId, shapeA->generation };
+			b3ShapeId idB = { shapeB->id + 1, world->worldId, shapeB->generation };
+			if ( customFilterFcn( idA, idB, world->customFilterContext ) == false )
+			{
+				return;
+			}
+		}
+	}
+
+	b3BroadPhase* broadPhase = &world->broadPhase;
+	int pairIndex = b3AtomicFetchAddInt( &broadPhase->movePairIndex, 1 );
+	if ( pairIndex >= broadPhase->movePairCapacity )
+	{
+		return;
+	}
+
+	b3MovePair* pair = broadPhase->movePairs + pairIndex;
+	pair->heap = false;
+	pair->shapeIndexA = shapeA->id;
+	pair->shapeIndexB = shapeB->id;
+	pair->childIndex = childIndex;
+	pair->next = queryContext->moveResult->pairList;
+	queryContext->moveResult->pairList = pair;
+}
+
 // This is called from b3DynamicTree::Query when we are gathering pairs.
 static bool b3PairQueryCallback( int proxyId, uint64_t userData, void* context )
 {
@@ -289,52 +331,7 @@ static bool b3PairQueryCallback( int proxyId, uint64_t userData, void* context )
 		return true;
 	}
 
-	// Does a joint override collision?
-	b3Body* bodyA = b3Array_Get( world->bodies, bodyIdA );
-	b3Body* bodyB = b3Array_Get( world->bodies, bodyIdB );
-	if ( b3ShouldBodiesCollide( world, bodyA, bodyB ) == false )
-	{
-		return true;
-	}
-
-	// Custom user filter
-	if ( ( shapeA->flags & b3_enableCustomFiltering ) || ( shapeB->flags & b3_enableCustomFiltering ) )
-	{
-		b3CustomFilterFcn* customFilterFcn = queryContext->world->customFilterFcn;
-		if ( customFilterFcn != NULL )
-		{
-			b3ShapeId idA = { shapeIdA + 1, world->worldId, shapeA->generation };
-			b3ShapeId idB = { shapeIdB + 1, world->worldId, shapeB->generation };
-			bool shouldCollide = customFilterFcn( idA, idB, queryContext->world->customFilterContext );
-			if ( shouldCollide == false )
-			{
-				return true;
-			}
-		}
-	}
-
-	// todo per thread to eliminate atomic?
-	int pairIndex = b3AtomicFetchAddInt( &broadPhase->movePairIndex, 1 );
-
-	b3MovePair* pair;
-	if ( pairIndex < broadPhase->movePairCapacity )
-	{
-		pair = broadPhase->movePairs + pairIndex;
-		pair->heap = false;
-	}
-	else
-	{
-		// todo experimenting with ignoring this pair if we ran out of space
-		return true;
-		// pair = (b3MovePair*)b3Alloc( sizeof( b3MovePair ) );
-		// pair->heap = true;
-	}
-
-	pair->shapeIndexA = shapeIdA;
-	pair->shapeIndexB = shapeIdB;
-	pair->childIndex = childIndex;
-	pair->next = queryContext->moveResult->pairList;
-	queryContext->moveResult->pairList = pair;
+	b3AppendMovePair( queryContext, shapeA, shapeB, childIndex );
 
 	// continue the query
 	return true;
@@ -410,9 +407,9 @@ typedef struct b3MetalFindPairsContext
 } b3MetalFindPairsContext;
 
 // Implements b3ParallelForCallback. Metal has already traversed the trees and
-// rejected exact moved-proxy duplicates plus built-in shape filters. Reusing
-// the complete callback here is a fail-closed oracle and retains pair-set,
-// compound, joint, custom-filter, and deterministic contact behavior.
+// rejected exact moved-proxy duplicates, existing non-compound contacts, and
+// built-in shape filters. Common candidates go directly to the remaining
+// joint/custom checks. Compounds retain the complete callback and child query.
 static void b3FindPairsMetalTask( int startIndex, int endIndex, int workerIndex, void* context )
 {
 	b3TracyCZoneNC( pair_metal_consume, "Pair Metal Consume", b3_colorAquamarine, true );
@@ -444,7 +441,20 @@ static void b3FindPairsMetalTask( int startIndex, int endIndex, int workerIndex,
 		{
 			const b3MetalPairCandidate* candidate = metalContext->candidates + record->offset + candidateIndex;
 			queryContext.queryTreeType = (b3BodyType)candidate->treeType;
-			b3PairQueryCallback( candidate->proxyId, (uint64_t)(uint32_t)candidate->shapeIndex, &queryContext );
+			b3Shape* shapeA = b3Array_Get( world->shapes, candidate->shapeIndex );
+			if ( shapeA->type == b3_compoundShape )
+			{
+				b3PairQueryCallback( candidate->proxyId, (uint64_t)(uint32_t)candidate->shapeIndex, &queryContext );
+				continue;
+			}
+
+			b3Shape* shapeB = b3Array_Get( world->shapes, queryContext.queryShapeIndex );
+			B3_ASSERT( shapeA->id != shapeB->id );
+			B3_ASSERT( shapeA->bodyId != shapeB->bodyId );
+			B3_ASSERT( shapeA->sensorIndex == B3_NULL_INDEX && shapeB->sensorIndex == B3_NULL_INDEX );
+			B3_ASSERT( b3ShouldShapesCollide( shapeA->filter, shapeB->filter ) );
+			B3_ASSERT( b3ContainsKey( &bp->pairSet, b3ShapePairKey( shapeA->id, shapeB->id, 0 ) ) == false );
+			b3AppendMovePair( &queryContext, shapeA, shapeB, 0 );
 		}
 	}
 	b3TracyCZoneEnd( pair_metal_consume );
@@ -515,6 +525,7 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			world->metalPairDispatchCount += 1;
 			world->metalPairTreeUploadCount += (uint64_t)stats.treeUploadCount;
 			world->metalPairMetadataUploadCount += (uint64_t)stats.metadataUploadCount;
+			world->metalPairSetUploadCount += (uint64_t)stats.pairSetUploadCount;
 			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
 			usedMetalPairs = true;
 		}

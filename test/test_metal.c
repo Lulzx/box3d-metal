@@ -59,6 +59,11 @@ static bool CapturePairCandidate( int proxyId, uint64_t userData, void* context 
 	{
 		return true;
 	}
+	if ( targetShape->type != b3_compoundShape &&
+		 b3ContainsKey( &capture->broadPhase->pairSet, b3ShapePairKey( targetShapeIndex, capture->queryShapeIndex, 0 ) ) )
+	{
+		return true;
+	}
 	if ( capture->count >= capture->capacity ) return false;
 	capture->candidates[capture->count++] = (b3MetalPairCandidate){
 		.proxyId = proxyId,
@@ -493,6 +498,7 @@ static int MetalPairTraversalTest( void )
 	ENSURE( stats.commandBufferCount == 1 );
 	ENSURE( stats.treeUploadCount == 1 );
 	ENSURE( stats.metadataUploadCount == 1 );
+	ENSURE( stats.pairSetUploadCount == 1 );
 	double initialGpuMilliseconds = stats.gpuMilliseconds;
 	stats = (b3MetalDispatchStats){ 0 };
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount,
@@ -500,6 +506,7 @@ static int MetalPairTraversalTest( void )
 	ENSURE( stats.commandBufferCount == 1 );
 	ENSURE( stats.treeUploadCount == 0 );
 	ENSURE( stats.metadataUploadCount == 0 );
+	ENSURE( stats.pairSetUploadCount == 0 );
 	double steadyGpuMilliseconds = stats.gpuMilliseconds;
 
 	int cpuCapacity = bodyCount * bodyCount;
@@ -575,11 +582,74 @@ static int MetalPairTraversalTest( void )
 		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
 	ENSURE( stats.treeUploadCount == 1 );
 	ENSURE( stats.metadataUploadCount == 1 );
+	ENSURE( stats.pairSetUploadCount == 0 );
 	ENSURE( VerifyResidentPairTraversal( world ) == 0 );
 	printf( "    pair traversal moves=%d candidates=%d initial=%.3f ms steady=%.3f ms exactOrder=yes\n", moveCount,
 		gpuCandidateCount, initialGpuMilliseconds, steadyGpuMilliseconds );
 
 	free( cpuCandidates );
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
+static int MetalExistingPairFilterTest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	ENSURE( b3World_SetMetalBroadPhase( worldId, true ) );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.enableSleep = false;
+	bodyDef.position = (b3Pos){ -0.25f, 0.0f, 0.0f };
+	b3BodyId bodyA = b3CreateBody( worldId, &bodyDef );
+	b3ShapeId shapeA = b3CreateSphereShape( bodyA, &shapeDef, &sphere );
+	bodyDef.position = (b3Pos){ 0.25f, 0.0f, 0.0f };
+	b3BodyId bodyB = b3CreateBody( worldId, &bodyDef );
+	b3ShapeId shapeB = b3CreateSphereShape( bodyB, &shapeDef, &sphere );
+	b3World* world = b3GetWorldFromId( worldId );
+	b3BroadPhase* broadPhase = &world->broadPhase;
+	const b3MetalPairQueryRecord* records = NULL;
+	const b3MetalPairCandidate* candidates = NULL;
+	int candidateCount = 0;
+	b3MetalDispatchStats stats = { 0 };
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data,
+		broadPhase->moveArray.count, &records, &candidates, &candidateCount, &stats ) );
+	ENSURE( candidateCount == 1 );
+	ENSURE( stats.pairSetUploadCount == 1 );
+
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	ENSURE( broadPhase->pairSet.count == 1 );
+	int shapeIndexA = shapeA.index1 - 1;
+	int shapeIndexB = shapeB.index1 - 1;
+	b3BufferMove( broadPhase, world->shapes.data[shapeIndexA].proxyKey );
+	b3BufferMove( broadPhase, world->shapes.data[shapeIndexB].proxyKey );
+	stats = (b3MetalDispatchStats){ 0 };
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data,
+		broadPhase->moveArray.count, &records, &candidates, &candidateCount, &stats ) );
+	ENSURE( candidateCount == 0 );
+	ENSURE( stats.pairSetUploadCount == 1 );
+	ENSURE( VerifyResidentPairTraversal( world ) == 0 );
+
+	b3Filter disabledFilter = b3DefaultFilter();
+	disabledFilter.maskBits = 0;
+	b3Shape_SetFilter( shapeB, disabledFilter, true );
+	ENSURE( broadPhase->pairSet.count == 0 );
+	b3Shape_SetFilter( shapeB, b3DefaultFilter(), false );
+	b3BufferMove( broadPhase, world->shapes.data[shapeIndexA].proxyKey );
+	b3BufferMove( broadPhase, world->shapes.data[shapeIndexB].proxyKey );
+	stats = (b3MetalDispatchStats){ 0 };
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data,
+		broadPhase->moveArray.count, &records, &candidates, &candidateCount, &stats ) );
+	ENSURE( candidateCount == 1 );
+	ENSURE( stats.pairSetUploadCount == 1 );
+	ENSURE( stats.metadataUploadCount == 1 );
+	printf( "    existing pair filter contacts=1 suppressed=1 restored=%d uploads=stable\n", candidateCount );
+
 	b3DestroyWorld( worldId );
 	return 0;
 }
@@ -1837,6 +1907,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalFusedIntegrationTest );
 	RUN_SUBTEST( MetalFinalizationTest );
 	RUN_SUBTEST( MetalPairTraversalTest );
+	RUN_SUBTEST( MetalExistingPairFilterTest );
 	RUN_SUBTEST( MetalPairTraversalFallbackTest );
 	RUN_SUBTEST( MetalShapeCompactionTest );
 	RUN_SUBTEST( MetalShapeInputRegistryTest );

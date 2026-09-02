@@ -48,7 +48,7 @@ one full CPU core and another Python workload consuming roughly one third of a
 core. The 0.8 ms values printed by the correctness test are route diagnostics,
 not benchmark evidence.
 
-The next broad-phase ownership step is resident existing-pair suppression and a
-specialized CPU consumer for the remaining compound/joint/custom cases. That
-reduces the accepted stream before incremental contact creation and narrow
-phase move on-device.
+Resident existing-pair suppression and the specialized ordinary-candidate CPU
+consumer followed in
+[`m4-pro-resident-existing-pairs-2026-09-02.md`](m4-pro-resident-existing-pairs-2026-09-02.md).
+The remaining boundary is incremental contact creation and narrow phase.

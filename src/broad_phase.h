@@ -47,6 +47,7 @@ typedef struct b3BroadPhase
 	// Tracks shape pairs that have a b3Contact
 	// todo pairSet can grow quite large on the first time step and remain large
 	b3HashSet pairSet;
+	uint64_t pairSetRevision;
 } b3BroadPhase;
 
 void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity );

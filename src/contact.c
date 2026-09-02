@@ -290,6 +290,7 @@ void b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int chil
 	// Add to pair set for fast lookup
 	uint64_t pairKey = b3ShapePairKey( shapeIdA, shapeIdB, childIndex );
 	b3AddKey( &world->broadPhase.pairSet, pairKey );
+	world->broadPhase.pairSetRevision += 1;
 
 	// Contacts are created as non-touching. Later if they are found to be touching
 	// they will link islands and be moved into the constraint graph.
@@ -340,6 +341,7 @@ void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies )
 	// Remove pair from set
 	uint64_t pairKey = b3ShapePairKey( contact->shapeIdA, contact->shapeIdB, contact->childIndex );
 	b3RemoveKey( &world->broadPhase.pairSet, pairKey );
+	world->broadPhase.pairSetRevision += 1;
 
 	b3FreeManifolds( world, contact->manifolds, contact->manifoldCount );
 	contact->manifolds = NULL;

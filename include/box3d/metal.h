@@ -44,6 +44,7 @@ typedef struct b3MetalProfile
 	uint64_t pairFallbackCount;
 	uint64_t pairTreeUploadCount;
 	uint64_t pairMetadataUploadCount;
+	uint64_t pairSetUploadCount;
 	uint64_t pairTreeRefitCount;
 	double lastPositionGpuMilliseconds;
 	double lastUnconstrainedGpuMilliseconds;
@@ -67,9 +68,10 @@ B3_API bool b3World_SetMetalFinalization( b3WorldId worldId, bool enabled );
 
 /// Opt into experimental GPU dynamic-tree traversal for broad-phase candidate
 /// generation. Metal also performs deterministic moved-proxy de-duplication and
-/// built-in same-body, sensor, and shape-filter rejection. Existing contacts,
-/// joint/custom filtering, compounds, and deterministic contact creation retain
-/// the CPU oracle. Any unsupported tree depth, capacity, or dispatch failure
+/// built-in same-body, sensor, and shape-filter rejection. A resident mirror of
+/// the pair set suppresses existing non-compound contacts. Joint/custom filtering,
+/// compounds, and deterministic contact creation retain the CPU path. Any
+/// unsupported tree depth, capacity, or dispatch failure
 /// falls back to the complete CPU traversal for that step.
 B3_API bool b3World_SetMetalBroadPhase( b3WorldId worldId, bool enabled );
 
