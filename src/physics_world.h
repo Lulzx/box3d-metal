@@ -283,6 +283,7 @@ typedef struct b3World
 	uint64_t metalShapeDispatchCount;
 	uint64_t metalShapeFallbackCount;
 	uint64_t metalShapeCompactDispatchCount;
+	uint64_t metalShapeBoundsResidentDispatchCount;
 	int metalLastShapeResultCount;
 	int metalLastEnlargedShapeResultCount;
 	uint64_t metalPairDispatchCount;

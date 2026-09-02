@@ -78,6 +78,8 @@ struct b3MetalContext
 	NSUInteger shapeInputCapacity;
 	id<MTLBuffer> shapeResultBuffer;
 	NSUInteger shapeResultCapacity;
+	uint64_t shapeBoundsRevision;
+	int shapeBoundsCount;
 	id<MTLBuffer> shapeCompactBuffer;
 	NSUInteger shapeCompactCapacity;
 	id<MTLBuffer> shapeBlockBuffer;
@@ -324,7 +326,7 @@ static const char* b3_metalSource =
 	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
 	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
 	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
-	"struct ShapeParams { uint shapeCount; float extra; uint p0; uint p1; };\n"
+	"struct ShapeParams { uint shapeCount; float extra; uint useResidentBounds; uint p1; };\n"
 	"struct ShapeCompactParams { uint shapeCount,blockCount,p0,p1; };\n"
 	"struct FusedParams {\n"
 	"  uint bodyCount; float h; float maxLinearSpeed; float maxAngularSpeed;\n"
@@ -575,7 +577,9 @@ static const char* b3_metalSource =
 	"  float3 position=float3(b.positionX,b.positionY,b.positionZ);\n"
 	"  float3 lo=position+localLo, hi=position+localHi;\n"
 	"#endif\n"
-	"  float3 oldLo=float3(in.oldLx,in.oldLy,in.oldLz), oldHi=float3(in.oldUx,in.oldUy,in.oldUz);\n"
+	"  float3 oldLo,oldHi;if(p.useResidentBounds!=0u){ShapeResult previous=results[i];\n"
+	"    oldLo=float3(previous.flx,previous.fly,previous.flz);oldHi=float3(previous.fux,previous.fuy,previous.fuz);\n"
+	"  }else{oldLo=float3(in.oldLx,in.oldLy,in.oldLz);oldHi=float3(in.oldUx,in.oldUy,in.oldUz);}\n"
 	"  bool enlarged=any(oldLo>lo)||any(hi>oldHi); float3 fatLo=oldLo, fatHi=oldHi;\n"
 	"  if (enlarged) { fatLo=lo-float3(in.margin); fatHi=hi+float3(in.margin); }\n"
 	"  ShapeResult out; out.shapeId=in.shapeId; out.bodyIndex=in.bodyIndex; out.enlarged=enlarged?1u:0u; out.padding=0;\n"
@@ -1472,6 +1476,8 @@ static bool b3MetalEnsureShapeCapacity( b3MetalContext* context, NSUInteger inpu
 		[context->shapeResultBuffer release];
 		context->shapeResultBuffer = buffer;
 		context->shapeResultCapacity = capacity;
+		context->shapeBoundsRevision = 0;
+		context->shapeBoundsCount = 0;
 	}
 	NSUInteger shapeCount = resultBytes / sizeof( b3MetalShapeAABBResult );
 	NSUInteger compactBytes = shapeCount * sizeof( b3MetalEnlargedShapeResult );
@@ -1872,6 +1878,7 @@ static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepC
 	stepContext->metalShapeResultCount = 0;
 	stepContext->metalEnlargedShapeResults = NULL;
 	stepContext->metalEnlargedShapeResultCount = 0;
+	stepContext->metalShapeBoundsResident = false;
 	stepContext->metalTreeRefitEligible = false;
 	stepContext->metalTreeRefit = false;
 	b3World* world = stepContext->world;
@@ -1950,16 +1957,19 @@ static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepC
 		}
 	}
 	B3_ASSERT( outputIndex == shapeCount );
+	stepContext->metalShapeBoundsResident = context->shapeBoundsRevision == world->broadPhase.treeRevision &&
+		context->shapeBoundsCount == shapeCount;
 	stepContext->metalTreeRefitEligible = treeRefitEligible;
 	return shapeCount;
 }
 
 static void b3MetalEncodeShapeFinalization( b3MetalContext* context, id<MTLComputeCommandEncoder> encoder,
-	int shapeCount )
+	b3StepContext* stepContext, int shapeCount )
 {
 	if ( shapeCount == 0 ) return;
 	struct { uint32_t shapeCount; float extra; uint32_t padding[2]; } params =
-		{ (uint32_t)shapeCount, B3_SPECULATIVE_DISTANCE, { 0, 0 } };
+		{ (uint32_t)shapeCount, B3_SPECULATIVE_DISTANCE,
+		  { stepContext != NULL && stepContext->metalShapeBoundsResident ? 1u : 0u, 0 } };
 	id<MTLComputePipelineState> pipeline = context->finalizeShapesPipeline;
 	[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 	[encoder setComputePipelineState:pipeline];
@@ -2238,7 +2248,7 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 			[encoder setBytes:&finalizeParams length:sizeof( finalizeParams ) atIndex:4];
 			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
 				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
-			b3MetalEncodeShapeFinalization( context, encoder, shapeCount );
+			b3MetalEncodeShapeFinalization( context, encoder, finalizationContext, shapeCount );
 			treeRefitEncoded = b3MetalEncodePairTreeRefit( context, encoder, finalizationContext, shapeCount );
 		}
 		[encoder endEncoding];
@@ -2256,6 +2266,9 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 		}
 		if ( finalizationContext != NULL && shapeCount > 0 )
 		{
+			context->shapeBoundsCount = shapeCount;
+			finalizationContext->world->metalShapeBoundsResidentDispatchCount +=
+				finalizationContext->metalShapeBoundsResident ? 1 : 0;
 			finalizationContext->metalShapeResults = context->shapeResultBuffer.contents;
 			finalizationContext->metalShapeResultCount = shapeCount;
 			finalizationContext->world->metalLastShapeResultCount = shapeCount;
@@ -2573,6 +2586,7 @@ void b3MetalCommitPairTreeRefit( b3MetalContext* context, const b3BroadPhase* br
 {
 	if ( context == NULL || broadPhase == NULL || context->pairTreeBuffer == nil ) return;
 	context->pairTreeRevision = broadPhase->treeRevision;
+	context->shapeBoundsRevision = broadPhase->treeRevision;
 }
 
 bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepContext,
@@ -3023,7 +3037,7 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 			[encoder setBytes:&finalizeParams length:sizeof( finalizeParams ) atIndex:4];
 			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
 				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
-			b3MetalEncodeShapeFinalization( context, encoder, shapeCount );
+			b3MetalEncodeShapeFinalization( context, encoder, stepContext, shapeCount );
 			treeRefitEncoded = b3MetalEncodePairTreeRefit( context, encoder, stepContext, shapeCount );
 		}
 
@@ -3039,6 +3053,8 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		stepContext->metalFinalizeResults = finalizeBodies ? context->finalizeResultBuffer.contents : NULL;
 		if ( shapeCount > 0 )
 		{
+			context->shapeBoundsCount = shapeCount;
+			stepContext->world->metalShapeBoundsResidentDispatchCount += stepContext->metalShapeBoundsResident ? 1 : 0;
 			stepContext->metalShapeResults = context->shapeResultBuffer.contents;
 			stepContext->metalShapeResultCount = shapeCount;
 			stepContext->world->metalLastShapeResultCount = shapeCount;

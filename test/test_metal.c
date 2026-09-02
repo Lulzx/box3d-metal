@@ -586,7 +586,9 @@ static int MetalShapeCompactionTest( void )
 	shapeDef.invokeContactCreation = false;
 	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.2f };
 	int* movingProxyKeys = malloc( (size_t)( bodyCount / 2 ) * sizeof( int ) );
-	ENSURE( movingProxyKeys != NULL );
+	b3ShapeId* movingShapeIds = malloc( (size_t)( bodyCount / 2 ) * sizeof( b3ShapeId ) );
+	b3BodyId mutationBodyId = { 0 };
+	ENSURE( movingProxyKeys != NULL && movingShapeIds != NULL );
 	for ( int i = 0; i < bodyCount; ++i )
 	{
 		b3BodyDef bodyDef = b3DefaultBodyDef();
@@ -595,18 +597,29 @@ static int MetalShapeCompactionTest( void )
 		bodyDef.position = (b3Pos){ 3.0f * (float)i, 0.0f, 0.0f };
 		bodyDef.linearVelocity = i % 2 == 0 ? (b3Vec3){ 20.0f, 0.0f, 0.0f } : b3Vec3_zero;
 		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+		if ( i == 1 ) mutationBodyId = bodyId;
 		b3ShapeId shapeId = b3CreateSphereShape( bodyId, &shapeDef, &sphere );
 		if ( i % 2 == 0 )
 		{
 			b3World* world = b3GetWorldFromId( worldId );
 			movingProxyKeys[i / 2] = world->shapes.data[shapeId.index1 - 1].proxyKey;
+			movingShapeIds[i / 2] = shapeId;
 		}
 	}
 
 	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 	b3World* world = b3GetWorldFromId( worldId );
+	// Poison the CPU mirror without changing the broad-phase revision. The next
+	// dispatch must use its prior resident fat bounds, not these packed values.
+	for ( int i = 0; i < bodyCount / 2; ++i )
+	{
+		b3Shape* shape = world->shapes.data + movingShapeIds[i].index1 - 1;
+		shape->fatAABB = (b3AABB){ { -1.0e6f, -1.0e6f, -1.0e6f }, { 1.0e6f, 1.0e6f, 1.0e6f } };
+	}
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
-	ENSURE( profile.shapeCompactDispatchCount == 1 );
+	ENSURE( profile.shapeCompactDispatchCount == 2 );
+	ENSURE( profile.shapeBoundsResidentDispatchCount == 1 );
 	ENSURE( profile.lastShapeResultCount == bodyCount );
 	ENSURE( profile.lastEnlargedShapeResultCount == bodyCount / 2 );
 	ENSURE( world->broadPhase.moveArray.count == bodyCount / 2 );
@@ -614,9 +627,17 @@ static int MetalShapeCompactionTest( void )
 	{
 		ENSURE( world->broadPhase.moveArray.data[i] == movingProxyKeys[i] );
 	}
-	printf( "    shape compaction enlarged=%d/%d stableOrder=yes\n", profile.lastEnlargedShapeResultCount,
-		profile.lastShapeResultCount );
+	// A public mutation increments the tree revision, so the following dispatch
+	// must reseed from CPU bounds instead of trusting the old resident layout.
+	b3Body_SetTransform( mutationBodyId, (b3Pos){ 3.0f, 2.0f, 0.0f }, b3Quat_identity );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.shapeBoundsResidentDispatchCount == 1 );
+	printf( "    shape compaction enlarged=%d/%d stableOrder=yes residentBounds=%llu\n",
+		profile.lastEnlargedShapeResultCount, profile.lastShapeResultCount,
+		(unsigned long long)profile.shapeBoundsResidentDispatchCount );
 
+	free( movingShapeIds );
 	free( movingProxyKeys );
 	b3DestroyWorld( worldId );
 	return 0;

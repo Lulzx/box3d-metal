@@ -29,7 +29,10 @@ while topology changes and unsupported CPU mutations invalidate the snapshot.
 Enlarged proxy bookkeeping consumes a stable GPU-compacted subset rather than
 rescanning every shape result or walking body shape lists again.
 Double-precision worlds use VF64 software binary64 for exact world translation
-and directed float AABB narrowing on Metal. The stages remain off by default;
+and directed float AABB narrowing on Metal. Across unchanged resident steps,
+the prior Metal fat bounds are now the authoritative containment input; any
+CPU tree revision invalidates that state and reseeds it from the CPU oracle.
+The stages remain off by default;
 CPU shape bookkeeping/readback is still a regression, while GPU tree traversal
 crosses over only in large measured worlds.
 See [the architecture and compatibility contract](docs/metal_architecture.md)

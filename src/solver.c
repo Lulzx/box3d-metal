@@ -1811,6 +1811,7 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		stepContext->metalEnlargedShapeResults = NULL;
 		stepContext->metalEnlargedShapeResultCount = 0;
 		stepContext->metalStatesResident = false;
+		stepContext->metalShapeBoundsResident = false;
 
 		// count contacts, joints, and colors
 		int activeColorCount = 0;

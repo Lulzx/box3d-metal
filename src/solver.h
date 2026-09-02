@@ -245,6 +245,7 @@ typedef struct b3StepContext
 	const b3MetalEnlargedShapeResult* metalEnlargedShapeResults;
 	int metalEnlargedShapeResultCount;
 	bool metalStatesResident;
+	bool metalShapeBoundsResident;
 	bool metalTreeRefitEligible;
 	bool metalTreeRefit;
 

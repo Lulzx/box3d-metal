@@ -70,6 +70,17 @@ because reading one 64-byte result per awake shape has not demonstrated a
 whole-world win; the remaining boundary is removal of that CPU bookkeeping
 stream once all downstream consumers can use resident bounds.
 
+After the first successful resident refit, the next shape dispatch reads its
+previous fat bounds directly from the Metal result buffer rather than trusting
+the CPU mirror packed into `ShapeInput`. The state is accepted only when both
+the shape count and broad-phase revision still match. Buffer growth, proxy
+creation/destruction, explicit movement, and tree rebuilds fail closed by
+forcing a CPU-oracle reseed. `shapeBoundsResidentDispatchCount` exposes this
+transition. This makes the VF64-produced bounds authoritative between eligible
+steps, but the buffer is still shared and the full result is still applied to
+CPU shapes for current public-query, mesh-contact, sensor, CCD, and fallback
+consumers.
+
 Enable it with:
 
 ```c
