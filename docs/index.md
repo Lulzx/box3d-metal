@@ -40,6 +40,7 @@ for review.
 - [Mesh contacts](benchmarks/m4-pro-mesh-contacts-2026-09-01.md)
 - [Distance joints](benchmarks/m4-pro-distance-joints-2026-09-01.md)
 - [Parallel joints](benchmarks/m4-pro-parallel-joints-2026-09-02.md)
+- [Experimental body finalization](benchmarks/m4-pro-finalization-2026-09-02.md)
 
 ## Repository map
 

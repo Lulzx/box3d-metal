@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index e5d603b5e15a38d050450891b3acbb461c0d7e0b..5545d63fe1396d21255442b6d2a8aeecdf7e6178 100644
+index e5d603b..5545d63 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -91,6 +91,11 @@ endif()
@@ -22,10 +22,10 @@ index e5d603b5e15a38d050450891b3acbb461c0d7e0b..5545d63fe1396d21255442b6d2a8aeec
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..e282a053a12201651718a239b6c72eb0494ea75b 100644
+index cfe16e4..0b5f7b8 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,52 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,58 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -40,7 +40,10 @@ index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..e282a053a12201651718a239b6c72eb0
 +restitution. Contact and joint graph overflow is solved in deterministic scalar
 +order inside dedicated Metal kernels. Distance joints (including springs,
 +limits, and motors) and parallel joints share the GPU-resident command graph;
-+other joint types fall back safely.
++other joint types fall back safely. An experimental, separately opt-in kernel
++also ports final rotation, origin offset, sleep-motion metrics, and world-inertia
++finalization. It remains off by default because current end-to-end measurements
++do not show a stable speedup.
 +See [the architecture and compatibility contract](docs/metal_architecture.md)
 +for the exact supported surface and current CPU-only stages.
 +
@@ -68,6 +71,9 @@ index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..e282a053a12201651718a239b6c72eb0
 +if (!b3World_EnableMetal(world, 32768)) {
 +    /* Metal was unavailable; the world remains on the CPU path. */
 +}
++
++/* Research path: correct and fused, but not yet a measured whole-world win. */
++b3World_SetMetalFinalization(world, true);
 +```
 +
 +Inspect `b3World_GetMetalProfile(world)` to verify device selection, dispatches,
@@ -79,7 +85,7 @@ index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..e282a053a12201651718a239b6c72eb0
  
  ### Collision
 diff --git a/benchmark/CMakeLists.txt b/benchmark/CMakeLists.txt
-index 73f721017afd57e492ee0450cf3798428a6546b1..9c62c764f8253edee721a623cb11a054217c46a2 100644
+index 73f7210..9c62c76 100644
 --- a/benchmark/CMakeLists.txt
 +++ b/benchmark/CMakeLists.txt
 @@ -10,4 +10,44 @@ set_target_properties(benchmark PROPERTIES C_STANDARD 17)
@@ -131,7 +137,7 @@ index 73f721017afd57e492ee0450cf3798428a6546b1..9c62c764f8253edee721a623cb11a054
 +endif()
 diff --git a/benchmark/metal_contacts.c b/benchmark/metal_contacts.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a87502f8226d9cfd4928a774c94efd1a9e3bed7f
+index 0000000..a87502f
 --- /dev/null
 +++ b/benchmark/metal_contacts.c
 @@ -0,0 +1,93 @@
@@ -230,7 +236,7 @@ index 0000000000000000000000000000000000000000..a87502f8226d9cfd4928a774c94efd1a
 +}
 diff --git a/benchmark/metal_demo.c b/benchmark/metal_demo.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..3433eac1fc26fe186707065512585a02ff923703
+index 0000000..3433eac
 --- /dev/null
 +++ b/benchmark/metal_demo.c
 @@ -0,0 +1,60 @@
@@ -296,7 +302,7 @@ index 0000000000000000000000000000000000000000..3433eac1fc26fe186707065512585a02
 +}
 diff --git a/benchmark/metal_distance_joints.c b/benchmark/metal_distance_joints.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..3da733c74f37132507768766e9cfd3a436b06e2f
+index 0000000..3da733c
 --- /dev/null
 +++ b/benchmark/metal_distance_joints.c
 @@ -0,0 +1,102 @@
@@ -404,7 +410,7 @@ index 0000000000000000000000000000000000000000..3da733c74f37132507768766e9cfd3a4
 +}
 diff --git a/benchmark/metal_fused.c b/benchmark/metal_fused.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..ed8077dbe739c3b1082455d70f3528b905df8dab
+index 0000000..9aaf57f
 --- /dev/null
 +++ b/benchmark/metal_fused.c
 @@ -0,0 +1,163 @@
@@ -536,7 +542,7 @@ index 0000000000000000000000000000000000000000..ed8077dbe739c3b1082455d70f3528b9
 +		for ( int i = 0; i < 3; ++i )
 +		{
 +			if ( b3MetalIntegrateUnconstrainedSubsteps( context, gpu, sims, count, subStepCount, 1.0f / 240.0f,
-+					(b3Vec3){ 0.0f, -10.0f, 0.0f }, 80.0f, 47.12389f, &stats ) == false )
++					(b3Vec3){ 0.0f, -10.0f, 0.0f }, 80.0f, 47.12389f, 0.0f, NULL, &stats ) == false )
 +			{
 +				return 3;
 +			}
@@ -556,7 +562,7 @@ index 0000000000000000000000000000000000000000..ed8077dbe739c3b1082455d70f3528b9
 +		for ( int i = 0; i < repeats; ++i )
 +		{
 +			if ( b3MetalIntegrateUnconstrainedSubsteps( context, gpu, sims, count, subStepCount, 1.0f / 240.0f,
-+					(b3Vec3){ 0.0f, -10.0f, 0.0f }, 80.0f, 47.12389f, &stats ) == false )
++					(b3Vec3){ 0.0f, -10.0f, 0.0f }, 80.0f, 47.12389f, 0.0f, NULL, &stats ) == false )
 +			{
 +				return 3;
 +			}
@@ -573,7 +579,7 @@ index 0000000000000000000000000000000000000000..ed8077dbe739c3b1082455d70f3528b9
 +}
 diff --git a/benchmark/metal_integration.c b/benchmark/metal_integration.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..cd16bbb03d281bdc978112865763e3e2769cc2b1
+index 0000000..cd16bbb
 --- /dev/null
 +++ b/benchmark/metal_integration.c
 @@ -0,0 +1,124 @@
@@ -703,7 +709,7 @@ index 0000000000000000000000000000000000000000..cd16bbb03d281bdc978112865763e3e2
 +}
 diff --git a/benchmark/metal_mesh_contacts.c b/benchmark/metal_mesh_contacts.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..3dc389122e418a18fc0902183f3cd5b8943f3a6e
+index 0000000..3dc3891
 --- /dev/null
 +++ b/benchmark/metal_mesh_contacts.c
 @@ -0,0 +1,122 @@
@@ -831,7 +837,7 @@ index 0000000000000000000000000000000000000000..3dc389122e418a18fc0902183f3cd5b8
 +}
 diff --git a/benchmark/metal_parallel_joints.c b/benchmark/metal_parallel_joints.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..9f2dcfab868438c01fd57f3c1dd56b07d84b51a5
+index 0000000..9f2dcfa
 --- /dev/null
 +++ b/benchmark/metal_parallel_joints.c
 @@ -0,0 +1,95 @@
@@ -932,16 +938,17 @@ index 0000000000000000000000000000000000000000..9f2dcfab868438c01fd57f3c1dd56b07
 +}
 diff --git a/benchmark/metal_world.c b/benchmark/metal_world.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..804782bf1107b445c9ef54cf434c197a9ab3e164
+index 0000000..1d5490e
 --- /dev/null
 +++ b/benchmark/metal_world.c
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,80 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
 +#include "box3d/box3d.h"
 +
 +#include <stdio.h>
++#include <stdlib.h>
 +
 +static b3WorldId CreateBallisticWorld( int bodyCount, int workerCount )
 +{
@@ -982,7 +989,9 @@ index 0000000000000000000000000000000000000000..804782bf1107b445c9ef54cf434c197a
 +int main( void )
 +{
 +	const int workerCount = 8;
-+	printf( "# operation=whole_world_unconstrained substeps=4 workers=%d timing=wall_clock_step\n", workerCount );
++	bool enableFinalization = getenv( "BOX3D_METAL_FINALIZATION" ) != NULL;
++	printf( "# operation=whole_world_unconstrained substeps=4 workers=%d timing=wall_clock_step metal_finalization=%s\n",
++		workerCount, enableFinalization ? "on" : "off" );
 +	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,speedup\n" );
 +	const int counts[] = { 512, 2048, 8192, 32768, 131072, 524288 };
 +	for ( int testIndex = 0; testIndex < (int)( sizeof( counts ) / sizeof( counts[0] ) ); ++testIndex )
@@ -1000,6 +1009,11 @@ index 0000000000000000000000000000000000000000..804782bf1107b445c9ef54cf434c197a
 +			fprintf( stderr, "Metal initialization failed\n" );
 +			return 1;
 +		}
++		if ( enableFinalization && b3World_SetMetalFinalization( gpuWorld, true ) == false )
++		{
++			fprintf( stderr, "Metal finalization enable failed\n" );
++			return 1;
++		}
 +		double gpuMs = TimeWorld( gpuWorld, repeats );
 +		b3MetalProfile metal = b3World_GetMetalProfile( gpuWorld );
 +		printf( "%d,%d,%.6f,%.6f,%.6f,%.3f\n", bodyCount, repeats, cpuMs, gpuMs,
@@ -1010,7 +1024,7 @@ index 0000000000000000000000000000000000000000..804782bf1107b445c9ef54cf434c197a
 +}
 diff --git a/docs/benchmarks/m4-pro-convex-contacts-2026-09-01.md b/docs/benchmarks/m4-pro-convex-contacts-2026-09-01.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..05672d5529e3eb2f6c5a786499ae36080e05a617
+index 0000000..05672d5
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-convex-contacts-2026-09-01.md
 @@ -0,0 +1,56 @@
@@ -1072,7 +1086,7 @@ index 0000000000000000000000000000000000000000..05672d5529e3eb2f6c5a786499ae3608
 +```
 diff --git a/docs/benchmarks/m4-pro-distance-joints-2026-09-01.md b/docs/benchmarks/m4-pro-distance-joints-2026-09-01.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..b4d33af5e58213c3354b3d92902a9941412bb223
+index 0000000..b4d33af
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-distance-joints-2026-09-01.md
 @@ -0,0 +1,49 @@
@@ -1125,9 +1139,62 @@ index 0000000000000000000000000000000000000000..b4d33af5e58213c3354b3d92902a9941
 +cmake --build build/metal-release --target metal_joint_benchmark
 +./build/metal-release/bin/metal_joint_benchmark
 +```
+diff --git a/docs/benchmarks/m4-pro-finalization-2026-09-02.md b/docs/benchmarks/m4-pro-finalization-2026-09-02.md
+new file mode 100644
+index 0000000..df5b1b5
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-finalization-2026-09-02.md
+@@ -0,0 +1,47 @@
++# M4 Pro experimental GPU finalization — 2026-09-02
++
++## Scope
++
++This ports the arithmetic portion of Box3D body finalization to Metal: final
++rotation, body-origin offset, farthest-point motion and sleep metrics, and
++world-space inverse inertia. Fused solver paths append it to their existing
++command buffer and reuse resident body state. CPU code still owns large-world
++position accumulation, CCD, events, island sleep mutation, shape AABBs, and
++broad-phase updates.
++
++The stage is separately opt-in with
++`b3World_SetMetalFinalization(world, true)` and is off by default.
++
++## Correctness
++
++On the M4 Pro host described by the other 2026-09-01/02 benchmark records, the
++randomized 4,096-body direct differential test covered all 22 result floats and
++observed `2.29e-05` maximum absolute error. The complete Box3D test executable
++passed, including end-to-end solver, recording, determinism, CCD, and
++large-world coverage.
++
++## Whole-world result
++
++Paired warm runs used 524,288 unconstrained bodies, four substeps, eight Box3D
++workers, and six measured steps per run. Times include the whole
++`b3World_Step`, submission, synchronization, and CPU consumption of the shared
++finalization result stream.
++
++| Mode | Metal step samples (ms) | Median (ms) |
++| --- | --- | ---: |
++| Existing fused integration, finalization off | 8.029, 8.299, 8.275 | 8.275 |
++| Fused integration plus GPU finalization | 10.688, 10.267, 10.500 | 10.500 |
++
++The experimental stage was about 27% slower at the paired median and was
++visibly frequency-sensitive. This is negative evidence, not a release
++crossover. The kernel stays available for the next residency/bounds work, but
++it is not enabled by `b3World_EnableMetal` alone.
++
++## Reproduction
++
++```sh
++cmake --build build/metal-release --target test metal_world_benchmark
++./build/metal-release/bin/test
++./build/metal-release/bin/metal_world_benchmark
++BOX3D_METAL_FINALIZATION=1 ./build/metal-release/bin/metal_world_benchmark
++```
 diff --git a/docs/benchmarks/m4-pro-fused-integration-2026-09-01.md b/docs/benchmarks/m4-pro-fused-integration-2026-09-01.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..3c599bda2c401616a89372291e3c56da0b36d864
+index 0000000..3c599bd
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-fused-integration-2026-09-01.md
 @@ -0,0 +1,66 @@
@@ -1199,7 +1266,7 @@ index 0000000000000000000000000000000000000000..3c599bda2c401616a89372291e3c56da
 +```
 diff --git a/docs/benchmarks/m4-pro-mesh-contacts-2026-09-01.md b/docs/benchmarks/m4-pro-mesh-contacts-2026-09-01.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..4daca2b25eaa446adedd56370c904c9df3538ba4
+index 0000000..4daca2b
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-mesh-contacts-2026-09-01.md
 @@ -0,0 +1,45 @@
@@ -1250,7 +1317,7 @@ index 0000000000000000000000000000000000000000..4daca2b25eaa446adedd56370c904c9d
 +```
 diff --git a/docs/benchmarks/m4-pro-parallel-joints-2026-09-02.md b/docs/benchmarks/m4-pro-parallel-joints-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..6b91226b57e1eb5ecb43903518b82c27d36170c7
+index 0000000..6b91226
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-parallel-joints-2026-09-02.md
 @@ -0,0 +1,53 @@
@@ -1309,7 +1376,7 @@ index 0000000000000000000000000000000000000000..6b91226b57e1eb5ecb43903518b82c27
 +```
 diff --git a/docs/benchmarks/m4-pro-position-integration-2026-09-01.md b/docs/benchmarks/m4-pro-position-integration-2026-09-01.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..ba2190a28fc8d68a77ee0a7d0e4776536bc63874
+index 0000000..ba2190a
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-position-integration-2026-09-01.md
 @@ -0,0 +1,45 @@
@@ -1360,10 +1427,10 @@ index 0000000000000000000000000000000000000000..ba2190a28fc8d68a77ee0a7d0e477653
 +```
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..7b088763bbe966c75f4daa9b804bf8b2ce8bb2f1
+index 0000000..9123265
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,148 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -1416,11 +1483,22 @@ index 0000000000000000000000000000000000000000..7b088763bbe966c75f4daa9b804bf8b2
 +those allocations in place and CPU impulse storage reads them afterward, so
 +there is no constraint upload or readback copy.
 +
++An experimental finalization kernel ports the arithmetic portion of Erin
++Catto's body-finalization loop: final rotation, body-origin offset,
++farthest-point motion and sleep metrics, and world-space inverse inertia. It
++consumes resident solver state in the same command buffer for the fused
++unconstrained and fully supported constraint paths. Double-precision position
++accumulation, CCD, events, sleeping/island mutation, shape AABBs, and
++broad-phase proxy updates remain on the CPU. It is separately opt-in because
++the additional shared result stream has not demonstrated a stable whole-world
++win.
++
 +Enable it with:
 +
 +```c
 +b3WorldId world = b3CreateWorld(&worldDef);
 +bool enabled = b3World_EnableMetal(world, minimumBodyCount);
++b3World_SetMetalFinalization(world, true); // experimental
 +```
 +
 +Use `b3World_GetMetalProfile` to verify the selected device, dispatch count,
@@ -1429,7 +1507,8 @@ index 0000000000000000000000000000000000000000..7b088763bbe966c75f4daa9b804bf8b2
 +coverage establishes stable defaults across Apple GPU families.
 +
 +Broad phase, narrow phase, contact and joint preparation, unsupported joint
-+solution, continuous collision, events, sleeping, and finalization still run on the CPU. Unsupported
++solution, continuous collision, events, sleeping/island mutation, bounds, and
++the topology half of finalization still run on the CPU. Unsupported
 +constrained worlds retain the position-only path, which may lose to the CPU once
 +transfer and command-buffer latency are included. These are correct production
 +paths, not yet the final performance architecture.
@@ -1444,7 +1523,8 @@ index 0000000000000000000000000000000000000000..7b088763bbe966c75f4daa9b804bf8b2
 +| Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 +| Broad/narrow phase and manifolds | CPU |
 +| Contact preparation and impulse storage | CPU |
-+| CCD, sleeping, events, recording, queries | CPU |
++| Body-finalization arithmetic | Experimental opt-in Metal kernel; topology and bounds stay CPU |
++| CCD, sleeping/island mutation, events, recording, queries | CPU |
 +| Double-precision world positions | Supported by CPU finalization; GPU arithmetic remains float like `b3BodyState` |
 +| Cross-platform bit determinism | CPU only; Metal is tolerance-equivalent |
 +
@@ -1496,8 +1576,11 @@ index 0000000000000000000000000000000000000000..7b088763bbe966c75f4daa9b804bf8b2
 +[`benchmarks/m4-pro-distance-joints-2026-09-01.md`](benchmarks/m4-pro-distance-joints-2026-09-01.md).
 +Parallel-joint results are in
 +[`benchmarks/m4-pro-parallel-joints-2026-09-02.md`](benchmarks/m4-pro-parallel-joints-2026-09-02.md).
++Experimental finalization results, including the current negative whole-world
++performance evidence, are in
++[`benchmarks/m4-pro-finalization-2026-09-02.md`](benchmarks/m4-pro-finalization-2026-09-02.md).
 diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
-index 2e8259039a9ed575b8b0e59c1ea7064245517b42..cd49acff561bfc6d9b781415209a55603fa28fef 100644
+index 2e82590..cd49acf 100644
 --- a/include/box3d/box3d.h
 +++ b/include/box3d/box3d.h
 @@ -7,6 +7,9 @@
@@ -1512,10 +1595,10 @@ index 2e8259039a9ed575b8b0e59c1ea7064245517b42..cd49acff561bfc6d9b781415209a5560
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6c9531a27b7ed49246f4a15ee93b40abf0b9cc24
+index 0000000..916364b
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,57 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -1535,6 +1618,7 @@ index 0000000000000000000000000000000000000000..6c9531a27b7ed49246f4a15ee93b40ab
 +typedef struct b3MetalProfile
 +{
 +	bool enabled;
++	bool finalizationEnabled;
 +	int minimumBodyCount;
 +	uint64_t positionDispatchCount;
 +	uint64_t positionFallbackCount;
@@ -1544,10 +1628,13 @@ index 0000000000000000000000000000000000000000..6c9531a27b7ed49246f4a15ee93b40ab
 +	uint64_t contactFallbackCount;
 +	uint64_t jointDispatchCount;
 +	uint64_t jointFallbackCount;
++	uint64_t finalizationDispatchCount;
++	uint64_t finalizationFallbackCount;
 +	double lastPositionGpuMilliseconds;
 +	double lastUnconstrainedGpuMilliseconds;
 +	double lastContactGpuMilliseconds;
 +	double lastJointGpuMilliseconds;
++	double lastFinalizationGpuMilliseconds;
 +	char deviceName[128];
 +} b3MetalProfile;
 +
@@ -1557,6 +1644,11 @@ index 0000000000000000000000000000000000000000..6c9531a27b7ed49246f4a15ee93b40ab
 +/// Returns false if Metal initialization fails or the world is invalid/locked.
 +B3_API bool b3World_EnableMetal( b3WorldId worldId, int minimumBodyCount );
 +
++/// Opt into experimental GPU body-finalization arithmetic. This stage is kept
++/// separate because current whole-world benchmarks do not yet show a stable
++/// speedup; it is useful for correctness and pipeline-residency development.
++B3_API bool b3World_SetMetalFinalization( b3WorldId worldId, bool enabled );
++
 +/// Disable Metal compute and release the world's GPU resources.
 +B3_API void b3World_DisableMetal( b3WorldId worldId );
 +
@@ -1565,7 +1657,7 @@ index 0000000000000000000000000000000000000000..6c9531a27b7ed49246f4a15ee93b40ab
 +
 +/** @} */
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 941c6fba77d4e465f7d831519241c21484f11dbe..17d7911272e758a32265d52b6ea9274470dab01c 100644
+index 941c6fb..17d7911 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -101,9 +101,17 @@ set(BOX3D_INCLUDE_FILES
@@ -1599,7 +1691,7 @@ index 941c6fba77d4e465f7d831519241c21484f11dbe..17d7911272e758a32265d52b6ea92744
  	message(STATUS "Box3D on Emscripten")
  	# SSE2/wasm SIMD flags are set directory-wide in the top-level CMakeLists so the
 diff --git a/src/contact_solver.c b/src/contact_solver.c
-index 48de409735c38bfe806ebee49eb9141229a3e114..ce69ae119a7a47b5124a76ea0604b8fc6271f9e1 100644
+index 48de409..ce69ae1 100644
 --- a/src/contact_solver.c
 +++ b/src/contact_solver.c
 @@ -162,6 +162,14 @@ void b3PrepareContacts_Mesh( b3SolverBlock block, b3StepContext* context )
@@ -1720,7 +1812,7 @@ index 48de409735c38bfe806ebee49eb9141229a3e114..ce69ae119a7a47b5124a76ea0604b8fc
  {
  	return sizeof( b3ContactConstraintWide );
 diff --git a/src/contact_solver.h b/src/contact_solver.h
-index d85f2331a52e6f3e488582e33de30dd7a13e536f..ffa6859a9bc069551962a92badf88da50697ee89 100644
+index d85f233..ffa6859 100644
 --- a/src/contact_solver.h
 +++ b/src/contact_solver.h
 @@ -4,8 +4,80 @@
@@ -1814,23 +1906,23 @@ index d85f2331a52e6f3e488582e33de30dd7a13e536f..ffa6859a9bc069551962a92badf88da5
  int b3GetWideContactConstraintByteCount( void );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b4528b4d10767ce422cc8bb6b4a60f6c5eb54c88
+index 0000000..029fc68
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,71 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
 +#pragma once
 +
 +#include "body.h"
++#include "solver.h"
 +
 +#include <stdbool.h>
 +
 +// Internal Apple GPU backend. The C boundary keeps Objective-C and Metal types
 +// out of the portable Box3D implementation.
 +typedef struct b3MetalContext b3MetalContext;
-+typedef struct b3StepContext b3StepContext;
 +typedef struct b3ContactConstraintWide b3ContactConstraintWide;
 +typedef struct b3ContactConstraint b3ContactConstraint;
 +typedef struct b3ManifoldConstraint b3ManifoldConstraint;
@@ -1875,19 +1967,26 @@ index 0000000000000000000000000000000000000000..b4528b4d10767ce422cc8bb6b4a60f6c
 +// and state is read back only after the final substep.
 +bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState* states, const b3BodySim* sims,
 +	int bodyCount, int subStepCount, float h, b3Vec3 gravity, float maxLinearSpeed, float maxAngularSpeed,
-+	b3MetalDispatchStats* stats );
++	float invTimeStep, const b3MetalFinalizeResult** finalizeResults, b3MetalDispatchStats* stats );
 +
 +// Execute velocity integration, colored convex/mesh contact and distance-joint
 +// solving, and position integration while state remains GPU-resident for every
 +// substep. Graph-overflow constraints execute serially in upstream order.
 +bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepContext,
 +	int velocityIterations, int relaxIterations, int restitutionIterations, b3MetalDispatchStats* stats );
++
++// Compute transform, sleep-motion, and world-inertia finalization values. When
++// statesAreResident is true, the persistent state buffer is reused without a
++// CPU upload. results points into persistent shared storage owned by context.
++bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, const b3BodySim* sims,
++	int bodyCount, float invTimeStep, bool statesAreResident, const b3MetalFinalizeResult** results,
++	b3MetalDispatchStats* stats );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594c3ebbe02
+index 0000000..2e1ac27
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,1885 @@
+@@ -0,0 +1,2168 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -1921,6 +2020,7 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +	id<MTLCommandQueue> queue;
 +	id<MTLComputePipelineState> integratePositionsPipeline;
 +	id<MTLComputePipelineState> integrateUnconstrainedPipeline;
++	id<MTLComputePipelineState> finalizeBodiesPipeline;
 +	id<MTLComputePipelineState> warmStartContactsPipeline;
 +	id<MTLComputePipelineState> solveContactsPipeline;
 +	id<MTLComputePipelineState> restitutionContactsPipeline;
@@ -1940,6 +2040,10 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +	NSUInteger bodyStateCapacity;
 +	id<MTLBuffer> bodyPropertiesBuffer;
 +	NSUInteger bodyPropertiesCapacity;
++	id<MTLBuffer> finalizeResultBuffer;
++	NSUInteger finalizeResultCapacity;
++	id<MTLBuffer> finalizePropertiesBuffer;
++	NSUInteger finalizePropertiesCapacity;
 +	id<MTLBuffer> contactConstraintBuffer;
 +	NSUInteger contactConstraintCapacity;
 +	id<MTLBuffer> meshContactBuffer;
@@ -1976,7 +2080,16 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +	float linearDamping, angularDamping, gravityScale;
 +} b3MetalBodyProperties;
 +
++typedef struct b3MetalFinalizeProperties
++{
++	float localCenterX, localCenterY, localCenterZ;
++	float maxExtentX, maxExtentY, maxExtentZ;
++	float padding[2];
++} b3MetalFinalizeProperties;
++
 +_Static_assert( sizeof( b3MetalBodyProperties ) == 128, "Metal body property ABI changed" );
++_Static_assert( sizeof( b3MetalFinalizeProperties ) == 32, "Metal finalization-property ABI changed" );
++_Static_assert( sizeof( b3MetalFinalizeResult ) == 88, "Metal finalization-result ABI changed" );
 +_Static_assert( sizeof( b3ContactConstraintPointWide ) == 192, "Metal wide contact point ABI changed" );
 +_Static_assert( sizeof( b3ContactConstraintWide ) == 1696, "Metal wide contact ABI changed" );
 +_Static_assert( sizeof( b3ManifoldConstraintPoint ) == 48, "Metal mesh contact-point ABI changed" );
@@ -2081,6 +2194,17 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +	"  float invInertiaWorld[9];\n"
 +	"  float linearDamping, angularDamping, gravityScale;\n"
 +	"};\n"
++	"struct FinalizeProperties {\n"
++	"  float localCenterX, localCenterY, localCenterZ;\n"
++	"  float maxExtentX, maxExtentY, maxExtentZ; float padding[2];\n"
++	"};\n"
++	"struct FinalizeResult {\n"
++	"  float dpx, dpy, dpz; float qx, qy, qz, qw;\n"
++	"  float originX, originY, originZ;\n"
++	"  float sleepVelocity, maxVelocity, maxDeltaPosition;\n"
++	"  float invInertiaWorld[9];\n"
++	"};\n"
++	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
 +	"struct FusedParams {\n"
 +	"  uint bodyCount; float h; float maxLinearSpeed; float maxAngularSpeed;\n"
 +	"  float gravityX, gravityY, gravityZ; uint integratePosition;\n"
@@ -2230,6 +2354,53 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +	"  s.dpx = dp.x; s.dpy = dp.y; s.dpz = dp.z;\n"
 +	"  s.qx = qv.x; s.qy = qv.y; s.qz = qv.z; s.qw = qw;\n"
 +	"  states[i] = s;\n"
++	"}\n"
++	"kernel void b3_finalize_bodies(const device BodyState* states [[buffer(0)]],\n"
++	"                               const device BodyProperties* props [[buffer(1)]],\n"
++	"                               const device FinalizeProperties* finalizeProps [[buffer(2)]],\n"
++	"                               device FinalizeResult* results [[buffer(3)]],\n"
++	"                               constant FinalizeParams& p [[buffer(4)]],\n"
++	"                               uint i [[thread_position_in_grid]]) {\n"
++	"  if (i >= p.bodyCount) return;\n"
++	"  BodyState s = states[i]; BodyProperties bp = props[i]; FinalizeProperties fp = finalizeProps[i];\n"
++	"  float4 baseQ = float4(bp.qx, bp.qy, bp.qz, bp.qw);\n"
++	"  float4 dq = float4(s.qx, s.qy, s.qz, s.qw);\n"
++	"  float4 q = quat_mul(dq, baseQ);\n"
++	"  float q2 = dot(q, q);\n"
++	"  q = q2 > 1.17549435e-35f ? q * rsqrt(q2) : float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
++	"  float3 v = float3(s.lvx, s.lvy, s.lvz);\n"
++	"  float3 w = float3(s.avx, s.avy, s.avz);\n"
++	"  float3 localOmega = abs(inv_rotate(baseQ, w));\n"
++	"  float3 localDelta = abs(inv_rotate(baseQ, dq.xyz));\n"
++	"  float3 extent = float3(fp.maxExtentX, fp.maxExtentY, fp.maxExtentZ);\n"
++	"  float3 velocityArc = float3(localOmega.y*extent.z + localOmega.z*extent.y,\n"
++	"                              localOmega.z*extent.x + localOmega.x*extent.z,\n"
++	"                              localOmega.x*extent.y + localOmega.y*extent.x);\n"
++	"  float3 rotationArc = float3(localDelta.y*extent.z + localDelta.z*extent.y,\n"
++	"                              localDelta.z*extent.x + localDelta.x*extent.z,\n"
++	"                              localDelta.x*extent.y + localDelta.y*extent.x);\n"
++	"  float maxVelocity = length(v) + length(velocityArc);\n"
++	"  float3 dp = float3(s.dpx, s.dpy, s.dpz);\n"
++	"  float maxDelta = length(dp) + 2.0f * length(rotationArc);\n"
++	"  float sleepVelocity = max(maxVelocity, 0.5f * p.invTimeStep * maxDelta);\n"
++	"  float3 localCenter = float3(fp.localCenterX, fp.localCenterY, fp.localCenterZ);\n"
++	"  float3 origin = -rotate(q, localCenter);\n"
++	"  float3x3 R = float3x3(rotate(q, float3(1.0f,0.0f,0.0f)),\n"
++	"                          rotate(q, float3(0.0f,1.0f,0.0f)),\n"
++	"                          rotate(q, float3(0.0f,0.0f,1.0f)));\n"
++	"  float3x3 invIL = float3x3(\n"
++	"    float3(bp.invInertiaLocal[0],bp.invInertiaLocal[1],bp.invInertiaLocal[2]),\n"
++	"    float3(bp.invInertiaLocal[3],bp.invInertiaLocal[4],bp.invInertiaLocal[5]),\n"
++	"    float3(bp.invInertiaLocal[6],bp.invInertiaLocal[7],bp.invInertiaLocal[8]));\n"
++	"  float3x3 invIW = R * invIL * transpose(R);\n"
++	"  FinalizeResult out; out.dpx=dp.x; out.dpy=dp.y; out.dpz=dp.z;\n"
++	"  out.qx=q.x; out.qy=q.y; out.qz=q.z; out.qw=q.w;\n"
++	"  out.originX=origin.x; out.originY=origin.y; out.originZ=origin.z;\n"
++	"  out.sleepVelocity=sleepVelocity; out.maxVelocity=maxVelocity; out.maxDeltaPosition=maxDelta;\n"
++	"  out.invInertiaWorld[0]=invIW[0].x; out.invInertiaWorld[1]=invIW[0].y; out.invInertiaWorld[2]=invIW[0].z;\n"
++	"  out.invInertiaWorld[3]=invIW[1].x; out.invInertiaWorld[4]=invIW[1].y; out.invInertiaWorld[5]=invIW[1].z;\n"
++	"  out.invInertiaWorld[6]=invIW[2].x; out.invInertiaWorld[7]=invIW[2].y; out.invInertiaWorld[8]=invIW[2].z;\n"
++	"  results[i] = out;\n"
 +	"}\n";
 +#pragma clang diagnostic pop
 +
@@ -2558,6 +2729,10 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +		id<MTLComputePipelineState> fusedPipeline =
 +			fusedFunction != nil ? [device newComputePipelineStateWithFunction:fusedFunction error:&error] : nil;
 +		[fusedFunction release];
++		id<MTLFunction> finalizeFunction = [library newFunctionWithName:@"b3_finalize_bodies"];
++		id<MTLComputePipelineState> finalizePipeline =
++			finalizeFunction != nil ? [device newComputePipelineStateWithFunction:finalizeFunction error:&error] : nil;
++		[finalizeFunction release];
 +		[library release];
 +
 +		NSString* contactSource = [NSString stringWithUTF8String:b3_contactSource];
@@ -2636,7 +2811,7 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +			: nil;
 +		[solveJointOverflowFunction release];
 +		[contactLibrary release];
-+		if ( positionPipeline == nil || fusedPipeline == nil || warmStartPipeline == nil || solvePipeline == nil ||
++		if ( positionPipeline == nil || fusedPipeline == nil || finalizePipeline == nil || warmStartPipeline == nil || solvePipeline == nil ||
 +			 restitutionPipeline == nil || warmStartMeshPipeline == nil || solveMeshPipeline == nil || restitutionMeshPipeline == nil ||
 +			 warmStartOverflowPipeline == nil || solveOverflowPipeline == nil || restitutionOverflowPipeline == nil ||
 +			 warmStartDistancePipeline == nil || solveDistancePipeline == nil || warmStartParallelPipeline == nil ||
@@ -2645,6 +2820,7 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +		{
 +			[positionPipeline release];
 +			[fusedPipeline release];
++			[finalizePipeline release];
 +			[warmStartPipeline release];
 +			[solvePipeline release];
 +			[restitutionPipeline release];
@@ -2671,6 +2847,7 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +		{
 +			[positionPipeline release];
 +			[fusedPipeline release];
++			[finalizePipeline release];
 +			[warmStartPipeline release];
 +			[solvePipeline release];
 +			[restitutionPipeline release];
@@ -2696,6 +2873,7 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +		context->queue = queue;
 +		context->integratePositionsPipeline = positionPipeline;
 +		context->integrateUnconstrainedPipeline = fusedPipeline;
++		context->finalizeBodiesPipeline = finalizePipeline;
 +		context->warmStartContactsPipeline = warmStartPipeline;
 +		context->solveContactsPipeline = solvePipeline;
 +		context->restitutionContactsPipeline = restitutionPipeline;
@@ -2725,6 +2903,8 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +
 +	[context->bodyStateBuffer release];
 +	[context->bodyPropertiesBuffer release];
++	[context->finalizeResultBuffer release];
++	[context->finalizePropertiesBuffer release];
 +	[context->contactConstraintBuffer release];
 +	[context->meshContactBuffer release];
 +	[context->meshManifoldBuffer release];
@@ -2733,6 +2913,7 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +	[context->jointOverflowBuffer release];
 +	[context->integratePositionsPipeline release];
 +	[context->integrateUnconstrainedPipeline release];
++	[context->finalizeBodiesPipeline release];
 +	[context->warmStartContactsPipeline release];
 +	[context->solveContactsPipeline release];
 +	[context->restitutionContactsPipeline release];
@@ -2811,6 +2992,53 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +	[context->bodyPropertiesBuffer release];
 +	context->bodyPropertiesBuffer = buffer;
 +	context->bodyPropertiesCapacity = capacity;
++	return true;
++}
++
++static bool b3MetalEnsureFinalizeResultCapacity( b3MetalContext* context, NSUInteger requiredBytes )
++{
++	if ( context->finalizeResultCapacity >= requiredBytes )
++	{
++		return true;
++	}
++
++	NSUInteger capacity = context->finalizeResultCapacity > 0 ? context->finalizeResultCapacity : 4096;
++	while ( capacity < requiredBytes )
++	{
++		capacity *= 2;
++	}
++
++	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
++	if ( buffer == nil )
++	{
++		return false;
++	}
++
++	[context->finalizeResultBuffer release];
++	context->finalizeResultBuffer = buffer;
++	context->finalizeResultCapacity = capacity;
++	return true;
++}
++
++static bool b3MetalEnsureFinalizePropertiesCapacity( b3MetalContext* context, NSUInteger requiredBytes )
++{
++	if ( context->finalizePropertiesCapacity >= requiredBytes )
++	{
++		return true;
++	}
++	NSUInteger capacity = context->finalizePropertiesCapacity > 0 ? context->finalizePropertiesCapacity : 4096;
++	while ( capacity < requiredBytes )
++	{
++		capacity *= 2;
++	}
++	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
++	if ( buffer == nil )
++	{
++		return false;
++	}
++	[context->finalizePropertiesBuffer release];
++	context->finalizePropertiesBuffer = buffer;
++	context->finalizePropertiesCapacity = capacity;
 +	return true;
 +}
 +
@@ -3093,6 +3321,21 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +	}
 +}
 +
++static void b3MetalPackFinalizeProperties( b3MetalFinalizeProperties* properties, const b3BodySim* sims, int bodyCount )
++{
++	for ( int i = 0; i < bodyCount; ++i )
++	{
++		properties[i] = (b3MetalFinalizeProperties){
++			.localCenterX = sims[i].localCenter.x,
++			.localCenterY = sims[i].localCenter.y,
++			.localCenterZ = sims[i].localCenter.z,
++			.maxExtentX = sims[i].maxExtent.x,
++			.maxExtentY = sims[i].maxExtent.y,
++			.maxExtentZ = sims[i].maxExtent.z,
++		};
++	}
++}
++
 +static bool b3MetalHasRestitution( const b3ContactConstraintWide* constraints, int count )
 +{
 +	for ( int i = 0; i < count; ++i )
@@ -3189,8 +3432,12 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +
 +bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState* states, const b3BodySim* sims,
 +	int bodyCount, int subStepCount, float h, b3Vec3 gravity, float maxLinearSpeed, float maxAngularSpeed,
-+	b3MetalDispatchStats* stats )
++	float invTimeStep, const b3MetalFinalizeResult** finalizeResults, b3MetalDispatchStats* stats )
 +{
++	if ( finalizeResults != NULL )
++	{
++		*finalizeResults = NULL;
++	}
 +	if ( stats != NULL )
 +	{
 +		*stats = (b3MetalDispatchStats){ .bodyCount = bodyCount };
@@ -3208,8 +3455,12 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +	{
 +		NSUInteger stateByteCount = (NSUInteger)bodyCount * sizeof( b3BodyState );
 +		NSUInteger propertiesByteCount = (NSUInteger)bodyCount * sizeof( b3MetalBodyProperties );
++		NSUInteger finalizationByteCount = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeResult );
++		NSUInteger finalizePropertyByteCount = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeProperties );
 +		if ( b3MetalEnsureBodyCapacity( context, stateByteCount ) == false ||
-+			 b3MetalEnsurePropertiesCapacity( context, propertiesByteCount ) == false )
++			 b3MetalEnsurePropertiesCapacity( context, propertiesByteCount ) == false ||
++			 ( finalizeResults != NULL && ( b3MetalEnsureFinalizeResultCapacity( context, finalizationByteCount ) == false ||
++			   b3MetalEnsureFinalizePropertiesCapacity( context, finalizePropertyByteCount ) == false ) ) )
 +		{
 +			return false;
 +		}
@@ -3217,6 +3468,10 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +		memcpy( context->bodyStateBuffer.contents, states, stateByteCount );
 +		b3MetalBodyProperties* properties = context->bodyPropertiesBuffer.contents;
 +		b3MetalPackBodyProperties( properties, sims, bodyCount );
++		if ( finalizeResults != NULL )
++		{
++			b3MetalPackFinalizeProperties( context->finalizePropertiesBuffer.contents, sims, bodyCount );
++		}
 +
 +		b3MetalFusedParams params = {
 +			.bodyCount = (uint32_t)bodyCount,
@@ -3256,6 +3511,21 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +				[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 +			}
 +		}
++		if ( finalizeResults != NULL )
++		{
++			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
++			struct { uint32_t bodyCount; float invTimeStep; uint32_t padding[2]; } finalizeParams =
++				{ (uint32_t)bodyCount, invTimeStep, { 0, 0 } };
++			id<MTLComputePipelineState> finalizePipeline = context->finalizeBodiesPipeline;
++			[encoder setComputePipelineState:finalizePipeline];
++			[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
++			[encoder setBuffer:context->bodyPropertiesBuffer offset:0 atIndex:1];
++			[encoder setBuffer:context->finalizePropertiesBuffer offset:0 atIndex:2];
++			[encoder setBuffer:context->finalizeResultBuffer offset:0 atIndex:3];
++			[encoder setBytes:&finalizeParams length:sizeof( finalizeParams ) atIndex:4];
++			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
++				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
++		}
 +		[encoder endEncoding];
 +		[commandBuffer commit];
 +		[commandBuffer waitUntilCompleted];
@@ -3265,6 +3535,10 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +		}
 +
 +		memcpy( states, context->bodyStateBuffer.contents, stateByteCount );
++		if ( finalizeResults != NULL )
++		{
++			*finalizeResults = context->finalizeResultBuffer.contents;
++		}
 +		if ( stats != NULL && commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime )
 +		{
 +			stats->gpuMilliseconds = 1000.0 * ( commandBuffer.GPUEndTime - commandBuffer.GPUStartTime );
@@ -3278,7 +3552,89 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +									b3MetalDispatchStats* stats )
 +{
 +	return b3MetalIntegrateUnconstrainedSubsteps( context, states, sims, bodyCount, 1, h, gravity, maxLinearSpeed,
-+												  maxAngularSpeed, stats );
++		maxAngularSpeed, 0.0f, NULL, stats );
++}
++
++bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, const b3BodySim* sims,
++	int bodyCount, float invTimeStep, bool statesAreResident, const b3MetalFinalizeResult** results,
++	b3MetalDispatchStats* stats )
++{
++	if ( results != NULL )
++	{
++		*results = NULL;
++	}
++	if ( stats != NULL )
++	{
++		*stats = (b3MetalDispatchStats){ .bodyCount = bodyCount };
++	}
++	if ( context == NULL || states == NULL || sims == NULL || results == NULL || bodyCount < 0 )
++	{
++		return false;
++	}
++	if ( bodyCount == 0 )
++	{
++		return true;
++	}
++
++	@autoreleasepool
++	{
++		NSUInteger stateBytes = (NSUInteger)bodyCount * sizeof( b3BodyState );
++		NSUInteger propertyBytes = (NSUInteger)bodyCount * sizeof( b3MetalBodyProperties );
++		NSUInteger resultBytes = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeResult );
++		NSUInteger finalizePropertyBytes = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeProperties );
++		if ( b3MetalEnsureBodyCapacity( context, stateBytes ) == false ||
++			 b3MetalEnsurePropertiesCapacity( context, propertyBytes ) == false ||
++			 b3MetalEnsureFinalizeResultCapacity( context, resultBytes ) == false ||
++			 b3MetalEnsureFinalizePropertiesCapacity( context, finalizePropertyBytes ) == false )
++		{
++			return false;
++		}
++		if ( statesAreResident == false )
++		{
++			memcpy( context->bodyStateBuffer.contents, states, stateBytes );
++		}
++		b3MetalPackBodyProperties( context->bodyPropertiesBuffer.contents, sims, bodyCount );
++		b3MetalPackFinalizeProperties( context->finalizePropertiesBuffer.contents, sims, bodyCount );
++
++		struct
++		{
++			uint32_t bodyCount;
++			float invTimeStep;
++			uint32_t padding[2];
++		} params = { (uint32_t)bodyCount, invTimeStep, { 0, 0 } };
++
++		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
++		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
++		if ( commandBuffer == nil || encoder == nil )
++		{
++			return false;
++		}
++
++		id<MTLComputePipelineState> pipeline = context->finalizeBodiesPipeline;
++		[encoder setComputePipelineState:pipeline];
++		[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
++		[encoder setBuffer:context->bodyPropertiesBuffer offset:0 atIndex:1];
++		[encoder setBuffer:context->finalizePropertiesBuffer offset:0 atIndex:2];
++		[encoder setBuffer:context->finalizeResultBuffer offset:0 atIndex:3];
++		[encoder setBytes:&params length:sizeof( params ) atIndex:4];
++		NSUInteger groupWidth = b3MetalThreadgroupWidth( pipeline );
++		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
++			threadsPerThreadgroup:MTLSizeMake( groupWidth, 1, 1 )];
++		[encoder endEncoding];
++		[commandBuffer commit];
++		[commandBuffer waitUntilCompleted];
++		if ( commandBuffer.status != MTLCommandBufferStatusCompleted )
++		{
++			return false;
++		}
++
++		*results = context->finalizeResultBuffer.contents;
++		if ( stats != NULL && commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime )
++		{
++			stats->gpuMilliseconds = 1000.0 * ( commandBuffer.GPUEndTime - commandBuffer.GPUStartTime );
++		}
++		return true;
++	}
 +}
 +
 +bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepContext,
@@ -3348,8 +3704,13 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +		NSUInteger parallelJointBytes = (NSUInteger)parallelCount * sizeof( b3MetalParallelJoint );
 +		NSUInteger jointOverflowBytes =
 +			(NSUInteger)stepContext->overflowJointConstraintCount * sizeof( b3MetalJointOverflow );
++		bool finalizeBodies = stepContext->world->metalFinalizationEnabled;
++		NSUInteger finalizationBytes = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeResult );
++		NSUInteger finalizePropertyBytes = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeProperties );
 +		if ( b3MetalEnsureBodyCapacity( context, stateBytes ) == false ||
 +			 b3MetalEnsurePropertiesCapacity( context, propertyBytes ) == false ||
++			 ( finalizeBodies && ( b3MetalEnsureFinalizeResultCapacity( context, finalizationBytes ) == false ||
++			   b3MetalEnsureFinalizePropertiesCapacity( context, finalizePropertyBytes ) == false ) ) ||
 +			 ( contactBytes > 0 && b3MetalEnsureContactCapacity( context, contactBytes ) == false ) ||
 +			 ( meshContactBytes > 0 && b3MetalEnsureMeshContactCapacity( context, meshContactBytes ) == false ) ||
 +			 ( meshManifoldBytes > 0 && b3MetalEnsureMeshManifoldCapacity( context, meshManifoldBytes ) == false ) ||
@@ -3362,6 +3723,10 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +
 +		memcpy( context->bodyStateBuffer.contents, stepContext->states, stateBytes );
 +		b3MetalPackBodyProperties( context->bodyPropertiesBuffer.contents, stepContext->sims, bodyCount );
++		if ( finalizeBodies )
++		{
++			b3MetalPackFinalizeProperties( context->finalizePropertiesBuffer.contents, stepContext->sims, bodyCount );
++		}
 +		bool constraintsAlreadyShared = contactBytes == 0 || stepContext->wideConstraints == context->contactConstraintBuffer.contents;
 +		if ( contactBytes > 0 && constraintsAlreadyShared == false )
 +		{
@@ -3704,6 +4069,22 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +			}
 +		}
 +
++		if ( finalizeBodies )
++		{
++			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
++			struct { uint32_t bodyCount; float invTimeStep; uint32_t padding[2]; } finalizeParams =
++				{ (uint32_t)bodyCount, stepContext->inv_dt, { 0, 0 } };
++			id<MTLComputePipelineState> finalizePipeline = context->finalizeBodiesPipeline;
++			[encoder setComputePipelineState:finalizePipeline];
++			[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
++			[encoder setBuffer:context->bodyPropertiesBuffer offset:0 atIndex:1];
++			[encoder setBuffer:context->finalizePropertiesBuffer offset:0 atIndex:2];
++			[encoder setBuffer:context->finalizeResultBuffer offset:0 atIndex:3];
++			[encoder setBytes:&finalizeParams length:sizeof( finalizeParams ) atIndex:4];
++			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
++				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
++		}
++
 +		[encoder endEncoding];
 +		[commandBuffer commit];
 +		[commandBuffer waitUntilCompleted];
@@ -3713,6 +4094,7 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +		}
 +
 +		memcpy( stepContext->states, context->bodyStateBuffer.contents, stateBytes );
++		stepContext->metalFinalizeResults = finalizeBodies ? context->finalizeResultBuffer.contents : NULL;
 +		if ( contactBytes > 0 && constraintsAlreadyShared == false )
 +		{
 +			memcpy( stepContext->wideConstraints, context->contactConstraintBuffer.contents, contactBytes );
@@ -3774,7 +4156,7 @@ index 0000000000000000000000000000000000000000..60eb09d92e8fc4d7d1bd355ee235c594
 +	}
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..19b590d82c70786c39b2c4785752c679358cff3d 100644
+index 29c13c7..2a070ca 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -3787,19 +4169,20 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..19b590d82c70786c39b2c4785752c679
  
  #include "box3d/box3d.h"
  #include "box3d/constants.h"
-@@ -411,6 +414,11 @@ void b3DestroyWorld( b3WorldId worldId )
+@@ -411,6 +414,12 @@ void b3DestroyWorld( b3WorldId worldId )
  
  	world->locked = true;
  
 +#if defined( BOX3D_METAL )
 +	b3MetalDestroyContext( world->metalContext );
 +	world->metalContext = NULL;
++	world->metalFinalizationEnabled = false;
 +#endif
 +
  	// Detach any recording before teardown. The user owns and frees the recording buffer.
  	b3StopRecordingInternal( world );
  
-@@ -538,6 +546,72 @@ int b3GetWorldCount( void )
+@@ -538,6 +547,88 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -3826,6 +4209,18 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..19b590d82c70786c39b2c4785752c679
 +	return true;
 +}
 +
++bool b3World_SetMetalFinalization( b3WorldId worldId, bool enabled )
++{
++	b3World* world = b3GetWorldFromId( worldId );
++	if ( world == NULL || world->locked || ( enabled && world->metalContext == NULL ) )
++	{
++		return false;
++	}
++
++	world->metalFinalizationEnabled = enabled;
++	return true;
++}
++
 +void b3World_DisableMetal( b3WorldId worldId )
 +{
 +	b3World* world = b3GetUnlockedWorldFromId( worldId );
@@ -3848,6 +4243,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..19b590d82c70786c39b2c4785752c679
 +	}
 +
 +	profile.enabled = world->metalContext != NULL;
++	profile.finalizationEnabled = world->metalFinalizationEnabled;
 +	profile.minimumBodyCount = world->metalMinimumBodyCount;
 +	profile.positionDispatchCount = world->metalPositionDispatchCount;
 +	profile.positionFallbackCount = world->metalPositionFallbackCount;
@@ -3857,10 +4253,13 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..19b590d82c70786c39b2c4785752c679
 +	profile.contactFallbackCount = world->metalContactFallbackCount;
 +	profile.jointDispatchCount = world->metalJointDispatchCount;
 +	profile.jointFallbackCount = world->metalJointFallbackCount;
++	profile.finalizationDispatchCount = world->metalFinalizationDispatchCount;
++	profile.finalizationFallbackCount = world->metalFinalizationFallbackCount;
 +	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
 +	profile.lastUnconstrainedGpuMilliseconds = world->metalLastUnconstrainedGpuMilliseconds;
 +	profile.lastContactGpuMilliseconds = world->metalLastContactGpuMilliseconds;
 +	profile.lastJointGpuMilliseconds = world->metalLastJointGpuMilliseconds;
++	profile.lastFinalizationGpuMilliseconds = world->metalLastFinalizationGpuMilliseconds;
 +	if ( world->metalContext != NULL )
 +	{
 +		b3MetalGetDeviceName( world->metalContext, profile.deviceName, sizeof( profile.deviceName ) );
@@ -3873,15 +4272,16 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..19b590d82c70786c39b2c4785752c679
  {
  	return b3_maxWorldCount;
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8656bec015b96bbfac2caacdde8013b489..f128ce0e77293bb3d26d4d6fe6d7a032a0c81300 100644
+index 8bd3df8..75a4de7 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
-@@ -266,6 +266,23 @@ typedef struct b3World
+@@ -266,6 +266,27 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
 +#if defined( BOX3D_METAL )
 +	struct b3MetalContext* metalContext;
++	bool metalFinalizationEnabled;
 +	uint64_t metalPositionDispatchCount;
 +	uint64_t metalPositionFallbackCount;
 +	uint64_t metalUnconstrainedDispatchCount;
@@ -3890,23 +4290,26 @@ index 8bd3df8656bec015b96bbfac2caacdde8013b489..f128ce0e77293bb3d26d4d6fe6d7a032
 +	uint64_t metalContactFallbackCount;
 +	uint64_t metalJointDispatchCount;
 +	uint64_t metalJointFallbackCount;
++	uint64_t metalFinalizationDispatchCount;
++	uint64_t metalFinalizationFallbackCount;
 +	double metalLastPositionGpuMilliseconds;
 +	double metalLastUnconstrainedGpuMilliseconds;
 +	double metalLastContactGpuMilliseconds;
 +	double metalLastJointGpuMilliseconds;
++	double metalLastFinalizationGpuMilliseconds;
 +	int metalMinimumBodyCount;
 +#endif
 +
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -347,4 +364,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +368,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
 -
 diff --git a/src/solver.c b/src/solver.c
-index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd37661080a786 100644
+index d8aace0..a1d62bc 100644
 --- a/src/solver.c
 +++ b/src/solver.c
 @@ -19,6 +19,9 @@
@@ -3919,7 +4322,96 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
  
  #include <limits.h>
  #include <stddef.h>
-@@ -1148,6 +1151,157 @@ static void b3ExecuteMainStage( b3SolverStage* stage, b3StepContext* context, ui
+@@ -692,8 +695,6 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+ 
+ 		b3Vec3 v = state->linearVelocity;
+ 		b3Vec3 w = state->angularVelocity;
+-		b3Vec3 localOmega = b3InvRotateVector( sim->transform.q, w );
+-		b3Vec3 localDeltaRotation = b3InvRotateVector( sim->transform.q, state->deltaRotation.v );
+ 
+ 		if ( b3IsValidVec3( v ) == false || b3IsValidVec3( w ) == false )
+ 		{
+@@ -704,28 +705,46 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+ 		B3_ASSERT( b3IsValidVec3( v ) );
+ 		B3_ASSERT( b3IsValidVec3( w ) );
+ 
+-		sim->center = b3OffsetPos( sim->center, state->deltaPosition );
+-		sim->transform.q = b3NormalizeQuat( b3MulQuat( state->deltaRotation, sim->transform.q ) );
+-
+-		// Use the velocity of the farthest point on the body to account for rotation.
+-		b3Vec3 velocityArc = b3ModifiedCross( b3Abs( localOmega ), sim->maxExtent );
+-		float maxVelocity = b3Length( v ) + b3Length( velocityArc );
+-
+-		// Sleep needs to observe position correction as well as true velocity.
+-		// q = [sin(theta/2) * v, cos(theta/2)]
+-		// for small angles abs(theta) ~= 2 * length(sin(theta/2) * v)
+-		b3Vec3 rotationArc = b3ModifiedCross( b3Abs( localDeltaRotation ), sim->maxExtent );
+-		float maxDeltaPosition = b3Length( state->deltaPosition ) + 2.0f * b3Length( rotationArc );
+-
+-		// Position correction is not as important for sleep as true velocity.
+-		float positionSleepFactor = 0.5f;
+-		float sleepVelocity = b3MaxFloat( maxVelocity, positionSleepFactor * invTimeStep * maxDeltaPosition );
++		float maxVelocity;
++		float maxDeltaPosition;
++		float sleepVelocity;
++		const b3MetalFinalizeResult* metalResult = stepContext->metalFinalizeResults != NULL ?
++			stepContext->metalFinalizeResults + simIndex : NULL;
++		if ( metalResult != NULL )
++		{
++			sim->center = b3OffsetPos( sim->center, metalResult->deltaPosition );
++			sim->transform.q = metalResult->rotation;
++			sim->transform.p = b3OffsetPos( sim->center, metalResult->originOffset );
++			maxVelocity = metalResult->maxVelocity;
++			maxDeltaPosition = metalResult->maxDeltaPosition;
++			sleepVelocity = metalResult->sleepVelocity;
++			sim->invInertiaWorld = metalResult->invInertiaWorld;
++		}
++		else
++		{
++			b3Vec3 localOmega = b3InvRotateVector( sim->transform.q, w );
++			b3Vec3 localDeltaRotation = b3InvRotateVector( sim->transform.q, state->deltaRotation.v );
++			sim->center = b3OffsetPos( sim->center, state->deltaPosition );
++			sim->transform.q = b3NormalizeQuat( b3MulQuat( state->deltaRotation, sim->transform.q ) );
++
++			// Use the velocity of the farthest point on the body to account for rotation.
++			b3Vec3 velocityArc = b3ModifiedCross( b3Abs( localOmega ), sim->maxExtent );
++			maxVelocity = b3Length( v ) + b3Length( velocityArc );
++
++			// Sleep needs to observe position correction as well as true velocity.
++			b3Vec3 rotationArc = b3ModifiedCross( b3Abs( localDeltaRotation ), sim->maxExtent );
++			maxDeltaPosition = b3Length( state->deltaPosition ) + 2.0f * b3Length( rotationArc );
++			sleepVelocity = b3MaxFloat( maxVelocity, 0.5f * invTimeStep * maxDeltaPosition );
++		}
+ 
+ 		// reset state deltas
+ 		state->deltaPosition = b3Vec3_zero;
+ 		state->deltaRotation = b3Quat_identity;
+ 
+-		sim->transform.p = b3OffsetPos( sim->center, b3Neg( b3RotateVector( sim->transform.q, sim->localCenter ) ) );
++		if ( metalResult == NULL )
++		{
++			sim->transform.p = b3OffsetPos( sim->center, b3Neg( b3RotateVector( sim->transform.q, sim->localCenter ) ) );
++		}
+ 
+ 		// cache miss here, however I need the shape list below
+ 		b3Body* body = bodies + sim->bodyId;
+@@ -790,9 +809,12 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+ 			body->sleepTime += timeStep;
+ 		}
+ 
+-		// Update world space inverse inertia tensor.
+-		b3Matrix3 rotationMatrix = b3MakeMatrixFromQuat( sim->transform.q );
+-		sim->invInertiaWorld = b3MulMM( b3MulMM( rotationMatrix, sim->invInertiaLocal ), b3Transpose( rotationMatrix ) );
++		if ( metalResult == NULL )
++		{
++			// Update world space inverse inertia tensor.
++			b3Matrix3 rotationMatrix = b3MakeMatrixFromQuat( sim->transform.q );
++			sim->invInertiaWorld = b3MulMM( b3MulMM( rotationMatrix, sim->invInertiaLocal ), b3Transpose( rotationMatrix ) );
++		}
+ 
+ 		// Any single body in an island can keep it awake
+ 		b3Island* island = b3Array_Get( world->islands, body->islandId );
+@@ -1148,6 +1170,199 @@ static void b3ExecuteMainStage( b3SolverStage* stage, b3StepContext* context, ui
  	}
  }
  
@@ -3986,8 +4478,11 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
 +
 +	b3MetalDispatchStats stats = { 0 };
 +	float maxAngularSpeed = B3_MAX_ROTATION * context->inv_dt;
++	const b3MetalFinalizeResult** finalizeResults =
++		world->metalFinalizationEnabled ? &context->metalFinalizeResults : NULL;
 +	bool success = b3MetalIntegrateUnconstrainedSubsteps( world->metalContext, context->states, context->sims, bodyCount,
-+		subStepCount, context->h, world->gravity, context->maxLinearVelocity, maxAngularSpeed, &stats );
++		subStepCount, context->h, world->gravity, context->maxLinearVelocity, maxAngularSpeed, context->inv_dt,
++		finalizeResults, &stats );
 +	if ( success == false )
 +	{
 +		world->metalUnconstrainedFallbackCount += (uint64_t)subStepCount;
@@ -3996,6 +4491,8 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
 +
 +	world->metalUnconstrainedDispatchCount += (uint64_t)subStepCount;
 +	world->metalLastUnconstrainedGpuMilliseconds = stats.gpuMilliseconds;
++	context->metalStatesResident = true;
++	world->metalFinalizationDispatchCount += context->metalFinalizeResults != NULL ? 1 : 0;
 +	return true;
 +}
 +
@@ -4070,14 +4567,51 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
 +		world->metalJointDispatchCount += (uint64_t)context->subStepCount;
 +		world->metalLastJointGpuMilliseconds = stats.gpuMilliseconds;
 +	}
++	context->metalStatesResident = true;
++	world->metalFinalizationDispatchCount += context->metalFinalizeResults != NULL ? 1 : 0;
 +	return true;
++}
++
++static void b3ExecuteMetalFinalization( b3StepContext* context, int bodyCount )
++{
++	b3World* world = context->world;
++	if ( world->metalFinalizationEnabled == false )
++	{
++		context->metalFinalizeResults = NULL;
++		return;
++	}
++	if ( context->metalFinalizeResults != NULL )
++	{
++		return;
++	}
++	if ( world->metalContext == NULL || bodyCount < world->metalMinimumBodyCount )
++	{
++		if ( world->metalContext != NULL )
++		{
++			world->metalFinalizationFallbackCount += 1;
++		}
++		return;
++	}
++
++	b3MetalDispatchStats stats = { 0 };
++	const b3MetalFinalizeResult* results = NULL;
++	if ( b3MetalFinalizeBodies( world->metalContext, context->states, context->sims, bodyCount, context->inv_dt,
++		context->metalStatesResident, &results, &stats ) == false )
++	{
++		world->metalFinalizationFallbackCount += 1;
++		return;
++	}
++
++	context->metalFinalizeResults = results;
++	world->metalFinalizationDispatchCount += 1;
++	world->metalLastFinalizationGpuMilliseconds = stats.gpuMilliseconds;
 +}
 +#endif
 +
  // Parallel solver task
  static void b3SolverTask( void* taskContext )
  {
-@@ -1231,6 +1385,15 @@ static void b3SolverTask( void* taskContext )
+@@ -1231,6 +1446,15 @@ static void b3SolverTask( void* taskContext )
  
  		int graphSyncIndex = 1;
  		int subStepCount = context->subStepCount;
@@ -4093,7 +4627,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
  		for ( int subStepIndex = 0; subStepIndex < subStepCount; ++subStepIndex )
  		{
  			// stageIndex restarted each iteration
-@@ -1240,21 +1403,42 @@ static void b3SolverTask( void* taskContext )
+@@ -1240,21 +1464,42 @@ static void b3SolverTask( void* taskContext )
  			// Integrate velocities
  			syncBits = ( bodySyncIndex << 16 ) | iterationStageIndex;
  			B3_ASSERT( stages[iterationStageIndex].type == b3_stageIntegrateVelocities );
@@ -4140,7 +4674,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
  				iterationStageIndex += 1;
  			}
  			graphSyncIndex += 1;
-@@ -1266,14 +1450,26 @@ static void b3SolverTask( void* taskContext )
+@@ -1266,14 +1511,26 @@ static void b3SolverTask( void* taskContext )
  			for ( int j = 0; j < ITERATIONS; ++j )
  			{
  				// Overflow constraints have lower priority. Typically these are dynamic-vs-dynamic.
@@ -4170,7 +4704,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
  					iterationStageIndex += 1;
  				}
  				graphSyncIndex += 1;
-@@ -1284,7 +1480,22 @@ static void b3SolverTask( void* taskContext )
+@@ -1284,7 +1541,22 @@ static void b3SolverTask( void* taskContext )
  			// Integrate positions
  			B3_ASSERT( stages[iterationStageIndex].type == b3_stageIntegratePositions );
  			syncBits = ( bodySyncIndex << 16 ) | iterationStageIndex;
@@ -4194,7 +4728,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
  			iterationStageIndex += 1;
  			bodySyncIndex += 1;
  
-@@ -1294,14 +1505,26 @@ static void b3SolverTask( void* taskContext )
+@@ -1294,14 +1566,26 @@ static void b3SolverTask( void* taskContext )
  			useBias = false;
  			for ( int j = 0; j < RELAX_ITERATIONS; ++j )
  			{
@@ -4224,7 +4758,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
  					iterationStageIndex += 1;
  				}
  				graphSyncIndex += 1;
-@@ -1317,14 +1540,26 @@ static void b3SolverTask( void* taskContext )
+@@ -1317,14 +1601,26 @@ static void b3SolverTask( void* taskContext )
  		// Restitution
  		for ( int iteration = 0; iteration < B3_RESTITUTION_ITERATIONS; ++iteration )
  		{
@@ -4253,7 +4787,16 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
  				iterStageIndex += 1;
  			}
  			graphSyncIndex += 1;
-@@ -1557,13 +1792,20 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1462,6 +1758,8 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+ 
+ 		stepContext->sims = awakeSet->bodySims.data;
+ 		stepContext->states = awakeSet->bodyStates.data;
++		stepContext->metalFinalizeResults = NULL;
++		stepContext->metalStatesResident = false;
+ 
+ 		// count contacts, joints, and colors
+ 		int activeColorCount = 0;
+@@ -1557,13 +1855,20 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3BlockDim jointPrepareDim = b3ComputeBlockCount( jointCount, minJointsPerBlock, maxBlockCount );
  
  		int wideContactByteCount = b3GetWideContactConstraintByteCount();
@@ -4281,7 +4824,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
  		b3GraphColor* overflow = colors + B3_OVERFLOW_INDEX;
  		int overflowCount = overflow->contacts.count;
  		int overflowManifoldCount = 0;
-@@ -1573,10 +1815,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1573,10 +1878,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			overflowManifoldCount += overflow->contacts.data[i].manifoldCount;
  		}
  
@@ -4324,7 +4867,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
  
  		// Build the span table for the flat prepare/store parallel-for while I slice the
  		// wide constraint buffer across colors. One entry per active color plus a sentinel
-@@ -1798,9 +2068,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1798,9 +2131,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		stepContext->wideContactCount = wideContactCount;
  		stepContext->manifoldConstraints = manifoldConstraints;
  		stepContext->contactConstraints = contactConstraints;
@@ -4340,7 +4883,17 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
  		b3AtomicStoreU32( &stepContext->atomicSyncBits, 0 );
  		b3AtomicStoreInt( &stepContext->mainClaimed, 0 );
  
-@@ -1893,11 +2169,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1884,6 +2223,9 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+ 		}
+ 
+ 		// Finalize bodies. Must happen after the constraint solver and after island splitting.
++#if defined( BOX3D_METAL )
++		b3ExecuteMetalFinalization( stepContext, awakeBodyCount );
++#endif
+ 		b3ParallelFor( world, &b3FinalizeBodiesTask, awakeBodyCount, 16, stepContext, "ccd" );
+ 
+ 		// Free in reverse order
+@@ -1893,11 +2235,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3StackFree( &world->stack, convexBlocks );
  		b3StackFree( &world->stack, bodyBlocks );
  		b3StackFree( &world->stack, stages );
@@ -4364,10 +4917,42 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..7b2db4927fcce9d5b9bcf7a64efd3766
  		world->profile.transforms = b3GetMilliseconds( transformTicks );
  		b3TracyCZoneEnd( update_transforms );
 diff --git a/src/solver.h b/src/solver.h
-index 7c8a1c71bb148de9a736d288ead60191cbe6388c..25709e075c341b6dcf8de14874522a479b73a085 100644
+index 7c8a1c7..778b282 100644
 --- a/src/solver.h
 +++ b/src/solver.h
-@@ -224,9 +224,15 @@ typedef struct b3StepContext
+@@ -137,6 +137,19 @@ typedef struct b3SolverStage
+ 	b3AtomicInt completionCount;
+ } b3SolverStage;
+ 
++// Arithmetic portion of body finalization that can be produced by an optional
++// accelerator while the pointer-rich engine bookkeeping remains portable C.
++typedef struct b3MetalFinalizeResult
++{
++	b3Vec3 deltaPosition;
++	b3Quat rotation;
++	b3Vec3 originOffset;
++	float sleepVelocity;
++	float maxVelocity;
++	float maxDeltaPosition;
++	b3Matrix3 invInertiaWorld;
++} b3MetalFinalizeResult;
++
+ // Constraint softness
+ typedef struct b3Softness
+ {
+@@ -201,6 +214,11 @@ typedef struct b3StepContext
+ 	// shortcut to body sims from awake set
+ 	b3BodySim* sims;
+ 
++	// Optional arithmetic results produced by the Metal finalization kernel.
++	// Pointer lifetime is owned by the world's Metal context.
++	const b3MetalFinalizeResult* metalFinalizeResults;
++	bool metalStatesResident;
++
+ 	// array of all shape ids for shapes that have enlarged AABBs
+ 	int* enlargedShapes;
+ 	int enlargedShapeCount;
+@@ -224,9 +242,15 @@ typedef struct b3StepContext
  	// Similar for mesh/overflow contact constraints
  	struct b3ManifoldConstraint* manifoldConstraints;
  	struct b3ContactConstraint* contactConstraints;
@@ -4384,7 +4969,7 @@ index 7c8a1c71bb148de9a736d288ead60191cbe6388c..25709e075c341b6dcf8de14874522a47
  	int activeColorCount;
  	int workerCount;
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index bf561bfab824cb1b46c8acdef111f0f004cf2d76..74dbc6e6a3bea979d9ba53cd20c5ed1e6af18bc6 100644
+index bf561bf..74dbc6e 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -30,6 +30,10 @@ set(BOX3D_TEST_FILES
@@ -4399,7 +4984,7 @@ index bf561bfab824cb1b46c8acdef111f0f004cf2d76..74dbc6e6a3bea979d9ba53cd20c5ed1e
  
  set_target_properties(test PROPERTIES
 diff --git a/test/main.c b/test/main.c
-index bd00ecb5a3542c885e1212eddfa82b99852c394d..93e58e2dafcad8f8967efe2fcf4d6afff52c14c0 100644
+index bd00ecb..93e58e2 100644
 --- a/test/main.c
 +++ b/test/main.c
 @@ -42,6 +42,9 @@ extern int JointTest( void );
@@ -4424,10 +5009,10 @@ index bd00ecb5a3542c885e1212eddfa82b99852c394d..93e58e2dafcad8f8967efe2fcf4d6aff
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..e63a26b4b888fb5eda72cc212b12ed1434ff3838
+index 0000000..f376604
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,1226 @@
+@@ -0,0 +1,1301 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -4693,6 +5278,77 @@ index 0000000000000000000000000000000000000000..e63a26b4b888fb5eda72cc212b12ed14
 +	return 0;
 +}
 +
++static int MetalFinalizationTest( void )
++{
++	const int count = 4096;
++	const float invTimeStep = 60.0f;
++	b3BodyState* states = calloc( (size_t)count, sizeof( b3BodyState ) );
++	b3BodySim* sims = calloc( (size_t)count, sizeof( b3BodySim ) );
++	b3MetalFinalizeResult* reference = calloc( (size_t)count, sizeof( b3MetalFinalizeResult ) );
++	ENSURE( states != NULL && sims != NULL && reference != NULL );
++
++	for ( int i = 0; i < count; ++i )
++	{
++		b3Vec3 axis = b3Normalize( (b3Vec3){ b3MetalRandomFloat( -1.0f, 1.0f ), b3MetalRandomFloat( -1.0f, 1.0f ),
++			b3MetalRandomFloat( -1.0f, 1.0f ) } );
++		b3Vec3 deltaAxis = b3Normalize( (b3Vec3){ b3MetalRandomFloat( -1.0f, 1.0f ),
++			b3MetalRandomFloat( -1.0f, 1.0f ), b3MetalRandomFloat( -1.0f, 1.0f ) } );
++		states[i].linearVelocity = (b3Vec3){ b3MetalRandomFloat( -30.0f, 30.0f ),
++			b3MetalRandomFloat( -30.0f, 30.0f ), b3MetalRandomFloat( -30.0f, 30.0f ) };
++		states[i].angularVelocity = (b3Vec3){ b3MetalRandomFloat( -15.0f, 15.0f ),
++			b3MetalRandomFloat( -15.0f, 15.0f ), b3MetalRandomFloat( -15.0f, 15.0f ) };
++		states[i].deltaPosition = (b3Vec3){ b3MetalRandomFloat( -0.2f, 0.2f ),
++			b3MetalRandomFloat( -0.2f, 0.2f ), b3MetalRandomFloat( -0.2f, 0.2f ) };
++		states[i].deltaRotation = b3MakeQuatFromAxisAngle( deltaAxis, b3MetalRandomFloat( -0.2f, 0.2f ) );
++		sims[i].transform.q = b3MakeQuatFromAxisAngle( axis, b3MetalRandomFloat( -B3_PI, B3_PI ) );
++		sims[i].localCenter = (b3Vec3){ b3MetalRandomFloat( -1.0f, 1.0f ), b3MetalRandomFloat( -1.0f, 1.0f ),
++			b3MetalRandomFloat( -1.0f, 1.0f ) };
++		sims[i].maxExtent = (b3Vec3){ b3MetalRandomFloat( 0.05f, 3.0f ), b3MetalRandomFloat( 0.05f, 3.0f ),
++			b3MetalRandomFloat( 0.05f, 3.0f ) };
++		sims[i].invInertiaLocal = (b3Matrix3){ { b3MetalRandomFloat( 0.1f, 2.0f ), 0.0f, 0.0f },
++			{ 0.0f, b3MetalRandomFloat( 0.1f, 2.0f ), 0.0f }, { 0.0f, 0.0f, b3MetalRandomFloat( 0.1f, 2.0f ) } };
++
++		b3Vec3 localOmega = b3InvRotateVector( sims[i].transform.q, states[i].angularVelocity );
++		b3Vec3 localDelta = b3InvRotateVector( sims[i].transform.q, states[i].deltaRotation.v );
++		b3Vec3 velocityArc = b3ModifiedCross( b3Abs( localOmega ), sims[i].maxExtent );
++		b3Vec3 rotationArc = b3ModifiedCross( b3Abs( localDelta ), sims[i].maxExtent );
++		reference[i].deltaPosition = states[i].deltaPosition;
++		reference[i].rotation = b3NormalizeQuat( b3MulQuat( states[i].deltaRotation, sims[i].transform.q ) );
++		reference[i].originOffset = b3Neg( b3RotateVector( reference[i].rotation, sims[i].localCenter ) );
++		reference[i].maxVelocity = b3Length( states[i].linearVelocity ) + b3Length( velocityArc );
++		reference[i].maxDeltaPosition = b3Length( states[i].deltaPosition ) + 2.0f * b3Length( rotationArc );
++		reference[i].sleepVelocity = b3MaxFloat( reference[i].maxVelocity,
++			0.5f * invTimeStep * reference[i].maxDeltaPosition );
++		b3Matrix3 rotation = b3MakeMatrixFromQuat( reference[i].rotation );
++		reference[i].invInertiaWorld =
++			b3MulMM( b3MulMM( rotation, sims[i].invInertiaLocal ), b3Transpose( rotation ) );
++	}
++
++	b3MetalContext* context = NULL;
++	char error[1024] = { 0 };
++	ENSURE( b3MetalCreateContext( &context, error, sizeof( error ) ) );
++	const b3MetalFinalizeResult* gpu = NULL;
++	b3MetalDispatchStats stats = { 0 };
++	ENSURE( b3MetalFinalizeBodies( context, states, sims, count, invTimeStep, false, &gpu, &stats ) );
++	float maxError = 0.0f;
++	for ( int i = 0; i < count; ++i )
++	{
++		const float* a = (const float*)( reference + i );
++		const float* b = (const float*)( gpu + i );
++		for ( int j = 0; j < 22; ++j )
++		{
++			maxError = b3MaxFloat( maxError, fabsf( a[j] - b[j] ) );
++		}
++	}
++	printf( "    finalization bodies=%d gpu=%.3f ms maxAbsError=%.3g\n", count, stats.gpuMilliseconds, maxError );
++	ENSURE( maxError <= 2.0e-4f );
++	b3MetalDestroyContext( context );
++	free( reference );
++	free( sims );
++	free( states );
++	return 0;
++}
++
 +static int MetalWorldIntegrationTest( void )
 +{
 +	const int count = 2048;
@@ -4702,6 +5358,7 @@ index 0000000000000000000000000000000000000000..e63a26b4b888fb5eda72cc212b12ed14
 +	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
 +	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 +	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
++	ENSURE( b3World_SetMetalFinalization( gpuWorld, true ) );
 +
 +	b3BodyId* cpuBodies = malloc( (size_t)count * sizeof( b3BodyId ) );
 +	b3BodyId* gpuBodies = malloc( (size_t)count * sizeof( b3BodyId ) );
@@ -4743,6 +5400,8 @@ index 0000000000000000000000000000000000000000..e63a26b4b888fb5eda72cc212b12ed14
 +	ENSURE( profile.enabled );
 +	ENSURE( profile.unconstrainedDispatchCount == 4 );
 +	ENSURE( profile.unconstrainedFallbackCount == 0 );
++	ENSURE( profile.finalizationEnabled );
++	ENSURE( profile.finalizationDispatchCount == 1 );
 +	ENSURE( profile.positionDispatchCount == 0 );
 +	ENSURE( profile.positionFallbackCount == 0 );
 +	ENSURE( maxPositionError <= 3.0e-5f );
@@ -5641,6 +6300,7 @@ index 0000000000000000000000000000000000000000..e63a26b4b888fb5eda72cc212b12ed14
 +{
 +	RUN_SUBTEST( MetalPositionIntegrationTest );
 +	RUN_SUBTEST( MetalFusedIntegrationTest );
++	RUN_SUBTEST( MetalFinalizationTest );
 +	RUN_SUBTEST( MetalWorldIntegrationTest );
 +	RUN_SUBTEST( MetalDistanceJointContactTest );
 +	RUN_SUBTEST( MetalUnsupportedJointFallbackTest );

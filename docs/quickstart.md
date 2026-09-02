@@ -59,6 +59,14 @@ The threshold is a lower bound on awake body count, not an automatic hardware
 recommendation. Use benchmark evidence as a starting point and measure the real
 world configuration.
 
+The experimental finalization arithmetic path requires a second explicit
+opt-in. It is intended for pipeline research and is currently slower end to
+end:
+
+```c
+b3World_SetMetalFinalization(world, true);
+```
+
 ## Inspect the route
 
 ```c
@@ -72,7 +80,9 @@ printf("device=%s contacts=%llu joints=%llu contact_fallbacks=%llu\n",
 
 Dispatch counts prove that a Metal stage ran. A zero fallback count proves only
 that the recorded supported stages did not fall back; it is not a claim that
-broad phase, narrow phase, CCD, sleeping, or finalization ran on the GPU.
+broad phase, narrow phase, CCD, sleeping, or shape/bounds finalization ran on
+the GPU. The separately enabled arithmetic-only finalization path has its own
+dispatch counter.
 
 ## Disable and release
 

@@ -17,7 +17,8 @@ For a supported constrained world, one command buffer performs:
 4. Position and quaternion integration.
 5. Unbiased relaxation iterations.
 6. Restitution for eligible contacts.
-7. One synchronization followed by CPU impulse storage and finalization.
+7. Optionally, body-finalization arithmetic using the resident solver state.
+8. One synchronization followed by CPU impulse storage and topology work.
 
 Unconstrained worlds use a smaller fused kernel sequence spanning every
 substep. Unsupported constrained worlds keep the reference CPU solver and may
@@ -28,6 +29,8 @@ still use the independent Metal position stage if they meet the threshold.
 - `b3BodyState` is copied into a persistent shared Metal buffer once per step.
 - Compact body properties exclude collision and finalization fields unused by
   integration kernels.
+- Experimental finalization uses a separate compact geometry stream so its
+  fields do not widen the default integration record.
 - Convex and mesh contact preparation writes directly into persistent shared
   Metal allocations; no redundant constraint upload/readback is performed.
 - Distance and parallel joints are packed into compact type-dense records and
@@ -76,3 +79,13 @@ with one kernel launch per solver phase instead of one launch per constraint.
 counters for position, unconstrained, contact, and joint paths, plus the latest
 GPU execution time for each category. These counters are route evidence, not a
 whole-engine GPU percentage.
+
+## Experimental finalization boundary
+
+`b3World_SetMetalFinalization(world, true)` ports final rotation, body-origin
+offset, farthest-point motion and sleep metrics, and world-space inverse
+inertia. Supported fused solver paths append it to their existing command
+buffer. Large-world position accumulation, CCD, events, island sleep mutation,
+shape AABBs, and broad-phase topology remain on the CPU. The stage is
+separately opt-in because consuming its shared result stream is currently
+slower end to end.

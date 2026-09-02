@@ -4,7 +4,8 @@
 
 - Broad phase and narrow phase remain CPU-side.
 - Manifold and constraint preparation remain CPU-side.
-- Body finalization, bounds, sleeping, events, and CCD remain CPU-side.
+- Body-finalization arithmetic has an experimental Metal path, but bounds,
+  sleeping/island mutation, events, and CCD remain CPU-side.
 - Only distance and parallel joints stay in the GPU-resident constraint graph.
 - Constraint joint records are packed/unpacked each step.
 - Body state crosses the CPU/GPU ownership boundary once per world step.
@@ -13,15 +14,15 @@
 
 ## Evidence-led next stages
 
-1. Move body finalization and bounds updates into the existing command graph.
-   This directly attacks the gap between the 10.584x fused primitive and 1.146x
-   whole-world result.
-2. Retain body and supported joint state across world steps, reading back only
+1. Move shape finalization and AABB generation into the existing command graph,
+   eliminating the shared arithmetic-result stream and CPU shape traversal.
+2. Implement GPU pair generation and broad phase after bounds ownership is
+   resolved, using deterministic radix-sort/compaction designs suitable for
+   Apple GPUs.
+3. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
-3. Add remaining high-value joint types one at a time with mode matrices,
+4. Add remaining high-value joint types one at a time with mode matrices,
    overflow tests, static-body tests, and whole-world benchmarks.
-4. Prototype GPU broad-phase pair generation only after finalization ownership
-   is resolved, using radix-sort/compaction designs suitable for Apple GPUs.
 5. Move shape-specialized narrow phase incrementally, keeping complex or rare
    geometry on an explicit CPU fallback path.
 6. Add per-Apple-GPU-family benchmark records before considering automatic

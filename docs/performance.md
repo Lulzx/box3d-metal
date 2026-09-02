@@ -30,6 +30,7 @@ readback unless explicitly labeled a primitive.
 | Mesh-contact whole world | Around 8,192 bodies | 1.646x at 131,072 |
 | Distance-joint whole world | Near 131,072 bodies | 1.158x at 524,288 |
 | Parallel-joint whole world | No stable crossover | 0.974x at 1,048,576 median point |
+| Experimental GPU finalization | No crossover | 27% slower at 524,288 bodies |
 
 ## Interpretation
 
@@ -38,6 +39,10 @@ primitive reaches 10.584x, while full-world bookkeeping reduces that to 1.146x.
 Mesh constraints cross earlier than convex-wide stacks in the tested setup.
 Distance joints show a large-workload benefit despite compact pack/unpack costs.
 Parallel joints expand compatibility but do not yet justify default routing.
+The finalization arithmetic kernel is correct and fused into the resident
+command graph, but its additional shared result stream made the 524,288-body
+paired median 10.500 ms versus 8.275 ms with finalization disabled. It is
+therefore an experimental opt-in, not a default optimization.
 
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact

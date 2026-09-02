@@ -11,6 +11,7 @@ Direct primitive tests separately cover packed state and integration kernels.
 
 - Position integration across 16,384 randomized states and flags.
 - Fused velocity/position integration across 8,192 bodies.
+- Body-finalization arithmetic across 4,096 randomized states and all 22 result floats.
 - Integrated unconstrained worlds.
 - Convex friction, tangent velocity, twist friction, and rolling resistance.
 - Convex restitution.
@@ -28,6 +29,7 @@ Direct primitive tests separately cover packed state and integration kernels.
 | Case | Maximum observed error |
 | --- | ---: |
 | Integrated unconstrained world | 1.19e-7 transform |
+| Body-finalization arithmetic | 2.29e-5 across all result floats |
 | Distance joint plus contacts | 4.66e-10 |
 | Convex friction contacts | 4.77e-7 transform, 3.98e-6 velocity |
 | Convex restitution | 1.19e-7 transform, 2.38e-7 velocity |

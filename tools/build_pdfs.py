@@ -242,7 +242,7 @@ def quickstart_story():
         p("The body threshold is deliberately caller-selected. It is not a universal recommendation; measure your world with full-step timing."),
         p("Read route telemetry", "h2"),
         code("b3MetalProfile p = b3World_GetMetalProfile(world);\nprintf(\"%s contacts=%llu joints=%llu fallbacks=%llu\\n\",\n       p.deviceName, p.contactDispatchCount,\n       p.jointDispatchCount, p.contactFallbackCount);"),
-        p("Dispatch counters prove a Metal stage ran. They do not imply that broad phase, narrow phase, CCD, sleeping, events, or finalization ran on the GPU.", "callout"),
+        p("Dispatch counters prove a Metal stage ran. They do not imply that broad phase, narrow phase, CCD, sleeping, events, or shape and bounds finalization ran on the GPU.", "callout"),
         p("Next references", "h2"),
         *bullets(["docs/compatibility.md - exact supported and CPU fallback surface", "docs/performance.md - measured M4 Pro crossovers", "docs/troubleshooting.md - initialization, routing, and performance diagnosis"]),
     ]
@@ -321,7 +321,7 @@ def compatibility_story():
         *bullets([
             "Broad phase, narrow phase, and manifold generation",
             "Contact and joint preparation",
-            "Finalization, bounds, events, islands, sleeping, and CCD",
+            "Shape finalization, bounds, events, islands, sleeping, and CCD",
             "Recording, queries, topology mutation, and public API calls",
             "Filter, motor, prismatic, revolute, spherical, weld, and wheel solving",
             "Any joint requesting reaction-threshold events",
@@ -353,6 +353,7 @@ def performance_story():
         ("Mesh contacts", "~8K", "1.646x", "131,072"),
         ("Distance joints", "~131K", "1.158x", "524,288"),
         ("Parallel joints", "none stable", "0.974x", "1,048,576"),
+        ("Experimental GPU finalization", "none", "0.79x", "524,288"),
     ]
     return [
         p("Measured platform", "h1"),
@@ -375,7 +376,7 @@ def performance_story():
         p("What the data says", "h2"),
         *bullets([
             "Command fusion is the largest demonstrated architectural win.",
-            "CPU finalization substantially reduces the fused primitive advantage.",
+            "Experimental finalization arithmetic is correct but 27% slower at the paired 524,288-body median.",
             "Mesh contacts cross earlier than convex-wide stacks in the recorded workloads.",
             "Distance joints benefit only at very large scale.",
             "Parallel joints expand compatibility but do not justify default GPU routing.",
@@ -386,10 +387,10 @@ def performance_story():
         p("Run each complete executable in at least three separate processes and compare medians. Do not use GPU kernel time alone as a whole-world claim.", "callout"),
         p("Next performance work", "h2"),
         *bullets([
-            "Move finalization and bounds into the existing command graph.",
+            "Move shape finalization and AABB generation into the existing command graph.",
             "Retain body and supported-joint state across world steps.",
             "Add joint types only with mode matrices and whole-world evidence.",
-            "Prototype GPU broad/narrow phase after ownership boundaries are reduced.",
+            "Implement GPU pair generation and broad phase after bounds ownership is resolved.",
         ]),
     ]
 
