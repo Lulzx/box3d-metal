@@ -1782,7 +1782,12 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 	int awakeBodyCount = awakeSet->bodySims.count;
 	if ( awakeBodyCount == 0 )
 	{
-		b3ValidateNoEnlarged( &world->broadPhase );
+#if defined( BOX3D_METAL )
+		if ( world->metalBroadPhaseEnabled == false )
+#endif
+		{
+			b3ValidateNoEnlarged( &world->broadPhase );
+		}
 		return;
 	}
 
@@ -2480,7 +2485,12 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 			world->activeTaskCount -= 1;
 		}
 
-		b3ValidateNoEnlarged( &world->broadPhase );
+#if defined( BOX3D_METAL )
+		if ( world->metalBroadPhaseEnabled == false )
+#endif
+		{
+			b3ValidateNoEnlarged( &world->broadPhase );
+		}
 
 		// Gather bits for all sim bodies that have enlarged AABBs
 		b3BitSet* enlargedBodyBitSet = &world->taskContexts.data[0].enlargedSimBitSet;
@@ -2575,7 +2585,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 
 		// Serially enlarge broad-phase proxies for bullet shapes
 		b3BroadPhase* broadPhase = &world->broadPhase;
-		b3DynamicTree* dynamicTree = broadPhase->trees + b3_dynamicBody;
 
 		// Fast array access is important here
 		b3Body* bodyArray = world->bodies.data;
@@ -2616,12 +2625,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 
 				int proxyKey = shape->proxyKey;
 				int proxyId = B3_PROXY_ID( proxyKey );
+				B3_UNUSED( proxyId );
 				B3_ASSERT( B3_PROXY_TYPE( proxyKey ) == b3_dynamicBody );
 
 				// all fast bullet shapes should already be in the move buffer
 				B3_ASSERT( b3GetBit( &broadPhase->movedProxies[b3_dynamicBody], proxyId ) );
 
-				b3DynamicTree_EnlargeProxy( dynamicTree, proxyId, shape->fatAABB );
+				b3BroadPhase_EnlargeProxy( broadPhase, proxyKey, shape->fatAABB );
 
 				shapeId = shape->nextShapeId;
 			}
@@ -2630,6 +2640,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		world->profile.bullets = b3GetMilliseconds( bulletTicks );
 		b3TracyCZoneEnd( bullets );
 	}
+
+#if defined( BOX3D_METAL )
+	if ( stepContext->metalTreeRefit )
+	{
+		b3MetalCommitPairTreeRefit( world->metalContext, &world->broadPhase );
+	}
+#endif
 
 	b3StackFree( &world->stack, stepContext->bulletBodies );
 	stepContext->bulletBodies = NULL;

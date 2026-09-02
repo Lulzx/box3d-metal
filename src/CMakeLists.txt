@@ -110,6 +110,17 @@ if(APPLE AND BOX3D_METAL)
 		metal_backend.h
 		metal_backend.m
 	)
+	if(BOX3D_DOUBLE_PRECISION)
+		# VF64's exact IEEE-754 helpers are compiled into the runtime Metal source.
+		# Keep the readable MSL authoritative and generate only the C string wrapper.
+		file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metal_vf64_ieee.metal" B3_VF64_IEEE_SOURCE)
+		string(REPLACE "\\" "\\\\" B3_VF64_IEEE_SOURCE "${B3_VF64_IEEE_SOURCE}")
+		string(REPLACE "\"" "\\\"" B3_VF64_IEEE_SOURCE "${B3_VF64_IEEE_SOURCE}")
+		string(REPLACE "\n" "\\n\"\n\"" B3_VF64_IEEE_SOURCE "${B3_VF64_IEEE_SOURCE}")
+		file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/metal_vf64_ieee_source.h"
+			"static const char b3_vf64IEEESource[] =\n\"${B3_VF64_IEEE_SOURCE}\";\n")
+		list(APPEND BOX3D_SOURCE_FILES metal_vf64_ieee.metal)
+	endif()
 endif()
 
 # Hide internal functions

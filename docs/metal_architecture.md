@@ -59,11 +59,16 @@ continues into shape finalization for awake non-CCD bodies: spheres and capsules
 use their exact transformed primitives, while hull and aggregate geometry use
 their upstream local bounds. The kernel applies speculative and fat-AABB
 margins and emits deterministic flat results in body/shape-list order. CPU code
-still owns double-precision outward rounding, CCD, events, sleeping/island
-mutation, and dynamic-tree mutation. It is separately opt-in
+still owns CCD, events, sleeping/island mutation, and public shape bookkeeping.
+Double-precision builds use the exact integer IEEE-754 implementation from
+VF64-metal commit `729021777455da72db8809d9ef1269c677d88b3f`: body-center bits
+remain binary64 through three round-to-nearest additions, then lower and upper
+bounds narrow toward negative and positive infinity respectively. A
+scale-aware local-float arithmetic envelope makes the device result
+conservative against the CPU `b3ComputeFatShapeAABB` oracle. It is separately opt-in
 because reading one 64-byte result per awake shape has not demonstrated a
-whole-world win; the next residency boundary is GPU pair generation consuming
-these bounds before any compact CPU handoff.
+whole-world win; the remaining boundary is removal of that CPU bookkeeping
+stream once all downstream consumers can use resident bounds.
 
 Enable it with:
 
@@ -81,9 +86,13 @@ coverage establishes stable defaults across Apple GPU families.
 
 An independently opt-in pair stage copies Erin's existing static, kinematic,
 and dynamic tree topology into persistent shared Metal buffers. A monotonic
-broad-phase revision lets unchanged node snapshots remain resident across pair
-queries; create, destroy, move, enlarge, and rebuild operations invalidate the
-snapshot before it can be reused. A count pass
+broad-phase revision lets node snapshots remain resident across pair queries.
+For supported non-CCD steps, shape finalization writes enlarged leaf bounds
+directly into that snapshot and deterministic height-ordered kernels refit
+kinematic and dynamic internal nodes. This preserves Erin's topology and DFS
+candidate order without a per-step tree upload. CPU create, destroy, explicit
+move, unsupported enlargement, and rebuild operations still invalidate the
+snapshot before reuse. A count pass
 traverses leaves in upstream stack order. A deterministic 256-lane hierarchical
 scan computes stable per-move offsets: SIMD subgroups scan each block, a short
 serial kernel prefixes block totals, and a parallel add applies block offsets.
@@ -97,7 +106,7 @@ above 63, shader stack overflow, changing counts, allocation failure, or more
 than 64 raw candidates per moved proxy on average fall back to the full CPU
 traversal before any partial result is consumed.
 
-Broad-phase tree mutation, narrow phase, contact and joint preparation,
+Broad-phase topology mutation, narrow phase, contact and joint preparation,
 unsupported joint solution, continuous collision, events, and sleeping/island
 mutation still run on the CPU. Unsupported
 constrained worlds retain the position-only path, which may lose to the CPU once
@@ -112,12 +121,12 @@ paths, not yet the final performance architecture.
 | Distance joints, including spring, limit, and motor modes | GPU-resident across all substeps |
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
-| Broad phase | Experimental opt-in Metal tree traversal; CPU tree mutation, candidate filtering, and contact creation |
+| Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; CPU topology mutation, filtering, and contact creation |
 | Narrow phase and manifolds | CPU |
 | Contact preparation and impulse storage | CPU |
-| Body and awake-shape finalization | Experimental opt-in Metal kernels; CPU applies flat results and retains CCD/tree topology |
+| Body and awake-shape finalization | Experimental Metal kernels; resident bounds feed tree refit while CPU still applies flat bookkeeping results and retains CCD/topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
-| Double-precision world positions | CPU shape fallback preserves outward-rounded far-world AABBs; VF64 exact add/narrow is the candidate GPU seam |
+| Double-precision world positions | VF64 exact add plus directed narrowing produces conservative far-world AABBs on Metal |
 | Cross-platform bit determinism | CPU only; Metal is tolerance-equivalent |
 
 ## Target pipeline
@@ -178,3 +187,5 @@ Experimental dynamic-tree traversal results are in
 The follow-on on-device stable scan, compaction, and unchanged-tree residency
 correctness checkpoint is in
 [`benchmarks/m4-pro-pair-prefix-2026-09-02.md`](benchmarks/m4-pro-pair-prefix-2026-09-02.md).
+Resident leaf refit and VF64 far-world validation are recorded in
+[`benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md`](benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md).

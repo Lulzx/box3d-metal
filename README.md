@@ -23,9 +23,12 @@ limits, and motors) and parallel joints share the GPU-resident command graph;
 other joint types fall back safely. Experimental, separately opt-in stages port
 body/shape finalization and traverse Erin's existing broad-phase trees on Metal
 with deterministic on-device candidate compaction, while retaining CPU filtering
-and contact creation. Unchanged tree snapshots remain in persistent Metal
-storage; any CPU topology or bounds mutation invalidates them. The stages remain
-off by default; shape readback is still a regression, while GPU tree traversal
+and contact creation. Tree snapshots remain in persistent Metal storage;
+ordinary awake-shape motion updates leaves and refits internal bounds on-device,
+while topology changes and unsupported CPU mutations invalidate the snapshot.
+Double-precision worlds use VF64 software binary64 for exact world translation
+and directed float AABB narrowing on Metal. The stages remain off by default;
+CPU shape bookkeeping/readback is still a regression, while GPU tree traversal
 crosses over only in large measured worlds.
 See [the architecture and compatibility contract](docs/metal_architecture.md)
 for the exact supported surface and current CPU-only stages.

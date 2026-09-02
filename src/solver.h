@@ -233,6 +233,8 @@ typedef struct b3StepContext
 	const b3MetalShapeAABBResult* metalShapeResults;
 	int metalShapeResultCount;
 	bool metalStatesResident;
+	bool metalTreeRefitEligible;
+	bool metalTreeRefit;
 
 	// array of all shape ids for shapes that have enlarged AABBs
 	int* enlargedShapes;

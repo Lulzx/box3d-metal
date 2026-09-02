@@ -10,6 +10,7 @@
 #include "math_internal.h"
 #include "metal_backend.h"
 #include "physics_world.h"
+#include "shape.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -43,6 +44,57 @@ static bool CapturePairCandidate( int proxyId, uint64_t userData, void* context 
 		.shapeIndex = (int)userData,
 	};
 	return true;
+}
+
+static int VerifyResidentPairTraversal( b3World* world )
+{
+	b3BroadPhase* broadPhase = &world->broadPhase;
+	int moveCount = broadPhase->moveArray.count;
+	ENSURE( moveCount > 0 );
+	const b3MetalPairQueryRecord* records = NULL;
+	const b3MetalPairCandidate* candidates = NULL;
+	int candidateCount = 0;
+	b3MetalDispatchStats stats = { 0 };
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
+		&records, &candidates, &candidateCount, &stats ) );
+	ENSURE( stats.treeUploadCount == 0 );
+	int capacity = b3MaxInt( 1, candidateCount );
+	b3MetalPairCandidate* reference = malloc( (size_t)capacity * sizeof( b3MetalPairCandidate ) );
+	ENSURE( reference != NULL );
+	b3PairCandidateCapture capture = { .candidates = reference, .capacity = capacity };
+	int totalCount = 0;
+	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
+	{
+		int proxyKey = broadPhase->moveArray.data[moveIndex];
+		b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
+		int proxyId = B3_PROXY_ID( proxyKey );
+		b3AABB aabb = b3DynamicTree_GetAABB( broadPhase->trees + proxyType, proxyId );
+		capture.count = 0;
+		if ( proxyType == b3_dynamicBody )
+		{
+			capture.treeType = b3_kinematicBody;
+			b3DynamicTree_Query( broadPhase->trees + b3_kinematicBody, aabb, B3_DEFAULT_MASK_BITS, false,
+				CapturePairCandidate, &capture );
+			capture.treeType = b3_staticBody;
+			b3DynamicTree_Query( broadPhase->trees + b3_staticBody, aabb, B3_DEFAULT_MASK_BITS, false,
+				CapturePairCandidate, &capture );
+		}
+		capture.treeType = b3_dynamicBody;
+		b3DynamicTree_Query( broadPhase->trees + b3_dynamicBody, aabb, B3_DEFAULT_MASK_BITS, false,
+			CapturePairCandidate, &capture );
+		ENSURE( records[moveIndex].count == (uint32_t)capture.count );
+		for ( int i = 0; i < capture.count; ++i )
+		{
+			const b3MetalPairCandidate* gpu = candidates + records[moveIndex].offset + i;
+			ENSURE( gpu->proxyId == reference[i].proxyId );
+			ENSURE( gpu->treeType == reference[i].treeType );
+			ENSURE( gpu->shapeIndex == reference[i].shapeIndex );
+		}
+		totalCount += capture.count;
+	}
+	ENSURE( totalCount == candidateCount );
+	free( reference );
+	return 0;
 }
 
 static void b3IntegratePositionsReference( b3BodyState* states, int count, float h, float maxLinearSpeed,
@@ -448,8 +500,10 @@ static int MetalPairTraversalTest( void )
 	}
 	ENSURE( dynamicProxyKey != B3_NULL_INDEX );
 	int dynamicProxyId = B3_PROXY_ID( dynamicProxyKey );
-	b3AABB unchangedAABB = b3DynamicTree_GetAABB( broadPhase->trees + b3_dynamicBody, dynamicProxyId );
-	b3BroadPhase_EnlargeProxy( broadPhase, dynamicProxyKey, unchangedAABB );
+	b3AABB expandedAABB = b3DynamicTree_GetAABB( broadPhase->trees + b3_dynamicBody, dynamicProxyId );
+	expandedAABB.lowerBound.x -= 0.01f;
+	expandedAABB.upperBound.x += 0.01f;
+	b3BroadPhase_EnlargeProxy( broadPhase, dynamicProxyKey, expandedAABB );
 	stats = (b3MetalDispatchStats){ 0 };
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
 		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
@@ -510,6 +564,7 @@ static int MetalWorldIntegrationTest( void )
 	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
 	ENSURE( b3World_SetMetalFinalization( gpuWorld, true ) );
+	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, true ) );
 
 	b3BodyId* cpuBodies = malloc( (size_t)count * sizeof( b3BodyId ) );
 	b3BodyId* gpuBodies = malloc( (size_t)count * sizeof( b3BodyId ) );
@@ -523,7 +578,12 @@ static int MetalWorldIntegrationTest( void )
 	{
 		b3BodyDef bodyDef = b3DefaultBodyDef();
 		bodyDef.type = b3_dynamicBody;
+#if defined( BOX3D_DOUBLE_PRECISION )
+		bodyDef.position = (b3Pos){ 1.0e8 + 32.0 * (double)( i % 64 ), -1.0e8 + 32.0 * (double)( i / 64 ),
+			0.1 * (double)( i % 7 ) };
+#else
 		bodyDef.position = (b3Pos){ (float)( i % 64 ), (float)( i / 64 ), 0.1f * (float)( i % 7 ) };
+#endif
 		bodyDef.linearVelocity = (b3Vec3){ b3MetalRandomFloat( -40.0f, 40.0f ), b3MetalRandomFloat( -40.0f, 40.0f ),
 										  b3MetalRandomFloat( -40.0f, 40.0f ) };
 		bodyDef.angularVelocity = (b3Vec3){ b3MetalRandomFloat( -20.0f, 20.0f ), b3MetalRandomFloat( -20.0f, 20.0f ),
@@ -553,10 +613,15 @@ static int MetalWorldIntegrationTest( void )
 
 	b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
+	ENSURE( VerifyResidentPairTraversal( b3GetWorldFromId( gpuWorld ) ) == 0 );
 
 	float maxPositionError = 0.0f;
 	float maxRotationError = 0.0f;
 	float maxAABBError = 0.0f;
+#if defined( BOX3D_DOUBLE_PRECISION )
+	b3World* gpuWorldInternal = b3GetWorldFromId( gpuWorld );
+	float maxOracleUnderflow = 0.0f;
+#endif
 	for ( int i = 0; i < count; ++i )
 	{
 		b3WorldTransform a = b3Body_GetTransform( cpuBodies[i] );
@@ -570,6 +635,18 @@ static int MetalWorldIntegrationTest( void )
 		maxRotationError = b3MaxFloat( maxRotationError, fabsf( a.q.s - b.q.s ) );
 		b3AABB cpuAABB = b3Shape_GetAABB( cpuShapes[i] );
 		b3AABB gpuAABB = b3Shape_GetAABB( gpuShapes[i] );
+#if defined( BOX3D_DOUBLE_PRECISION )
+		b3Shape* gpuShape = b3Array_Get( gpuWorldInternal->shapes, gpuShapes[i].index1 - 1 );
+		b3Body* gpuBody = b3Array_Get( gpuWorldInternal->bodies, gpuShape->bodyId );
+		b3AABB oracle = b3ComputeFatShapeAABB( gpuShape, b3GetBodyTransformQuick( gpuWorldInternal, gpuBody ),
+			B3_SPECULATIVE_DISTANCE );
+		maxOracleUnderflow = b3MaxFloat( maxOracleUnderflow, gpuAABB.lowerBound.x - oracle.lowerBound.x );
+		maxOracleUnderflow = b3MaxFloat( maxOracleUnderflow, gpuAABB.lowerBound.y - oracle.lowerBound.y );
+		maxOracleUnderflow = b3MaxFloat( maxOracleUnderflow, gpuAABB.lowerBound.z - oracle.lowerBound.z );
+		maxOracleUnderflow = b3MaxFloat( maxOracleUnderflow, oracle.upperBound.x - gpuAABB.upperBound.x );
+		maxOracleUnderflow = b3MaxFloat( maxOracleUnderflow, oracle.upperBound.y - gpuAABB.upperBound.y );
+		maxOracleUnderflow = b3MaxFloat( maxOracleUnderflow, oracle.upperBound.z - gpuAABB.upperBound.z );
+#endif
 		const float* cpuBounds = (const float*)&cpuAABB;
 		const float* gpuBounds = (const float*)&gpuAABB;
 		for ( int j = 0; j < 6; ++j )
@@ -588,18 +665,17 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.unconstrainedFallbackCount == 0 );
 	ENSURE( profile.finalizationEnabled );
 	ENSURE( profile.finalizationDispatchCount == 1 );
-#if defined( BOX3D_DOUBLE_PRECISION )
-	ENSURE( profile.shapeDispatchCount == 0 );
-	ENSURE( profile.shapeFallbackCount == 1 );
-#else
 	ENSURE( profile.shapeDispatchCount == 1 );
 	ENSURE( profile.shapeFallbackCount == 0 );
-#endif
 	ENSURE( profile.positionDispatchCount == 0 );
 	ENSURE( profile.positionFallbackCount == 0 );
 	ENSURE( maxPositionError <= 3.0e-5f );
 	ENSURE( maxRotationError <= 3.0e-5f );
 	ENSURE( maxAABBError <= 5.0e-5f );
+#if defined( BOX3D_DOUBLE_PRECISION )
+	printf( "    VF64 far-world oracle underflow=%.9g\n", maxOracleUnderflow );
+	ENSURE( maxOracleUnderflow <= 0.0f );
+#endif
 
 	free( gpuShapes );
 	free( cpuShapes );
@@ -809,24 +885,27 @@ static int MetalConvexFrictionContactTest( void )
 	}
 
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
-	printf( "    convex friction contacts dispatches=%llu gpu=%.3f ms transformError=%.3g velocityError=%.3g\n",
-		(unsigned long long)profile.contactDispatchCount, profile.lastContactGpuMilliseconds,
+	printf( "    convex friction contacts dispatches=%llu treeUploads=%llu treeRefits=%llu gpu=%.3f ms "
+			"transformError=%.3g velocityError=%.3g\n",
+		(unsigned long long)profile.contactDispatchCount, (unsigned long long)profile.pairTreeUploadCount,
+		(unsigned long long)profile.pairTreeRefitCount, profile.lastContactGpuMilliseconds,
 		maxTransformError, maxVelocityError );
 	ENSURE( profile.contactDispatchCount == 40 );
 	ENSURE( profile.pairDispatchCount >= 1 );
 	ENSURE( profile.pairFallbackCount == 0 );
 	ENSURE( profile.finalizationDispatchCount == 10 );
-#if defined( BOX3D_DOUBLE_PRECISION )
-	ENSURE( profile.shapeDispatchCount == 0 );
-	ENSURE( profile.shapeFallbackCount == 10 );
-#else
 	ENSURE( profile.shapeDispatchCount == 10 );
 	ENSURE( profile.shapeFallbackCount == 0 );
-#endif
+	ENSURE( profile.pairTreeUploadCount == 1 );
+	ENSURE( profile.pairTreeRefitCount == 10 );
 	ENSURE( profile.positionDispatchCount == 0 );
 	ENSURE( profile.unconstrainedDispatchCount == 0 );
 	ENSURE( maxTransformError <= 2.0e-4f );
 	ENSURE( maxVelocityError <= 2.0e-4f );
+
+	// Disabling the resident broad-phase must restore the CPU tree invariant.
+	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, false ) );
+	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
 
 	b3DestroyWorld( gpuWorld );
 	b3DestroyWorld( cpuWorld );

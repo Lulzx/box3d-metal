@@ -43,13 +43,12 @@ the host unsuitable for a controlled paired measurement. The earlier published
 whole-world crossover remains historical evidence for the CPU-prefix version,
 not evidence for this implementation.
 
-The remaining residency costs are structural. Shape results are still consumed
-by the CPU, CPU broad-phase trees are updated and copied to Metal each step, and
-raw candidates return to CPU filtering and contact creation. The next useful
-boundary is a versioned GPU-resident tree whose leaves consume resident shape
-bounds and whose internal bounds are refitted on-device. Revision caching now
-removes copies for unchanged trees, but moving worlds still invalidate the
-snapshot until those leaf updates move onto the GPU.
+The remaining residency costs at this checkpoint were structural. Shape results
+were still consumed by the CPU, moving broad-phase trees were copied to Metal,
+and raw candidates returned to CPU filtering and contact creation. The
+subsequent resident-refit checkpoint moved awake leaf updates and internal
+refitting onto the GPU; see
+[`m4-pro-resident-refit-vf64-2026-09-02.md`](m4-pro-resident-refit-vf64-2026-09-02.md).
 
 ## Reproduction
 

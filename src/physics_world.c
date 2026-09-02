@@ -591,6 +591,14 @@ bool b3World_SetMetalBroadPhase( b3WorldId worldId, bool enabled )
 		return false;
 	}
 
+	if ( world->metalBroadPhaseEnabled && enabled == false )
+	{
+		// Metal pair traversal deliberately retains enlarged CPU tree nodes while
+		// its resident snapshot is refit on-device. Restore the ordinary CPU tree
+		// invariant before returning control to the CPU broad-phase.
+		b3BroadPhase_RebuildTrees( world );
+	}
+
 	world->metalBroadPhaseEnabled = enabled;
 	return true;
 }
@@ -601,6 +609,11 @@ void b3World_DisableMetal( b3WorldId worldId )
 	if ( world == NULL )
 	{
 		return;
+	}
+
+	if ( world->metalBroadPhaseEnabled )
+	{
+		b3BroadPhase_RebuildTrees( world );
 	}
 
 	b3MetalDestroyContext( world->metalContext );
@@ -636,6 +649,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.shapeFallbackCount = world->metalShapeFallbackCount;
 	profile.pairDispatchCount = world->metalPairDispatchCount;
 	profile.pairFallbackCount = world->metalPairFallbackCount;
+	profile.pairTreeUploadCount = world->metalPairTreeUploadCount;
+	profile.pairTreeRefitCount = world->metalPairTreeRefitCount;
 	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
 	profile.lastUnconstrainedGpuMilliseconds = world->metalLastUnconstrainedGpuMilliseconds;
 	profile.lastContactGpuMilliseconds = world->metalLastContactGpuMilliseconds;

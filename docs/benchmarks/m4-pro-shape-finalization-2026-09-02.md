@@ -14,8 +14,10 @@ The direct end-to-end oracle also covers 2,048 moving spheres, capsules, and
 offset hulls. Its worst CPU-versus-GPU AABB component error was `3.81e-06` on an
 Apple M4 Pro. A supported contact world ran ten shape-finalization dispatches;
 the complete float and double-precision Box3D test executables passed. Double
-worlds deliberately retain CPU AABB generation because far-world bounds require
-outward-rounded binary64 addition before narrowing.
+worlds at this checkpoint deliberately retained CPU AABB generation because
+far-world bounds require outward-rounded binary64 addition before narrowing.
+That limitation was removed by the later VF64 checkpoint documented in
+[`m4-pro-resident-refit-vf64-2026-09-02.md`](m4-pro-resident-refit-vf64-2026-09-02.md).
 
 ## Whole-world result
 

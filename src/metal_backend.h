@@ -97,3 +97,7 @@ bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, 
 bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase* broadPhase,
 	const int* moveArray, int moveCount, const b3MetalPairQueryRecord** records,
 	const b3MetalPairCandidate** candidates, int* candidateCount, b3MetalDispatchStats* stats );
+
+// Mark the resident tree snapshot as matching CPU bounds after a successful
+// shape-result leaf update/refit and the corresponding CPU bookkeeping pass.
+void b3MetalCommitPairTreeRefit( b3MetalContext* context, const b3BroadPhase* broadPhase );

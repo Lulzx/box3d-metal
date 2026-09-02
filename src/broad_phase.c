@@ -450,11 +450,10 @@ static void b3FindPairsMetalTask( int startIndex, int endIndex, int workerIndex,
 }
 #endif
 
-static void b3UpdateTreesTask( void* context )
+void b3BroadPhase_RebuildTrees( b3World* world )
 {
 	b3TracyCZoneNC( tree_task, "Rebuild Trees", b3_colorFireBrick, true );
 
-	b3World* world = (b3World*)context;
 	int dynamicLeafCount = b3DynamicTree_Rebuild( world->broadPhase.trees + b3_dynamicBody, false );
 	int kinematicLeafCount = b3DynamicTree_Rebuild( world->broadPhase.trees + b3_kinematicBody, false );
 	if ( dynamicLeafCount > 1 || kinematicLeafCount > 1 )
@@ -463,6 +462,11 @@ static void b3UpdateTreesTask( void* context )
 	}
 
 	b3TracyCZoneEnd( tree_task );
+}
+
+static void b3UpdateTreesTask( void* context )
+{
+	b3BroadPhase_RebuildTrees( (b3World*)context );
 }
 
 void b3UpdateBroadPhasePairs( b3World* world )
@@ -508,6 +512,7 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			b3MetalFindPairsContext metalContext = { world, records, candidates };
 			b3ParallelFor( world, b3FindPairsMetalTask, moveCount, minRange, &metalContext, "pairs metal" );
 			world->metalPairDispatchCount += 1;
+			world->metalPairTreeUploadCount += (uint64_t)stats.treeUploadCount;
 			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
 			usedMetalPairs = true;
 		}
@@ -526,7 +531,13 @@ void b3UpdateBroadPhasePairs( b3World* world )
 
 	// Task that can be done in parallel with the narrow-phase
 	// - rebuild the collision tree for dynamic and kinematic bodies to keep their query performance good
-	if ( world->taskCount < B3_MAX_TASKS )
+	if ( usedMetalPairs )
+	{
+		// Keep the topology used by the resident Metal snapshot stable. CPU
+		// leaves remain conservative; Metal refits exact internal bounds.
+		world->userTreeTask = NULL;
+	}
+	else if ( world->taskCount < B3_MAX_TASKS )
 	{
 		world->userTreeTask = world->enqueueTaskFcn( &b3UpdateTreesTask, world, world->userTaskContext, "rebuild tree" );
 		world->taskCount += 1;
