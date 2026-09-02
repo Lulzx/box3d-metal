@@ -22,10 +22,10 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..e7f6370 100644
+index cfe16e4..82738ef 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,190 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,193 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -45,8 +45,11 @@ index cfe16e4..e7f6370 100644
 +with deterministic on-device candidate compaction. Self/moved-proxy duplicates,
 +same-body pairs, sensors, and built-in shape filters are rejected against a
 +persistent shape-metadata table. A revisioned mirror of Box3D's pair set also
-+suppresses existing non-compound contacts; joint overrides, compounds, custom
-+callbacks, and contact creation retain the CPU path. Tree snapshots remain in persistent Metal storage;
++suppresses existing non-compound contacts. Ordinary candidate ranges are final
++GPU pair plans and bypass the CPU filtering/allocation task; serial contact
++creation consumes them in Erin's exact deterministic order. Moves containing
++joints, compounds, or custom callbacks are compacted on-device and retain the
++CPU filter path. Contact topology creation remains CPU-owned. Tree snapshots remain in persistent Metal storage;
 +ordinary awake-shape motion updates leaves and refits internal bounds on-device,
 +while topology changes and unsupported CPU mutations invalidate the snapshot.
 +Enlarged proxy bookkeeping remains in a private GPU-compacted stream rather
@@ -1074,10 +1077,10 @@ index 0000000..9f2dcfa
 +}
 diff --git a/benchmark/metal_resident_contacts.c b/benchmark/metal_resident_contacts.c
 new file mode 100644
-index 0000000..9bc615d
+index 0000000..570e3ef
 --- /dev/null
 +++ b/benchmark/metal_resident_contacts.c
-@@ -0,0 +1,153 @@
+@@ -0,0 +1,157 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -1172,7 +1175,8 @@ index 0000000..9bc615d
 +			"sim_syncs,last_sim_count,shape_syncs,"
 +			"schedule_packs,schedule_reuses,store_bypasses,event_syncs,public_syncs,index_bytes,prior_stream_bytes,impulse_bytes,"
 +			"prior_impulse_bytes,resident_pair_moves,enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,"
-+			"last_pair_move_upload_bytes\n" );
++			"last_pair_move_upload_bytes,pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,"
++			"last_pair_cpu_filter_candidates,last_pair_direct_create_candidates\n" );
 +	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
 +	{
 +		int contactCount = requestedCount > 0 ? requestedCount : counts[testIndex];
@@ -1196,7 +1200,7 @@ index 0000000..9bc615d
 +		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
 +		uint64_t priorImpulseBytes = (uint64_t)profile.lastResidentConvexConstraintCount * 1696;
 +		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%"
-+				"llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu\n",
++				"llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%llu,%d,%d,%d\n",
 +				contactCount, repeats, cpuMs, gpuMs, cpuMs / gpuMs, (unsigned long long)profile.contactPrepareDispatchCount,
 +				(unsigned long long)profile.contactPrepareDeviceRefreshCount,
 +				(unsigned long long)profile.contactCollisionBypassCount, (unsigned long long)profile.contactCollisionCpuCount,
@@ -1226,17 +1230,20 @@ index 0000000..9bc615d
 +				(unsigned long long)profile.residentPairMoveDispatchCount,
 +				(unsigned long long)profile.enlargedShapeTraversalBypassCount,
 +				profile.lastPairMoveCount, profile.lastPairCandidateCount,
-+				(unsigned long long)profile.lastPairMoveUploadBytes );
++				(unsigned long long)profile.lastPairMoveUploadBytes,
++				(unsigned long long)profile.pairCpuCandidateTraversalBypassCount,
++				profile.lastPairCpuFilterMoveCount, profile.lastPairCpuFilterCandidateCount,
++				profile.lastPairDirectCreateCount );
 +		b3DestroyWorld( gpuWorld );
 +	}
 +	return 0;
 +}
 diff --git a/benchmark/metal_world.c b/benchmark/metal_world.c
 new file mode 100644
-index 0000000..8b51eb6
+index 0000000..0d52e80
 --- /dev/null
 +++ b/benchmark/metal_world.c
-@@ -0,0 +1,162 @@
+@@ -0,0 +1,167 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -1321,7 +1328,9 @@ index 0000000..8b51eb6
 +		"transform_device_refreshes,pair_kernel_ms,pair_dispatches,"
 +		"body_state_uploads,body_state_reuses,last_body_state_upload_bytes,body_state_revision_checks,body_state_syncs,last_body_state_readback_bytes,"
 +		"body_property_uploads,body_property_reuses,last_body_property_upload_bytes,pair_fallbacks,resident_pair_moves,"
-+		"enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,last_pair_move_upload_bytes,speedup\n" );
++		"enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,last_pair_move_upload_bytes,"
++		"pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,last_pair_cpu_filter_candidates,"
++		"last_pair_direct_create_candidates,speedup\n" );
 +	const int counts[] = { 512, 2048, 8192, 32768, 131072, 524288 };
 +	int testCount = selectedBodyCount > 0 ? 1 : (int)( sizeof( counts ) / sizeof( counts[0] ) );
 +	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
@@ -1366,7 +1375,7 @@ index 0000000..8b51eb6
 +				return 1;
 +			}
 +		}
-+		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%.3f\n",
++		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%llu,%d,%d,%d,%.3f\n",
 +			bodyCount,
 +			repeats, cpuMs, gpuMs,
 +			metal.lastUnconstrainedGpuMilliseconds, (unsigned long long)metal.lastFinalizationReadbackBytes,
@@ -1394,7 +1403,10 @@ index 0000000..8b51eb6
 +				(unsigned long long)metal.residentPairMoveDispatchCount,
 +				(unsigned long long)metal.enlargedShapeTraversalBypassCount,
 +				metal.lastPairMoveCount, metal.lastPairCandidateCount,
-+				(unsigned long long)metal.lastPairMoveUploadBytes, cpuMs / gpuMs );
++				(unsigned long long)metal.lastPairMoveUploadBytes,
++				(unsigned long long)metal.pairCpuCandidateTraversalBypassCount,
++				metal.lastPairCpuFilterMoveCount, metal.lastPairCpuFilterCandidateCount,
++				metal.lastPairDirectCreateCount, cpuMs / gpuMs );
 +		b3DestroyWorld( gpuWorld );
 +	}
 +	return 0;
@@ -2470,6 +2482,75 @@ index 0000000..b4d33af
 +cmake --build build/metal-release --target metal_joint_benchmark
 +./build/metal-release/bin/metal_joint_benchmark
 +```
+diff --git a/docs/benchmarks/m4-pro-final-pair-planning-2026-09-03.md b/docs/benchmarks/m4-pro-final-pair-planning-2026-09-03.md
+new file mode 100644
+index 0000000..d066996
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-final-pair-planning-2026-09-03.md
+@@ -0,0 +1,63 @@
++# GPU final pair planning and residual-filter compaction
++
++Date: 2026-09-03
++
++Host: Apple M4 Pro, 12 CPU cores, 16 GPU cores, 24 GB unified memory
++
++Build: Release, Metal enabled, 8 Box3D workers, 4 substeps
++
++## Boundary removed
++
++Metal broad-phase records now form the final pair plan for ordinary candidates.
++The GPU classifies each move and stably compacts only move indices that still
++need body-joint checks, a custom filter callback, or compound-child traversal.
++Ordinary ranges do not enter the CPU candidate filtering task and do not allocate
++`b3MovePair` records. The deterministic serial commit reads each range in reverse
++traversal order, matching Erin's existing prepend-list order exactly.
++
++Contact ID allocation, generation reuse, primary shape ordering, body edge
++lists, solver-set placement, pair-set insertion, event flags, and island topology
++remain in `b3CreateContact` on the CPU. Candidate density beyond the historical
++`16 * moveCount` staging bound retains the previous all-record CPU consumption
++path rather than changing that behavior in this increment.
++
++## Correctness evidence
++
++- Exact CPU/Metal topology equality for 28 contacts from eight mutually
++  overlapping bodies, including contact IDs, generations, canonical shape IDs,
++  child indices, both body edges, body list heads/counts, solver-set order, and
++  pair-set membership.
++- Five deterministic randomized trials with 48 bodies each, mixed static,
++  kinematic, and dynamic types, sensors, group filters, and disabled masks.
++- A mixed plan with one ordinary range plus four residual-filter moves:
++  accepted and rejected custom callbacks, a two-child compound, and a
++  non-colliding joint.
++- `collideConnected` mutation forces a pair-metadata refresh and produces exact
++  CPU/Metal topology on the next pair pass.
++- Existing dense-capacity fallback, existing-pair suppression, resident-move,
++  mutation, and full end-to-end tests remain green.
++- Float and Double/VF64 warning-as-error suites, Float and Double UBSan suites,
++  Float ASan, the complete portable CPU suite, and the live Metal demo pass.
++
++## Whole-world measurements
++
++The resident box-contact benchmark performs cold contact creation during its
++warmup and reports the resulting planner telemetry alongside steady whole-world
++timings.
++
++| Contacts | Repeats | CPU | Metal | Speedup | Direct planned candidates | CPU-filter moves |
++| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
++| 131,072 | 4 | 16.251833 ms | 12.709219 ms | 1.279x | 131,072 | 0 |
++| 262,144 | 3 | 31.976707 ms | 28.065874 ms | 1.139x | 262,144 | 0 |
++
++Both runs reported one CPU candidate-traversal bypass, zero collision
++exceptions, and zero shape synchronizations. These speedups are loaded-host
++observations, not an interleaved causal comparison against the preceding
++commit; the telemetry is the direct proof that every cold ordinary pair avoided
++the CPU filtering/allocation task.
++
++The 131,072-body unconstrained shape/AABB run measured 7.992938 ms CPU versus
++3.134089 ms Metal, or 2.550x. Its last resident broad-phase pass processed
++63,025 moves, returned no candidates, and uploaded zero move-list bytes.
++
++No PDF artifacts were created or modified for this increment.
 diff --git a/docs/benchmarks/m4-pro-finalization-2026-09-02.md b/docs/benchmarks/m4-pro-finalization-2026-09-02.md
 new file mode 100644
 index 0000000..df5b1b5
@@ -4689,10 +4770,10 @@ index 0000000..bf16de3
 +before that traversal and state readback can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..c056019
+index 0000000..cc70340
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,599 @@
+@@ -0,0 +1,607 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -4965,10 +5046,15 @@ index 0000000..c056019
 +route changes, and dispatch failure conservatively restore every moving CPU
 +leaf and repopulate Erin's move set before returning to the CPU oracle.
 +The first unexpectedly dense call may submit one write-only retry after growing
-+the persistent candidate buffer; the steady path submits and waits once. CPU
-+consumption sends ordinary candidates directly to joint/custom filtering and
-+move-pair append. Compound children retain the complete upstream callback.
-+Deterministic contact creation remains CPU-owned. Unsupported
++the persistent candidate buffer; the steady path submits and waits once. Each
++move record also carries a residual-filter bit. A second stable scan compacts
++only move indices involving body joints, custom filtering, or a compound target.
++Ordinary candidate ranges bypass the CPU filtering task and fixed move-pair
++allocation; the serial commit consumes each range in reverse traversal order,
++exactly matching Erin's prepend-list creation order. Exception moves retain
++`b3ShouldBodiesCollide`, custom callbacks, compound-child traversal, and the
++existing move-pair path. Deterministic contact creation and all coupled contact,
++body-edge, solver-set, pair-set, event, and island topology remain CPU-owned. Unsupported
 +threadgroup geometry, tree heights at or
 +above 63, shader stack overflow, changing counts, allocation failure, or more
 +than 64 raw candidates per moved proxy on average fall back to the full CPU
@@ -5135,7 +5221,7 @@ index 0000000..c056019
 +| Distance joints, including spring, limit, and motor modes | GPU-resident across all substeps |
 +| Parallel joints | GPU-resident across all substeps |
 +| Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
-+| Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, custom/joint filtering, and contact creation remain |
++| Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, candidate planning, and residual-filter move compaction. Ordinary ranges bypass CPU candidate filtering; joint/custom/compound exceptions and deterministic contact topology creation remain CPU-owned |
 +| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Ordered callback/topology/first-touch exceptions retain the CPU path. Lazy CPU mirrors synchronize only at explicit boundaries. CPU retains cold/revision packing, manifold allocation, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
 +| Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts a 112-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 +| Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
@@ -5274,6 +5360,9 @@ index 0000000..c056019
 +Private enlarged-proxy residency, direct pair consumption, and the current
 +whole-world measurements are recorded in
 +[`benchmarks/m4-pro-resident-pair-moves-2026-09-03.md`](benchmarks/m4-pro-resident-pair-moves-2026-09-03.md).
++GPU final pair planning, residual-filter move compaction, and exact topology
++differentials are recorded in
++[`benchmarks/m4-pro-final-pair-planning-2026-09-03.md`](benchmarks/m4-pro-final-pair-planning-2026-09-03.md).
 +Fully resident convex-contact state, sim, shape-bound, and body-finalization
 +ownership is recorded in
 +[`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).
@@ -5308,10 +5397,10 @@ index 2e82590..cd49acf 100644
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000..1c07c61
+index 0000000..c41dc27
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,242 @@
+@@ -0,0 +1,251 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -5469,6 +5558,15 @@ index 0000000..1c07c61
 +	/// CPU-to-Metal move-list bytes written by the latest pair phase. This is zero
 +	/// when the private shape-finalization list is consumed directly.
 +	uint64_t lastPairMoveUploadBytes;
++	/// Pair phases where ordinary candidate ranges bypassed the CPU filtering
++	/// task and were committed directly in deterministic reverse traversal order.
++	uint64_t pairCpuCandidateTraversalBypassCount;
++	/// Residual-filter exception moves and candidates on the latest pair phase.
++	int lastPairCpuFilterMoveCount;
++	int lastPairCpuFilterCandidateCount;
++	/// Ordinary GPU-planned candidates sent directly to deterministic CPU contact
++	/// creation on the latest pair phase.
++	int lastPairDirectCreateCount;
 +	uint64_t narrowPhaseDispatchCount;
 +	uint64_t narrowPhaseFallbackCount;
 +	uint64_t narrowPhaseGeometryUploadCount;
@@ -5982,7 +6080,7 @@ index f517e7b..f0265dc 100644
  
  b3WorldId b3Body_GetWorld( b3BodyId bodyId )
 diff --git a/src/broad_phase.c b/src/broad_phase.c
-index a369ca6..1e7b0af 100644
+index a369ca6..310f719 100644
 --- a/src/broad_phase.c
 +++ b/src/broad_phase.c
 @@ -12,9 +12,21 @@
@@ -6150,7 +6248,7 @@ index a369ca6..1e7b0af 100644
  
  	// continue the query
  	return true;
-@@ -384,22 +398,110 @@ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void
+@@ -384,22 +398,112 @@ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void
  	b3TracyCZoneEnd( pair_task );
  }
  
@@ -6161,12 +6259,13 @@ index a369ca6..1e7b0af 100644
 +	b3World* world;
 +	const b3MetalPairQueryRecord* records;
 +	const b3MetalPairCandidate* candidates;
++	const int* cpuFilterMoves;
 +} b3MetalFindPairsContext;
 +
 +// Implements b3ParallelForCallback. Metal has already traversed the trees and
 +// rejected exact moved-proxy duplicates, existing non-compound contacts, and
-+// built-in shape filters. Common candidates go directly to the remaining
-+// joint/custom checks. Compounds retain the complete callback and child query.
++// built-in shape filters. Only GPU-compacted joint/custom/compound exception
++// moves reach this task; ordinary ranges go directly to serial contact commit.
 +static void b3FindPairsMetalTask( int startIndex, int endIndex, int workerIndex, void* context )
 +{
 +	b3TracyCZoneNC( pair_metal_consume, "Pair Metal Consume", b3_colorAquamarine, true );
@@ -6179,12 +6278,13 @@ index a369ca6..1e7b0af 100644
 +	queryContext.world = world;
 +	queryContext.compoundShapeIndex = B3_NULL_INDEX;
 +	queryContext.compoundProxyId = B3_NULL_INDEX;
-+	for ( int i = startIndex; i < endIndex; ++i )
++	for ( int filterIndex = startIndex; filterIndex < endIndex; ++filterIndex )
 +	{
-+		queryContext.moveResult = bp->moveResults + i;
++		int moveIndex = metalContext->cpuFilterMoves != NULL ? metalContext->cpuFilterMoves[filterIndex] : filterIndex;
++		queryContext.moveResult = bp->moveResults + filterIndex;
 +		queryContext.moveResult->pairList = NULL;
 +
-+		const b3MetalPairQueryRecord* record = metalContext->records + i;
++		const b3MetalPairQueryRecord* record = metalContext->records + moveIndex;
 +		int queryProxyKey = record->queryProxyKey;
 +		queryContext.queryProxyKey = queryProxyKey;
 +		queryContext.queryShapeIndex = record->queryShapeIndex;
@@ -6265,7 +6365,7 @@ index a369ca6..1e7b0af 100644
  
  	if ( moveCount == 0 )
  	{
-@@ -409,27 +511,85 @@ void b3UpdateBroadPhasePairs( b3World* world )
+@@ -409,27 +513,117 @@ void b3UpdateBroadPhasePairs( b3World* world )
  	b3TracyCZoneNC( update_pairs, "Pairs", b3_colorMediumSlateBlue, true );
  
  	b3Stack* alloc = &world->stack;
@@ -6283,34 +6383,62 @@ index a369ca6..1e7b0af 100644
 +	bool usedMetalPairs = false;
 +	bool pairsAreEmpty = false;
 +#if defined( BOX3D_METAL )
++	bool directMetalPlan = false;
++	const b3MetalPairQueryRecord* metalRecords = NULL;
++	const b3MetalPairCandidate* metalCandidates = NULL;
++	const int* metalCpuFilterMoves = NULL;
 +	int candidateCount = 0;
++	int cpuFilterMoveCount = 0;
 +#endif
  #ifndef NDEBUG
  	extern b3AtomicInt b3_probeCount;
  	b3AtomicStoreInt( &b3_probeCount, 0 );
  #endif
--
--	int minRange = 64;
--	b3ParallelFor( world, b3FindPairsTask, moveCount, minRange, world, "pairs" );
 +#if defined( BOX3D_METAL )
 +	if ( world->metalBroadPhaseEnabled && ( useResidentMoves || moveCount >= world->metalMinimumBodyCount ) )
 +	{
-+		const b3MetalPairQueryRecord* records = NULL;
-+		const b3MetalPairCandidate* candidates = NULL;
 +		b3MetalDispatchStats stats = { 0 };
 +		const int* moveArray = useResidentMoves ? NULL : bp->moveArray.data;
-+		if ( b3MetalGeneratePairCandidates( world->metalContext, world, moveArray, moveCount, &records, &candidates,
-+				&candidateCount, &stats ) )
++		if ( b3MetalGeneratePairCandidates( world->metalContext, world, moveArray, moveCount, &metalRecords, &metalCandidates,
++				&candidateCount, &metalCpuFilterMoves, &cpuFilterMoveCount, &stats ) )
 +		{
 +			pairsAreEmpty = candidateCount == 0;
++			directMetalPlan = candidateCount <= 16 * moveCount;
 +			if ( pairsAreEmpty == false )
 +			{
-+				bp->moveResults = (b3MoveResult*)b3StackAlloc( alloc, moveCount * sizeof( b3MoveResult ), "move results" );
-+				bp->movePairCapacity = 16 * moveCount;
-+				bp->movePairs = (b3MovePair*)b3StackAlloc( alloc, bp->movePairCapacity * sizeof( b3MovePair ), "move pairs" );
-+				b3AtomicStoreInt( &bp->movePairIndex, 0 );
-+				b3MetalFindPairsContext metalContext = { world, records, candidates };
-+				b3ParallelFor( world, b3FindPairsMetalTask, moveCount, minRange, &metalContext, "pairs metal" );
++				// Ordinary records are already the final pair plan. Preserve the
++				// historical fixed-capacity behavior by using the legacy all-record
++				// consume path if the GPU candidate count exceeds that bound.
++				int filterCount = directMetalPlan ? cpuFilterMoveCount : moveCount;
++				if ( filterCount > 0 )
++				{
++					bp->moveResults = (b3MoveResult*)b3StackAlloc( alloc, filterCount * sizeof( b3MoveResult ), "move results" );
++					bp->movePairCapacity = 16 * moveCount;
++					bp->movePairs = (b3MovePair*)b3StackAlloc( alloc, bp->movePairCapacity * sizeof( b3MovePair ), "move pairs" );
++					b3AtomicStoreInt( &bp->movePairIndex, 0 );
++					b3MetalFindPairsContext metalContext = {
++						world,
++						metalRecords,
++						metalCandidates,
++						directMetalPlan ? metalCpuFilterMoves : NULL,
++					};
++					b3ParallelFor( world, b3FindPairsMetalTask, filterCount, minRange, &metalContext, "pairs metal filter" );
++				}
++			}
+ 
+-	int minRange = 64;
+-	b3ParallelFor( world, b3FindPairsTask, moveCount, minRange, world, "pairs" );
++			int cpuFilterCandidateCount = 0;
++			int directCreateCount = 0;
++			if ( directMetalPlan )
++			{
++				for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
++				{
++					int count = (int)metalRecords[moveIndex].count;
++					if ( metalRecords[moveIndex].requiresCpuFiltering ) cpuFilterCandidateCount += count;
++					else directCreateCount += count;
++				}
++				world->metalPairCpuCandidateTraversalBypassCount += directCreateCount > 0 ? 1 : 0;
 +			}
 +			world->metalPairDispatchCount += 1;
 +			world->metalResidentPairMoveDispatchCount += useResidentMoves ? 1 : 0;
@@ -6320,6 +6448,9 @@ index a369ca6..1e7b0af 100644
 +			world->metalLastPairMoveCount = moveCount;
 +			world->metalLastPairCandidateCount = candidateCount;
 +			world->metalLastPairMoveUploadBytes = useResidentMoves ? 0 : (uint64_t)moveCount * sizeof( int );
++			world->metalLastPairCpuFilterMoveCount = directMetalPlan ? cpuFilterMoveCount : moveCount;
++			world->metalLastPairCpuFilterCandidateCount = directMetalPlan ? cpuFilterCandidateCount : candidateCount;
++			world->metalLastPairDirectCreateCount = directMetalPlan ? directCreateCount : 0;
 +			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
 +			usedMetalPairs = true;
 +		}
@@ -6363,16 +6494,40 @@ index a369ca6..1e7b0af 100644
  	{
  		world->userTreeTask = world->enqueueTaskFcn( &b3UpdateTreesTask, world, world->userTaskContext, "rebuild tree" );
  		world->taskCount += 1;
-@@ -444,7 +604,7 @@ void b3UpdateBroadPhasePairs( b3World* world )
+@@ -442,11 +636,29 @@ void b3UpdateBroadPhasePairs( b3World* world )
+ 	}
+ 
  	// Single-threaded work
- 	// - Clear move flags
+-	// - Clear move flags
  	// - Create contacts in deterministic order
 -	for ( int i = 0; i < moveCount; ++i )
++	// GPU traversal emits candidates in callback order. Erin's CPU staging path
++	// prepends them, so ordinary GPU-planned ranges are consumed in reverse.
 +	for ( int i = 0; pairsAreEmpty == false && i < moveCount; ++i )
  	{
- 		b3MoveResult* result = bp->moveResults + i;
+-		b3MoveResult* result = bp->moveResults + i;
++#if defined( BOX3D_METAL )
++		if ( directMetalPlan && metalRecords[i].requiresCpuFiltering == 0 )
++		{
++			const b3MetalPairQueryRecord* record = metalRecords + i;
++			b3Shape* shapeB = b3Array_Get( world->shapes, record->queryShapeIndex );
++			for ( uint32_t candidateIndex = record->count; candidateIndex-- > 0; )
++			{
++				const b3MetalPairCandidate* candidate = metalCandidates + record->offset + candidateIndex;
++				b3Shape* shapeA = b3Array_Get( world->shapes, candidate->shapeIndex );
++				b3CreateContact( world, shapeA, shapeB, 0 );
++			}
++			continue;
++		}
++		int resultIndex = directMetalPlan ? (int)metalRecords[i].cpuFilterOffset : i;
++#else
++		int resultIndex = i;
++#endif
++		b3MoveResult* result = bp->moveResults + resultIndex;
  		b3MovePair* pair = result->pairList;
-@@ -481,10 +641,16 @@ void b3UpdateBroadPhasePairs( b3World* world )
+ 		while ( pair != NULL )
+ 		{
+@@ -481,10 +693,16 @@ void b3UpdateBroadPhasePairs( b3World* world )
  	}
  	b3Array_Clear( bp->moveArray );
  
@@ -7351,12 +7506,46 @@ index d85f233..ffa6859 100644
  } b3ContactConstraint;
  
  int b3GetWideContactConstraintByteCount( void );
+diff --git a/src/joint.c b/src/joint.c
+index f2d76c6..95b4ad8 100644
+--- a/src/joint.c
++++ b/src/joint.c
+@@ -216,6 +216,9 @@ static b3JointPair b3CreateJoint( b3World* world, const b3JointDef* def, b3Joint
+ 	}
+ 	bodyB->headJointKey = keyB;
+ 	bodyB->jointCount += 1;
++#if defined( BOX3D_METAL )
++	world->metalPairFilterRevision += 1;
++#endif
+ 
+ 	b3JointSim* jointSim;
+ 
+@@ -724,6 +727,9 @@ b3JointId b3CreateWheelJoint( b3WorldId worldId, const b3WheelJointDef* def )
+ void b3DestroyJointInternal( b3World* world, b3Joint* joint, bool wakeBodies )
+ {
+ 	int jointId = joint->jointId;
++#if defined( BOX3D_METAL )
++	world->metalPairFilterRevision += 1;
++#endif
+ 
+ 	b3JointEdge* edgeA = joint->edges + 0;
+ 	b3JointEdge* edgeB = joint->edges + 1;
+@@ -925,6 +931,9 @@ void b3Joint_SetCollideConnected( b3JointId jointId, bool shouldCollide )
+ 	}
+ 
+ 	joint->collideConnected = shouldCollide;
++#if defined( BOX3D_METAL )
++	world->metalPairFilterRevision += 1;
++#endif
+ 
+ 	b3Body* bodyA = b3Array_Get( world->bodies, joint->edges[0].bodyId );
+ 	b3Body* bodyB = b3Array_Get( world->bodies, joint->edges[1].bodyId );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000..3f4fc03
+index 0000000..352fbe0
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,240 @@
+@@ -0,0 +1,245 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -7384,6 +7573,8 @@ index 0000000..3f4fc03
 +	uint32_t flags;
 +	int queryShapeIndex;
 +	int queryProxyKey;
++	uint32_t requiresCpuFiltering;
++	uint32_t cpuFilterOffset;
 +	float lowerX, lowerY, lowerZ;
 +	float upperX, upperY, upperZ;
 +} b3MetalPairQueryRecord;
@@ -7457,6 +7648,8 @@ index 0000000..3f4fc03
 +	int treeUploadCount;
 +	int metadataUploadCount;
 +	int pairSetUploadCount;
++	// Non-zero when an emitted pair still needs CPU compound/custom/joint filtering.
++	int pairRequiresCpuFiltering;
 +} b3MetalDispatchStats;
 +
 +// Returns false when there is no usable Metal device or the shader pipeline
@@ -7515,7 +7708,8 @@ index 0000000..3f4fc03
 +// cannot represent the step.
 +bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* world, const int* moveArray, int moveCount,
 +									const b3MetalPairQueryRecord** records, const b3MetalPairCandidate** candidates,
-+									int* candidateCount, b3MetalDispatchStats* stats );
++									int* candidateCount, const int** cpuFilterMoves, int* cpuFilterMoveCount,
++									b3MetalDispatchStats* stats );
 +
 +// Number of deterministically compacted proxy moves retained on the device by
 +// the most recently committed Metal tree refit. The count remains authoritative
@@ -7599,10 +7793,10 @@ index 0000000..3f4fc03
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..465d92b
+index 0000000..fa30d3c
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,6101 @@
+@@ -0,0 +1,6175 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -7659,6 +7853,7 @@ index 0000000..465d92b
 +	id<MTLComputePipelineState> pairPrefixPipeline;
 +	id<MTLComputePipelineState> pairAddOffsetsPipeline;
 +	id<MTLComputePipelineState> pairMarkMovesPipeline;
++	id<MTLComputePipelineState> pairCompactCpuFilterPipeline;
 +	id<MTLComputePipelineState> pairUpdateLeavesPipeline;
 +	id<MTLComputePipelineState> pairRefitPipeline;
 +	id<MTLComputePipelineState> convexManifoldPipeline;
@@ -7735,6 +7930,7 @@ index 0000000..465d92b
 +	id<MTLBuffer> pairShapeBuffer;
 +	NSUInteger pairShapeCapacity;
 +	uint64_t pairShapeRevision;
++	uint64_t pairFilterRevision;
 +	id<MTLBuffer> pairSetBuffer;
 +	NSUInteger pairSetCapacity;
 +	uint64_t pairSetRevision;
@@ -7749,6 +7945,8 @@ index 0000000..465d92b
 +	id<MTLBuffer> pairSummaryBuffer;
 +	id<MTLBuffer> pairBlockBuffer;
 +	NSUInteger pairBlockCapacity;
++	id<MTLBuffer> pairCpuFilterMoveBuffer;
++	NSUInteger pairCpuFilterMoveCapacity;
 +	id<MTLBuffer> convexManifoldInputBuffer;
 +	NSUInteger convexManifoldInputCapacity;
 +	int convexManifoldInputCount;
@@ -7880,6 +8078,8 @@ index 0000000..465d92b
 +	uint64_t totalCount;
 +	uint32_t flags;
 +	uint32_t writeFlags;
++	uint32_t cpuFilterMoveCount;
++	uint32_t padding;
 +} b3MetalPairSummary;
 +
 +typedef struct b3MetalPairBlock
@@ -7899,6 +8099,12 @@ index 0000000..465d92b
 +	uint64_t categoryBits;
 +	uint64_t maskBits;
 +} b3MetalPairShape;
++
++// PairShape.type retains its 32-byte ABI. Bit 31 transports the per-shape
++// custom-filter requirement, bit 30 marks a body with joints, and the low bits
++// remain b3ShapeType.
++static const uint32_t b3_metalPairCustomFilterBit = 0x80000000u;
++static const uint32_t b3_metalPairHasJointBit = 0x40000000u;
 +
 +typedef struct b3MetalConvexManifoldInput
 +{
@@ -7963,11 +8169,12 @@ index 0000000..465d92b
 +_Static_assert( offsetof( b3TreeNode, children ) == 32, "Metal tree-node ABI changed" );
 +_Static_assert( offsetof( b3TreeNode, parent ) == 40, "Metal tree-node ABI changed" );
 +_Static_assert( offsetof( b3TreeNode, flags ) == 46, "Metal tree-node ABI changed" );
-+_Static_assert( sizeof( b3MetalPairQueryRecord ) == 44, "Metal pair-record ABI changed" );
++_Static_assert( sizeof( b3MetalPairQueryRecord ) == 52, "Metal pair-record ABI changed" );
 +_Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI changed" );
-+_Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
++_Static_assert( sizeof( b3MetalPairSummary ) == 24, "Metal pair-summary ABI changed" );
 +_Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
 +_Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed" );
++_Static_assert( b3_shapeTypeCount < 0x80000000u, "Metal pair-shape type encoding exhausted" );
 +_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 40, "Metal convex-manifold input ABI changed" );
 +_Static_assert( sizeof( b3MetalBodyTransform ) == 80, "Metal body-transform ABI changed" );
 +_Static_assert( sizeof( b3MetalConvexManifoldResult ) == 240, "Metal convex-manifold result ABI changed" );
@@ -8157,14 +8364,17 @@ index 0000000..465d92b
 +	"struct TreeNode {\n"
 +	"  float lx,ly,lz,ux,uy,uz; ulong categoryBits; uint child1,child2; int parent; ushort height,flags;\n"
 +	"};\n"
-+	"struct PairQueryRecord { uint count,offset,flags; int queryShapeIndex,queryProxyKey; float lx,ly,lz,ux,uy,uz; };\n"
++	"struct PairQueryRecord { uint count,offset,flags; int queryShapeIndex,queryProxyKey; uint cpuFilter,cpuFilterOffset; float lx,ly,lz,ux,uy,uz; };\n"
 +	"struct PairCandidate { int proxyId,treeType,shapeIndex,padding; };\n"
 +	"struct PairShape { int bodyId,sensorIndex,groupIndex; uint type; ulong categoryBits,maskBits; };\n"
 +	"struct SetItem { ulong key; uint hash,padding; };\n"
-+	"struct PairSummary { ulong totalCount; uint flags,writeFlags; };\n"
++	"struct PairSummary { ulong totalCount; uint flags,writeFlags,cpuFilterMoveCount,padding; };\n"
 +	"struct PairBlock { uint sum,flags,offset,padding; };\n"
 +	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates,shapeCount,pairCapacity,movedEpoch,residentMoves; };\n"
 +	"struct PairPrefixParams { uint moveCount,candidateCapacity,candidateLimit,padding; };\n"
++	"constant uint pair_custom_filter_bit=0x80000000u;\n"
++	"constant uint pair_has_joint_bit=0x40000000u;\n"
++	"constant uint pair_type_mask=0x3fffffffu;\n"
 +	"struct ConvexManifoldInput {\n"
 +	"  uint eligible,shapeIdA,shapeIdB,contactId,contactGeneration,prepareEligible; int indexA,indexB; float satSeparation; uint satCache;\n"
 +	"};\n"
@@ -8508,7 +8718,7 @@ index 0000000..465d92b
 +	"kernel void b3_shape_prefix(device PairBlock* blocks [[buffer(0)]],device PairSummary* summary [[buffer(1)]],\n"
 +	"                            constant ShapeCompactParams& p [[buffer(2)]]) {\n"
 +	"  uint total=0u;for(uint i=0u;i<p.blockCount;++i){PairBlock b=blocks[i];b.offset=total;blocks[i]=b;total+=b.sum;}\n"
-+	"  summary->totalCount=ulong(total);summary->flags=0u;summary->writeFlags=0u;\n"
++	"  summary->totalCount=ulong(total);summary->flags=0u;summary->writeFlags=0u;summary->cpuFilterMoveCount=0u;summary->padding=0u;\n"
 +	"}\n"
 +	"kernel void b3_shape_scatter(const device ShapeInput* inputs [[buffer(0)]],const device ShapeResult* results [[buffer(1)]],\n"
 +	"                             const device PairBlock* blocks [[buffer(2)]],device EnlargedShapeResult* compact [[buffer(3)]],\n"
@@ -8561,7 +8771,8 @@ index 0000000..465d92b
 +	"                            PairShape queryShape,int root,uint nodeOffset,int treeType,\n"
 +	"                            int queryKey,int queryType,uint movedEpoch,float3 lo,float3 hi,\n"
 +	"                            device PairCandidate* candidates,uint outputOffset,uint expected,uint writeCandidates,\n"
-+	"                            thread int* stack,thread uint& candidateCount,thread uint& queryFlags) {\n"
++	"                            thread int* stack,thread uint& candidateCount,thread uint& queryFlags,\n"
++	"                            thread uint& cpuFilter) {\n"
 +	"  if(root<0||queryFlags!=0u) return; uint stackCount=0u; stack[stackCount++]=root;\n"
 +	"  while(stackCount>0u) { int nodeId=stack[--stackCount]; TreeNode n=nodes[nodeOffset+uint(nodeId)];\n"
 +	"    if(n.categoryBits==0ul||!tree_overlap(n,lo,hi)) continue;\n"
@@ -8571,10 +8782,13 @@ index 0000000..465d92b
 +	"      if((queryType==2&&treeType==2&&targetKey<queryKey&&targetMoved)||(queryType!=2&&targetMoved))continue;\n"
 +	"      uint shapeIndex=n.child1;if(shapeIndex>=shapeCount||shapes[shapeIndex].bodyId<0){queryFlags|=16u;return;}\n"
 +	"      if(!pair_shapes_collide(queryShape,shapes[shapeIndex]))continue;\n"
-+	"      if(shapes[shapeIndex].type!=1u&&pair_set_contains(pairSet,pairCapacity,queryShapeIndex,shapeIndex))continue;\n"
++	"      PairShape targetShape=shapes[shapeIndex];uint targetType=targetShape.type&pair_type_mask;\n"
++	"      if(targetType!=1u&&pair_set_contains(pairSet,pairCapacity,queryShapeIndex,shapeIndex))continue;\n"
++	"      if(targetType==1u||((queryShape.type|targetShape.type)&(pair_custom_filter_bit|pair_has_joint_bit))!=0u)cpuFilter=1u;\n"
 +	"      if(writeCandidates!=0u) { if(candidateCount>=expected) { queryFlags|=2u; return; }\n"
 +	"        PairCandidate c; c.proxyId=nodeId;c.treeType=treeType;c.shapeIndex=int(n.child1);c.padding=0;\n"
-+	"        candidates[outputOffset+candidateCount]=c; } candidateCount+=1u;\n"
++	"        candidates[outputOffset+candidateCount]=c; }\n"
++	"      candidateCount+=1u;\n"
 +	"    } else { if(stackCount>=63u) { queryFlags|=1u; return; }\n"
 +	"      stack[stackCount++]=int(n.child1); stack[stackCount++]=int(n.child2); }\n"
 +	"  }\n"
@@ -8598,18 +8812,18 @@ index 0000000..465d92b
 +	"  if(p.writeCandidates!=0u&&summary->flags!=0u) return;\n"
 +	"  uint queryOffset=queryType==0?p.offset0:(queryType==1?p.offset1:p.offset2);\n"
 +	"  TreeNode q=nodes[queryOffset+uint(proxyId)];float3 lo=float3(q.lx,q.ly,q.lz),hi=float3(q.ux,q.uy,q.uz);\n"
-+	"  PairQueryRecord record;if(p.writeCandidates!=0u){record=records[i];}else{record.count=0u;record.offset=0u;}\n"
-+	"  uint count=0u,flags=0u;thread int stack[64];\n"
++	"  PairQueryRecord record;if(p.writeCandidates!=0u){record=records[i];}else{record.count=0u;record.offset=0u;record.cpuFilter=0u;record.cpuFilterOffset=0u;}\n"
++	"  uint count=0u,flags=0u,cpuFilter=0u;thread int stack[64];\n"
 +	"  record.queryShapeIndex=int(q.child1);record.queryProxyKey=key;record.lx=q.lx;record.ly=q.ly;record.lz=q.lz;\n"
 +	"  record.ux=q.ux;record.uy=q.uy;record.uz=q.uz;\n"
 +	"  if(q.child1>=p.shapeCount||shapes[q.child1].bodyId<0){record.flags=16u;records[i]=record;return;}\n"
 +	"  PairShape queryShape=shapes[q.child1];\n"
 +	"  if(queryType==2) {\n"
-+	"    query_pair_tree(nodes,moved,shapes,pairSet,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root1,p.offset1,1,key,queryType,p.movedEpoch,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
-+	"    query_pair_tree(nodes,moved,shapes,pairSet,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root0,p.offset0,0,key,queryType,p.movedEpoch,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
++	"    query_pair_tree(nodes,moved,shapes,pairSet,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root1,p.offset1,1,key,queryType,p.movedEpoch,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags,cpuFilter);\n"
++	"    query_pair_tree(nodes,moved,shapes,pairSet,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root0,p.offset0,0,key,queryType,p.movedEpoch,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags,cpuFilter);\n"
 +	"  }\n"
-+	"  query_pair_tree(nodes,moved,shapes,pairSet,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root2,p.offset2,2,key,queryType,p.movedEpoch,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
-+	"  if(p.writeCandidates==0u) record.count=count; else if(count!=record.count) flags|=2u;\n"
++	"  query_pair_tree(nodes,moved,shapes,pairSet,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root2,p.offset2,2,key,queryType,p.movedEpoch,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags,cpuFilter);\n"
++	"  if(p.writeCandidates==0u){record.count=count;record.cpuFilter=cpuFilter;}else if(count!=record.count||cpuFilter!=record.cpuFilter)flags|=2u;\n"
 +	"  record.flags=flags;records[i]=record;\n"
 +	"  if(p.writeCandidates!=0u&&flags!=0u) atomic_fetch_or_explicit((device atomic_uint*)&summary->writeFlags,8u,memory_order_relaxed);\n"
 +	"}\n"
@@ -8618,28 +8832,37 @@ index 0000000..465d92b
 +	"                                uint threadIndex [[thread_index_in_threadgroup]],uint group [[threadgroup_position_in_grid]],\n"
 +	"                                ushort lane [[thread_index_in_simdgroup]],ushort subgroup [[simdgroup_index_in_threadgroup]],\n"
 +	"                                ushort simdWidth [[threads_per_simdgroup]]) {\n"
-+	"  threadgroup uint subgroupTotals[32];threadgroup uint subgroupOffsets[32];threadgroup uint subgroupErrors[32];\n"
-+	"  uint value=0u,error=0u;if(i<p.moveCount){PairQueryRecord r=records[i];value=r.count;error=r.flags;}\n"
-+	"  uint localOffset=simd_prefix_exclusive_sum(value);uint subgroupTotal=simd_sum(value);uint subgroupError=simd_max(error);\n"
-+	"  if(lane==0){subgroupTotals[subgroup]=subgroupTotal;subgroupErrors[subgroup]=subgroupError;}\n"
++	"  threadgroup uint subgroupTotals[32],subgroupOffsets[32],subgroupErrors[32];\n"
++	"  threadgroup uint subgroupCpuTotals[32],subgroupCpuOffsets[32];\n"
++	"  uint value=0u,error=0u,cpu=0u;if(i<p.moveCount){PairQueryRecord r=records[i];value=r.count;error=r.flags;cpu=r.cpuFilter;}\n"
++	"  uint localOffset=simd_prefix_exclusive_sum(value),localCpuOffset=simd_prefix_exclusive_sum(cpu);\n"
++	"  uint subgroupTotal=simd_sum(value),subgroupCpuTotal=simd_sum(cpu),subgroupError=simd_max(error);\n"
++	"  if(lane==0){subgroupTotals[subgroup]=subgroupTotal;subgroupCpuTotals[subgroup]=subgroupCpuTotal;subgroupErrors[subgroup]=subgroupError;}\n"
 +	"  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-+	"  if(threadIndex==0u){uint running=0u,flags=0u;uint subgroupCount=256u/uint(simdWidth);\n"
-+	"    for(uint s=0u;s<subgroupCount;++s){subgroupOffsets[s]=running;running+=subgroupTotals[s];flags|=subgroupErrors[s];}\n"
-+	"    PairBlock b;b.sum=running;b.flags=flags;b.offset=0u;b.padding=0u;blocks[group]=b;}\n"
++	"  if(threadIndex==0u){uint running=0u,cpuRunning=0u,flags=0u;uint subgroupCount=256u/uint(simdWidth);\n"
++	"    for(uint s=0u;s<subgroupCount;++s){subgroupOffsets[s]=running;running+=subgroupTotals[s];\n"
++	"      subgroupCpuOffsets[s]=cpuRunning;cpuRunning+=subgroupCpuTotals[s];flags|=subgroupErrors[s];}\n"
++	"    PairBlock b;b.sum=running;b.flags=flags;b.offset=0u;b.padding=cpuRunning;blocks[group]=b;}\n"
 +	"  threadgroup_barrier(mem_flags::mem_threadgroup);\n"
-+	"  if(i<p.moveCount){PairQueryRecord r=records[i];r.offset=localOffset+subgroupOffsets[subgroup];records[i]=r;}\n"
++	"  if(i<p.moveCount){PairQueryRecord r=records[i];r.offset=localOffset+subgroupOffsets[subgroup];\n"
++	"    r.cpuFilterOffset=localCpuOffset+subgroupCpuOffsets[subgroup];records[i]=r;}\n"
 +	"}\n"
 +	"kernel void b3_pair_prefix(device PairBlock* blocks [[buffer(0)]],device PairSummary* summary [[buffer(1)]],\n"
 +	"                           constant PairPrefixParams& p [[buffer(2)]]) {\n"
-+	"  ulong total=0ul;uint flags=0u;uint blockCount=(p.moveCount+255u)/256u;\n"
++	"  ulong total=0ul;uint flags=0u,cpuTotal=0u;uint blockCount=(p.moveCount+255u)/256u;\n"
 +	"  for(uint i=0u;i<blockCount;++i){PairBlock b=blocks[i];if(b.flags!=0u)flags|=1u;\n"
-+	"    b.offset=uint(min(total,ulong(0xffffffffu)));blocks[i]=b;total+=ulong(b.sum);}\n"
++	"    uint cpuCount=b.padding;b.offset=uint(min(total,ulong(0xffffffffu)));b.padding=cpuTotal;blocks[i]=b;\n"
++	"    total+=ulong(b.sum);cpuTotal+=cpuCount;}\n"
 +	"  if(total>ulong(p.candidateLimit))flags|=2u;if(total>ulong(p.candidateCapacity))flags|=4u;\n"
-+	"  summary->totalCount=total;summary->flags=flags;summary->writeFlags=0u;\n"
++	"  summary->totalCount=total;summary->flags=flags;summary->writeFlags=0u;summary->cpuFilterMoveCount=cpuTotal;summary->padding=0u;\n"
 +	"}\n"
 +	"kernel void b3_pair_add_offsets(device PairQueryRecord* records [[buffer(0)]],const device PairBlock* blocks [[buffer(1)]],\n"
 +	"                                constant PairPrefixParams& p [[buffer(2)]],uint i [[thread_position_in_grid]]) {\n"
-+	"  if(i<p.moveCount){PairQueryRecord r=records[i];r.offset+=blocks[i/256u].offset;records[i]=r;}\n"
++	"  if(i<p.moveCount){PairQueryRecord r=records[i];PairBlock b=blocks[i/256u];r.offset+=b.offset;r.cpuFilterOffset+=b.padding;records[i]=r;}\n"
++	"}\n"
++	"kernel void b3_pair_compact_cpu_filter(const device PairQueryRecord* records [[buffer(0)]],device int* moves [[buffer(1)]],\n"
++	"                                       constant PairPrefixParams& p [[buffer(2)]],uint i [[thread_position_in_grid]]) {\n"
++	"  if(i<p.moveCount&&records[i].cpuFilter!=0u)moves[records[i].cpuFilterOffset]=int(i);\n"
 +	"}\n"
 +	"float3 point_segment(float3 a,float3 b,float3 q){float3 ab=b-a;float alpha=dot(ab,q-a);\n"
 +	"  if(alpha<=0.0f)return a;float denominator=dot(ab,ab);if(alpha>denominator)return b;return a+(alpha/denominator)*ab;}\n"
@@ -8934,7 +9157,7 @@ index 0000000..465d92b
 +	"    r.scanOffset=local+offsets[subgroup];results[i]=r;}}\n"
 +	"kernel void b3_manifold_prefix(device PairBlock* blocks [[buffer(0)]],device PairSummary* summary [[buffer(1)]],\n"
 +	"  constant ManifoldCompactParams& p [[buffer(2)]]){uint total=0u,stable=0u,matches=0u;for(uint i=0u;i<p.blockCount;++i){PairBlock b=blocks[i];\n"
-+	"    b.offset=total;blocks[i]=b;total+=b.sum;stable+=b.flags;matches+=b.padding;}summary->totalCount=ulong(total);summary->flags=stable;summary->writeFlags=matches;}\n"
++	"    b.offset=total;blocks[i]=b;total+=b.sum;stable+=b.flags;matches+=b.padding;}summary->totalCount=ulong(total);summary->flags=stable;summary->writeFlags=matches;summary->cpuFilterMoveCount=0u;summary->padding=0u;}\n"
 +	"kernel void b3_manifold_scatter(const device ConvexManifoldResult* results [[buffer(0)]],const device PairBlock* blocks [[buffer(1)]],\n"
 +	"  device ConvexManifoldResult* compact [[buffer(2)]],device ConvexManifoldInput* inputs [[buffer(3)]],\n"
 +	"  const device ShapeGeometry* shapeGeometry [[buffer(4)]],const device BodyTransform* bodyTransforms [[buffer(5)]],\n"
@@ -9441,6 +9664,11 @@ index 0000000..465d92b
 +			? [device newComputePipelineStateWithFunction:pairMarkMovesFunction error:&error]
 +			: nil;
 +		[pairMarkMovesFunction release];
++		id<MTLFunction> pairCompactCpuFilterFunction = [library newFunctionWithName:@"b3_pair_compact_cpu_filter"];
++		id<MTLComputePipelineState> pairCompactCpuFilterPipeline = pairCompactCpuFilterFunction != nil
++			? [device newComputePipelineStateWithFunction:pairCompactCpuFilterFunction error:&error]
++			: nil;
++		[pairCompactCpuFilterFunction release];
 +		id<MTLFunction> pairUpdateLeavesFunction = [library newFunctionWithName:@"b3_pair_update_leaves"];
 +		id<MTLComputePipelineState> pairUpdateLeavesPipeline = pairUpdateLeavesFunction != nil
 +			? [device newComputePipelineStateWithFunction:pairUpdateLeavesFunction error:&error]
@@ -9562,7 +9790,8 @@ index 0000000..465d92b
 +		if ( positionPipeline == nil || fusedPipeline == nil || finalizePipeline == nil || finalizeShapesPipeline == nil ||
 +			 shapeScanBlocksPipeline == nil || shapePrefixPipeline == nil || shapeScatterPipeline == nil ||
 +			 pairCandidatesPipeline == nil || pairScanBlocksPipeline == nil || pairPrefixPipeline == nil ||
-+			 pairAddOffsetsPipeline == nil || pairMarkMovesPipeline == nil || pairUpdateLeavesPipeline == nil || pairRefitPipeline == nil ||
++			 pairAddOffsetsPipeline == nil || pairMarkMovesPipeline == nil || pairCompactCpuFilterPipeline == nil ||
++			 pairUpdateLeavesPipeline == nil || pairRefitPipeline == nil ||
 +			 convexManifoldPipeline == nil || convexManifoldScanPipeline == nil || convexManifoldPrefixPipeline == nil ||
 +			 convexManifoldScatterPipeline == nil ||
 +			 prepareContactsPipeline == nil || storeContactImpulsesPipeline == nil || warmStartPipeline == nil || solvePipeline == nil ||
@@ -9584,6 +9813,7 @@ index 0000000..465d92b
 +			[pairPrefixPipeline release];
 +			[pairAddOffsetsPipeline release];
 +			[pairMarkMovesPipeline release];
++			[pairCompactCpuFilterPipeline release];
 +			[pairUpdateLeavesPipeline release];
 +			[pairRefitPipeline release];
 +			[convexManifoldPipeline release];
@@ -9628,6 +9858,7 @@ index 0000000..465d92b
 +			[pairPrefixPipeline release];
 +			[pairAddOffsetsPipeline release];
 +			[pairMarkMovesPipeline release];
++			[pairCompactCpuFilterPipeline release];
 +			[pairUpdateLeavesPipeline release];
 +			[pairRefitPipeline release];
 +			[convexManifoldPipeline release];
@@ -9671,6 +9902,7 @@ index 0000000..465d92b
 +		context->pairPrefixPipeline = pairPrefixPipeline;
 +		context->pairAddOffsetsPipeline = pairAddOffsetsPipeline;
 +		context->pairMarkMovesPipeline = pairMarkMovesPipeline;
++		context->pairCompactCpuFilterPipeline = pairCompactCpuFilterPipeline;
 +		context->pairUpdateLeavesPipeline = pairUpdateLeavesPipeline;
 +		context->pairRefitPipeline = pairRefitPipeline;
 +		context->convexManifoldPipeline = convexManifoldPipeline;
@@ -9732,6 +9964,7 @@ index 0000000..465d92b
 +	[context->pairCandidateBuffer release];
 +	[context->pairSummaryBuffer release];
 +	[context->pairBlockBuffer release];
++	[context->pairCpuFilterMoveBuffer release];
 +	[context->convexManifoldInputBuffer release];
 +	[context->convexManifoldResultBuffer release];
 +	[context->convexManifoldCompactBuffer release];
@@ -9769,6 +10002,7 @@ index 0000000..465d92b
 +	[context->pairPrefixPipeline release];
 +	[context->pairAddOffsetsPipeline release];
 +	[context->pairMarkMovesPipeline release];
++	[context->pairCompactCpuFilterPipeline release];
 +	[context->pairUpdateLeavesPipeline release];
 +	[context->pairRefitPipeline release];
 +	[context->convexManifoldPipeline release];
@@ -10162,6 +10396,16 @@ index 0000000..465d92b
 +		context->pairMoveBuffer = buffer;
 +		context->pairMoveCapacity = capacity;
 +	}
++	if ( context->pairCpuFilterMoveCapacity < moveBytes )
++	{
++		NSUInteger capacity = context->pairCpuFilterMoveCapacity > 0 ? context->pairCpuFilterMoveCapacity : 4096;
++		while ( capacity < moveBytes ) capacity *= 2;
++		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
++		if ( buffer == nil ) return false;
++		[context->pairCpuFilterMoveBuffer release];
++		context->pairCpuFilterMoveBuffer = buffer;
++		context->pairCpuFilterMoveCapacity = capacity;
++	}
 +	if ( context->pairTreeCapacity < treeBytes )
 +	{
 +		NSUInteger capacity = context->pairTreeCapacity > 0 ? context->pairTreeCapacity : 4096;
@@ -10195,6 +10439,7 @@ index 0000000..465d92b
 +		context->pairShapeBuffer = buffer;
 +		context->pairShapeCapacity = capacity;
 +		context->pairShapeRevision = UINT64_MAX;
++		context->pairFilterRevision = UINT64_MAX;
 +	}
 +	if ( context->pairSetCapacity < setBytes )
 +	{
@@ -11561,14 +11806,17 @@ index 0000000..465d92b
 +
 +bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* world, const int* moveArray, int moveCount,
 +	const b3MetalPairQueryRecord** recordsOut,
-+	const b3MetalPairCandidate** candidatesOut, int* candidateCountOut, b3MetalDispatchStats* stats )
++	const b3MetalPairCandidate** candidatesOut, int* candidateCountOut, const int** cpuFilterMovesOut,
++	int* cpuFilterMoveCountOut, b3MetalDispatchStats* stats )
 +{
 +	if ( recordsOut != NULL ) *recordsOut = NULL;
 +	if ( candidatesOut != NULL ) *candidatesOut = NULL;
 +	if ( candidateCountOut != NULL ) *candidateCountOut = 0;
++	if ( cpuFilterMovesOut != NULL ) *cpuFilterMovesOut = NULL;
++	if ( cpuFilterMoveCountOut != NULL ) *cpuFilterMoveCountOut = 0;
 +	if ( stats != NULL ) *stats = (b3MetalDispatchStats){ .bodyCount = moveCount };
 +	if ( context == NULL || world == NULL || moveCount < 0 || recordsOut == NULL ||
-+		 candidatesOut == NULL || candidateCountOut == NULL )
++		 candidatesOut == NULL || candidateCountOut == NULL || cpuFilterMovesOut == NULL || cpuFilterMoveCountOut == NULL )
 +	{
 +		return false;
 +	}
@@ -11642,7 +11890,8 @@ index 0000000..465d92b
 +		}
 +
 +		if ( useResidentMoves == false ) memcpy( context->pairMoveBuffer.contents, moveArray, moveBytes );
-+		if ( context->pairShapeRevision != world->metalPairShapeRevision )
++		if ( context->pairShapeRevision != world->metalPairShapeRevision ||
++			 context->pairFilterRevision != world->metalPairFilterRevision )
 +		{
 +			b3MetalPairShape* pairShapes = context->pairShapeBuffer.contents;
 +			for ( int shapeIndex = 0; shapeIndex < shapeCount; ++shapeIndex )
@@ -11653,16 +11902,21 @@ index 0000000..465d92b
 +					pairShapes[shapeIndex] = (b3MetalPairShape){ .bodyId = B3_NULL_INDEX, .sensorIndex = B3_NULL_INDEX };
 +					continue;
 +				}
++				const b3Body* body = world->bodies.data + shape->bodyId;
++				uint32_t pairType = (uint32_t)shape->type;
++				pairType |= ( shape->flags & b3_enableCustomFiltering ) != 0 ? b3_metalPairCustomFilterBit : 0u;
++				pairType |= body->jointCount > 0 ? b3_metalPairHasJointBit : 0u;
 +				pairShapes[shapeIndex] = (b3MetalPairShape){
 +					.bodyId = shape->bodyId,
 +					.sensorIndex = shape->sensorIndex,
 +					.groupIndex = shape->filter.groupIndex,
-+					.type = (uint32_t)shape->type,
++					.type = pairType,
 +					.categoryBits = shape->filter.categoryBits,
 +					.maskBits = shape->filter.maskBits,
 +				};
 +			}
 +			context->pairShapeRevision = world->metalPairShapeRevision;
++			context->pairFilterRevision = world->metalPairFilterRevision;
 +			if ( stats != NULL ) stats->metadataUploadCount = 1;
 +		}
 +		if ( context->pairSetRevision != broadPhase->pairSetRevision )
@@ -11787,6 +12041,13 @@ index 0000000..465d92b
 +		[encoder setBuffer:residentMoveBuffer offset:0 atIndex:9];
 +		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
 +			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
++		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
++		[encoder setComputePipelineState:context->pairCompactCpuFilterPipeline];
++		[encoder setBuffer:context->pairRecordBuffer offset:0 atIndex:0];
++		[encoder setBuffer:context->pairCpuFilterMoveBuffer offset:0 atIndex:1];
++		[encoder setBytes:&prefixParams length:sizeof( prefixParams ) atIndex:2];
++		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
++			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( context->pairCompactCpuFilterPipeline ), 1, 1 )];
 +		[encoder endEncoding];
 +		[commandBuffer commit];
 +		[commandBuffer waitUntilCompleted];
@@ -11835,17 +12096,24 @@ index 0000000..465d92b
 +				gpuMilliseconds += 1000.0 * ( retryCommand.GPUEndTime - retryCommand.GPUStartTime );
 +			}
 +		}
-+		if ( summary->flags != 0 || summary->writeFlags != 0 || summary->totalCount > INT32_MAX ) return false;
++		if ( summary->flags != 0 || summary->writeFlags != 0 || summary->totalCount > INT32_MAX ||
++			 summary->cpuFilterMoveCount > (uint32_t)moveCount ) return false;
 +
 +		*recordsOut = context->pairRecordBuffer.contents;
 +		*candidatesOut = context->pairCandidateBuffer.contents;
 +		*candidateCountOut = (int)summary->totalCount;
++		*cpuFilterMovesOut = context->pairCpuFilterMoveBuffer.contents;
++		*cpuFilterMoveCountOut = (int)summary->cpuFilterMoveCount;
 +		if ( useResidentMoves )
 +		{
 +			context->residentPairMoveCount = 0;
 +			context->residentPairMovesValid = false;
 +		}
-+		if ( stats != NULL ) stats->gpuMilliseconds = gpuMilliseconds;
++		if ( stats != NULL )
++		{
++			stats->gpuMilliseconds = gpuMilliseconds;
++			stats->pairRequiresCpuFiltering = summary->cpuFilterMoveCount != 0;
++		}
 +		return true;
 +	}
 +}
@@ -14845,7 +15113,7 @@ index 0000000..a4424e5
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..42d0cca 100644
+index 29c13c7..bf43ced 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -14921,7 +15189,7 @@ index 29c13c7..42d0cca 100644
  
  	b3DestroyStack( &world->stack );
  
-@@ -538,12 +565,308 @@ int b3GetWorldCount( void )
+@@ -538,12 +565,312 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -15180,6 +15448,10 @@ index 29c13c7..42d0cca 100644
 +	profile.lastPairMoveCount = world->metalLastPairMoveCount;
 +	profile.lastPairCandidateCount = world->metalLastPairCandidateCount;
 +	profile.lastPairMoveUploadBytes = world->metalLastPairMoveUploadBytes;
++	profile.pairCpuCandidateTraversalBypassCount = world->metalPairCpuCandidateTraversalBypassCount;
++	profile.lastPairCpuFilterMoveCount = world->metalLastPairCpuFilterMoveCount;
++	profile.lastPairCpuFilterCandidateCount = world->metalLastPairCpuFilterCandidateCount;
++	profile.lastPairDirectCreateCount = world->metalLastPairDirectCreateCount;
 +	profile.narrowPhaseDispatchCount = world->metalNarrowPhaseDispatchCount;
 +	profile.narrowPhaseFallbackCount = world->metalNarrowPhaseFallbackCount;
 +	profile.narrowPhaseGeometryUploadCount = world->metalNarrowPhaseGeometryUploadCount;
@@ -15231,7 +15503,7 @@ index 29c13c7..42d0cca 100644
  // Used to hide the random-access latency of contact lookups while we work on an
  // earlier index.
  static inline void b3PrefetchContact( const b3Contact* contact )
-@@ -582,18 +905,72 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -582,18 +909,72 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  	const int contactPrefetchDistance = 4;
  	int prefetchEnd = endIndex - contactPrefetchDistance;
  
@@ -15305,7 +15577,7 @@ index 29c13c7..42d0cca 100644
  
  		b3Shape* shapeA = shapes + contact->shapeIdA;
  		b3Shape* shapeB = shapes + contact->shapeIdB;
-@@ -653,8 +1030,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -653,8 +1034,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		// Contact recycling optimization. Please cite this library if you use this optimization.
  		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
  		// However, this allows larger relative motion and has fewer tuning parameters (just one).
@@ -15317,7 +15589,7 @@ index 29c13c7..42d0cca 100644
  		{
  			// The scalar part of b3InvMulQuat is just the quaternion dot product.
  			// cos(relative_angle/2) = scalar(conj(q1) * q2) = dot(q1, q2)
-@@ -728,6 +1106,14 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -728,6 +1110,14 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  						taskContext->manifoldCounts[bucketIndex - 1] += 1;
  					}
  
@@ -15332,7 +15604,7 @@ index 29c13c7..42d0cca 100644
  					// Contact is recycled. This also skips updating other aspects of the contact
  					// such as material parameters.
  					continue;
-@@ -741,9 +1127,125 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -741,9 +1131,125 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
  		contact->flags |= b3_relativeTransformValid;
  
@@ -15461,7 +15733,7 @@ index 29c13c7..42d0cca 100644
  
  		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
  		if ( bucketIndex > 0 )
-@@ -814,8 +1316,34 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
+@@ -814,8 +1320,34 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
  	}
  }
  
@@ -15497,7 +15769,7 @@ index 29c13c7..42d0cca 100644
  {
  	b3World* world = context->world;
  
-@@ -825,12 +1353,17 @@ static void b3Collide( b3StepContext* context )
+@@ -825,12 +1357,17 @@ static void b3Collide( b3StepContext* context )
  
  	// Gather contacts from all the graph colors into a single array for easier parallel-for
  	int touchingCount = 0;
@@ -15515,7 +15787,7 @@ index 29c13c7..42d0cca 100644
  
  	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
  	int nonTouchingCount = awakeSet->contactIndices.count;
-@@ -840,58 +1373,145 @@ static void b3Collide( b3StepContext* context )
+@@ -840,58 +1377,145 @@ static void b3Collide( b3StepContext* context )
  	if ( contactCount == 0 )
  	{
  		b3TracyCZoneEnd( collide );
@@ -15691,7 +15963,7 @@ index 29c13c7..42d0cca 100644
  	contactIndices = NULL;
  
  	// Serially update contact state
-@@ -900,8 +1520,10 @@ static void b3Collide( b3StepContext* context )
+@@ -900,8 +1524,10 @@ static void b3Collide( b3StepContext* context )
  
  	int satMultiplier = context->dt > 0.0f ? 1 : 0;
  
@@ -15704,7 +15976,7 @@ index 29c13c7..42d0cca 100644
  	world->satCallCount = satMultiplier * world->taskContexts.data[0].satCallCount;
  	world->satCacheHitCount = satMultiplier * world->taskContexts.data[0].satCacheHitCount;
  	memcpy( world->manifoldCounts, world->taskContexts.data[0].manifoldCounts,
-@@ -909,7 +1531,8 @@ static void b3Collide( b3StepContext* context )
+@@ -909,7 +1535,8 @@ static void b3Collide( b3StepContext* context )
  
  	for ( int i = 1; i < world->workerCount; ++i )
  	{
@@ -15714,7 +15986,7 @@ index 29c13c7..42d0cca 100644
  		world->satCallCount += world->taskContexts.data[i].satCallCount;
  		world->satCacheHitCount += world->taskContexts.data[i].satCacheHitCount;
  		for ( int j = 0; j < B3_CONTACT_MANIFOLD_COUNT_BUCKETS; ++j )
-@@ -932,7 +1555,8 @@ static void b3Collide( b3StepContext* context )
+@@ -932,7 +1559,8 @@ static void b3Collide( b3StepContext* context )
  	uint16_t worldId = world->worldId;
  
  	// Process contact state changes. Iterate over set bits
@@ -15724,7 +15996,7 @@ index 29c13c7..42d0cca 100644
  	{
  		uint64_t bits = bitSet->bits[k];
  		while ( bits != 0 )
-@@ -1027,8 +1651,17 @@ static void b3Collide( b3StepContext* context )
+@@ -1027,8 +1655,17 @@ static void b3Collide( b3StepContext* context )
  	b3ValidateSolverSets( world );
  	b3ValidateContacts( world );
  
@@ -15742,7 +16014,7 @@ index 29c13c7..42d0cca 100644
  }
  
  void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
-@@ -1039,6 +1672,41 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1676,41 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -15784,7 +16056,7 @@ index 29c13c7..42d0cca 100644
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -1055,6 +1723,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1055,6 +1727,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Prepare to capture events
  	// Ensure user does not access stale data if there is an early return
  	b3Array_Clear( world->bodyMoveEvents );
@@ -15795,7 +16067,7 @@ index 29c13c7..42d0cca 100644
  	b3Array_Clear( world->sensorBeginEvents );
  	b3Array_Clear( world->contactBeginEvents );
  	b3Array_Clear( world->contactHitEvents );
-@@ -1131,7 +1803,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1131,7 +1807,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Narrow phase : update contacts
  	{
  		uint64_t collideTicks = b3GetTicks();
@@ -15809,7 +16081,7 @@ index 29c13c7..42d0cca 100644
  		world->profile.collide = b3GetMilliseconds( collideTicks );
  	}
  
-@@ -1176,6 +1853,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1176,6 +1857,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  
  	if ( world->recording != NULL )
  	{
@@ -15830,7 +16102,7 @@ index 29c13c7..42d0cca 100644
  		uint64_t hash = b3HashWorldState( world );
  		b3RecArgs_StateHash stateHash = { worldId, hash };
  		b3RecWrite_StateHash( world->recording, &stateHash );
-@@ -1440,7 +2131,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1440,7 +2135,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  				b3WorldTransform transform = { bodySim->center, bodySim->transform.q };
  				draw->DrawTransformFcn( transform, draw->context );
  
@@ -15839,7 +16111,7 @@ index 29c13c7..42d0cca 100644
  				{
  					b3Vec3 offset = { 0.05f, 0.05f, 0.05f };
  					b3Pos p = b3TransformWorldPoint( transform, offset );
-@@ -1517,6 +2208,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1517,6 +2212,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  					// avoid double draw
  					if ( b3GetBit( &world->debugContactSet, contactId ) == false )
  					{
@@ -15851,7 +16123,7 @@ index 29c13c7..42d0cca 100644
  						b3Body* bodyA = b3Array_Get( world->bodies, contact->edges[0].bodyId );
  						b3BodySim* bodySimA = b3GetBodySim( world, bodyA );
  						b3Body* bodyB = b3Array_Get( world->bodies, contact->edges[1].bodyId );
-@@ -1753,6 +2449,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
+@@ -1753,6 +2453,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
  		return (b3BodyEvents){ 0 };
  	}
  
@@ -15866,7 +16138,7 @@ index 29c13c7..42d0cca 100644
  	int count = world->bodyMoveEvents.count;
  	b3BodyEvents events = { world->bodyMoveEvents.data, count };
  	return events;
-@@ -2125,6 +2829,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
+@@ -2125,6 +2833,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
  	B3_REC( world, WorldSetContactRecycleDistance, worldId, recycleDistance );
  
  	world->contactRecycleDistance = b3ClampFloat( recycleDistance, 0.0f, FLT_MAX );
@@ -15874,7 +16146,7 @@ index 29c13c7..42d0cca 100644
  }
  
  float b3World_GetContactRecycleDistance( b3WorldId worldId )
-@@ -2259,6 +2964,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
+@@ -2259,6 +2968,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
  	}
  
  	world->frictionCallback = callback != NULL ? callback : b3DefaultFrictionCallback;
@@ -15885,7 +16157,7 @@ index 29c13c7..42d0cca 100644
  }
  
  void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* callback )
-@@ -2270,6 +2979,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
+@@ -2270,6 +2983,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
  	}
  
  	world->restitutionCallback = callback != NULL ? callback : b3DefaultRestitutionCallback;
@@ -15896,7 +16168,7 @@ index 29c13c7..42d0cca 100644
  }
  
  void b3World_SetWorkerCount( b3WorldId worldId, int count )
-@@ -2312,6 +3025,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
+@@ -2312,6 +3029,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
  	}
  
  	b3StartRecordingIntoBuffer( world, recording );
@@ -15904,7 +16176,7 @@ index 29c13c7..42d0cca 100644
  }
  
  void b3World_StopRecording( b3WorldId worldId )
-@@ -2323,6 +3037,7 @@ void b3World_StopRecording( b3WorldId worldId )
+@@ -2323,6 +3041,7 @@ void b3World_StopRecording( b3WorldId worldId )
  	}
  
  	b3StopRecordingInternal( world );
@@ -15912,7 +16184,7 @@ index 29c13c7..42d0cca 100644
  }
  
  void b3World_DumpMemoryStats( b3WorldId worldId )
-@@ -3313,6 +4028,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
+@@ -3313,6 +4032,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
  	}
  	world->preSolveFcn = fcn;
  	world->preSolveContext = context;
@@ -15920,7 +16192,7 @@ index 29c13c7..42d0cca 100644
  }
  
  void b3World_SetGravity( b3WorldId worldId, b3Vec3 gravity )
-@@ -3445,6 +4161,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3445,6 +4165,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	}
  
  	B3_REC( world, WorldExplode, worldId, *explosionDef );
@@ -15932,7 +16204,7 @@ index 29c13c7..42d0cca 100644
  
  	// Locked due to waking
  	world->locked = true;
-@@ -3457,6 +4178,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3457,6 +4182,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	b3AABB aabb = b3OffsetAABB( localBox, position );
  
  	b3DynamicTree_Query( world->broadPhase.trees + b3_dynamicBody, aabb, maskBits, false, ExplosionCallback, &explosionContext );
@@ -15940,7 +16212,7 @@ index 29c13c7..42d0cca 100644
  
  	world->locked = false;
  }
-@@ -3473,6 +4195,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +4199,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -15952,7 +16224,7 @@ index 29c13c7..42d0cca 100644
  }
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
-@@ -3637,7 +4364,15 @@ void b3ValidateSolverSets( b3World* world )
+@@ -3637,7 +4368,15 @@ void b3ValidateSolverSets( b3World* world )
  					uint32_t syncedFlags = body->flags & ~b3_bodyTransientFlags;
  					B3_ASSERT( ( bodySim->flags & syncedFlags ) == syncedFlags );
  
@@ -15970,7 +16242,7 @@ index 29c13c7..42d0cca 100644
  					{
  						B3_ASSERT( ( bodyState->flags & syncedFlags ) == syncedFlags );
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8..5974a74 100644
+index 8bd3df8..5a8a0c7 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
 @@ -10,6 +10,7 @@
@@ -15989,7 +16261,7 @@ index 8bd3df8..5974a74 100644
  
  	b3DebugPoint points[B3_DEBUG_POINT_CAPACITY];
  	int pointCount;
-@@ -266,6 +268,126 @@ typedef struct b3World
+@@ -266,6 +268,131 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
@@ -16069,7 +16341,12 @@ index 8bd3df8..5974a74 100644
 +	int metalLastPairMoveCount;
 +	int metalLastPairCandidateCount;
 +	uint64_t metalLastPairMoveUploadBytes;
++	uint64_t metalPairCpuCandidateTraversalBypassCount;
++	int metalLastPairCpuFilterMoveCount;
++	int metalLastPairCpuFilterCandidateCount;
++	int metalLastPairDirectCreateCount;
 +	uint64_t metalPairShapeRevision;
++	uint64_t metalPairFilterRevision;
 +	uint64_t metalContactMaterialRevision;
 +	uint64_t metalBodyTransformRevision;
 +	bool metalDefaultFrictionCallback;
@@ -16116,7 +16393,7 @@ index 8bd3df8..5974a74 100644
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -288,6 +410,78 @@ typedef struct b3World
+@@ -288,6 +415,78 @@ typedef struct b3World
  	bool inUse;
  } b3World;
  
@@ -16195,7 +16472,7 @@ index 8bd3df8..5974a74 100644
  b3World* b3GetUnlockedWorldFromId( b3WorldId id );
  b3World* b3GetWorldFromId( b3WorldId id );
  
-@@ -347,4 +541,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +546,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
@@ -17954,7 +18231,7 @@ index f050a86..3945acd 100644
  	int sourceIndex = body->localIndex;
  	b3BodySim* sourceSim = b3Array_Get( sourceSet->bodySims, sourceIndex );
 diff --git a/src/world_snapshot.c b/src/world_snapshot.c
-index 9efaee9..44d7c17 100644
+index 9efaee9..67f17d6 100644
 --- a/src/world_snapshot.c
 +++ b/src/world_snapshot.c
 @@ -789,8 +789,12 @@ static void b3SerContacts( b3RecBuffer* buf, b3World* world )
@@ -17988,7 +18265,7 @@ index 9efaee9..44d7c17 100644
  		// Transient moveResults/movePairs stay at shell's NULL/0
  	}
  
-@@ -1331,5 +1338,20 @@ bool b3DeserializeIntoShell( const uint8_t* data, int size, b3World* world, b3Re
+@@ -1331,5 +1338,21 @@ bool b3DeserializeIntoShell( const uint8_t* data, int size, b3World* world, b3Re
  
  	b3DesNames( r, &world->names );
  
@@ -17999,6 +18276,7 @@ index 9efaee9..44d7c17 100644
 +		// Advance explicit revisions so resident narrow-phase tables cannot match
 +		// a pre-seek key by coincidence.
 +		world->metalPairShapeRevision += 1;
++		world->metalPairFilterRevision += 1;
 +		world->metalBodyTransformRevision += 1;
 +		b3BumpMetalContactInputRevision( world );
 +		b3BumpMetalAwakeBodyRevision( world );
@@ -18050,10 +18328,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..12b059a
+index 0000000..5568747
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,3837 @@
+@@ -0,0 +1,4132 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -18145,11 +18423,25 @@ index 0000000..12b059a
 +	ENSURE( moveCount > 0 );
 +	const b3MetalPairQueryRecord* records = NULL;
 +	const b3MetalPairCandidate* candidates = NULL;
++	const int* cpuFilterMoves = NULL;
++	int cpuFilterMoveCount = 0;
 +	int candidateCount = 0;
 +	b3MetalDispatchStats stats = { 0 };
 +	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, residentMoves ? NULL : broadPhase->moveArray.data, moveCount, &records,
-+										   &candidates, &candidateCount, &stats ) );
++										   &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
 +	ENSURE( stats.treeUploadCount == 0 );
++	int observedCpuFilterMoves = 0;
++	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
++	{
++		if ( records[moveIndex].requiresCpuFiltering )
++		{
++			ENSURE( records[moveIndex].cpuFilterOffset == (uint32_t)observedCpuFilterMoves );
++			ENSURE( cpuFilterMoves[observedCpuFilterMoves] == moveIndex );
++			observedCpuFilterMoves += 1;
++		}
++	}
++	ENSURE( observedCpuFilterMoves == cpuFilterMoveCount );
++	ENSURE( stats.pairRequiresCpuFiltering == ( cpuFilterMoveCount > 0 ) );
 +	if ( residentMoves )
 +	{
 +		int totalCount = 0;
@@ -19194,22 +19486,27 @@ index 0000000..12b059a
 +	ENSURE( moveCount == bodyCount + ( bodyCount + 49 ) / 50 );
 +	const b3MetalPairQueryRecord* gpuRecords = NULL;
 +	const b3MetalPairCandidate* gpuCandidates = NULL;
++	const int* cpuFilterMoves = NULL;
++	int cpuFilterMoveCount = 0;
 +	int gpuCandidateCount = 0;
 +	b3MetalDispatchStats stats = { 0 };
 +	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount, &gpuRecords,
-+										   &gpuCandidates, &gpuCandidateCount, &stats ) );
++										   &gpuCandidates, &gpuCandidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
 +	ENSURE( stats.commandBufferCount == 1 );
 +	ENSURE( stats.treeUploadCount == 1 );
 +	ENSURE( stats.metadataUploadCount == 1 );
 +	ENSURE( stats.pairSetUploadCount == 1 );
++	ENSURE( cpuFilterMoveCount == 0 );
++	ENSURE( stats.pairRequiresCpuFiltering == 0 );
 +	double initialGpuMilliseconds = stats.gpuMilliseconds;
 +	stats = (b3MetalDispatchStats){ 0 };
 +	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount, &gpuRecords,
-+										   &gpuCandidates, &gpuCandidateCount, &stats ) );
++										   &gpuCandidates, &gpuCandidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
 +	ENSURE( stats.commandBufferCount == 1 );
 +	ENSURE( stats.treeUploadCount == 0 );
 +	ENSURE( stats.metadataUploadCount == 0 );
 +	ENSURE( stats.pairSetUploadCount == 0 );
++	ENSURE( cpuFilterMoveCount == 0 );
 +	double steadyGpuMilliseconds = stats.gpuMilliseconds;
 +
 +	int cpuCapacity = bodyCount * bodyCount;
@@ -19285,16 +19582,287 @@ index 0000000..12b059a
 +	b3BroadPhase_EnlargeProxy( broadPhase, dynamicProxyKey, expandedAABB );
 +	stats = (b3MetalDispatchStats){ 0 };
 +	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount, &gpuRecords,
-+										   &gpuCandidates, &gpuCandidateCount, &stats ) );
++										   &gpuCandidates, &gpuCandidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
 +	ENSURE( stats.treeUploadCount == 1 );
 +	ENSURE( stats.metadataUploadCount == 1 );
 +	ENSURE( stats.pairSetUploadCount == 0 );
++	ENSURE( cpuFilterMoveCount == 0 );
 +	ENSURE( VerifyResidentPairTraversal( world ) == 0 );
 +	printf( "    pair traversal moves=%d candidates=%d initial=%.3f ms steady=%.3f ms exactOrder=yes\n", moveCount,
 +			gpuCandidateCount, initialGpuMilliseconds, steadyGpuMilliseconds );
 +
 +	free( cpuCandidates );
 +	b3DestroyWorld( worldId );
++	return 0;
++}
++
++static int ComparePairTopology( const b3World* cpu, const b3World* gpu )
++{
++	ENSURE( b3GetIdCount( &cpu->contactIdPool ) == b3GetIdCount( &gpu->contactIdPool ) );
++	ENSURE( cpu->contacts.count == gpu->contacts.count );
++	ENSURE( cpu->broadPhase.pairSet.count == gpu->broadPhase.pairSet.count );
++	for ( int contactId = 0; contactId < cpu->contacts.count; ++contactId )
++	{
++		const b3Contact* a = cpu->contacts.data + contactId;
++		const b3Contact* b = gpu->contacts.data + contactId;
++		ENSURE( a->contactId == b->contactId );
++		ENSURE( a->generation == b->generation );
++		if ( a->contactId == B3_NULL_INDEX ) continue;
++		ENSURE( a->shapeIdA == b->shapeIdA );
++		ENSURE( a->shapeIdB == b->shapeIdB );
++		ENSURE( a->childIndex == b->childIndex );
++		ENSURE( a->setIndex == b->setIndex );
++		ENSURE( a->localIndex == b->localIndex );
++		for ( int edgeIndex = 0; edgeIndex < 2; ++edgeIndex )
++		{
++			ENSURE( a->edges[edgeIndex].bodyId == b->edges[edgeIndex].bodyId );
++			ENSURE( a->edges[edgeIndex].prevKey == b->edges[edgeIndex].prevKey );
++			ENSURE( a->edges[edgeIndex].nextKey == b->edges[edgeIndex].nextKey );
++		}
++		uint64_t key = b3ShapePairKey( a->shapeIdA, a->shapeIdB, a->childIndex );
++		ENSURE( b3ContainsKey( &cpu->broadPhase.pairSet, key ) );
++		ENSURE( b3ContainsKey( &gpu->broadPhase.pairSet, key ) );
++	}
++	ENSURE( cpu->bodies.count == gpu->bodies.count );
++	for ( int bodyId = 0; bodyId < cpu->bodies.count; ++bodyId )
++	{
++		const b3Body* a = cpu->bodies.data + bodyId;
++		const b3Body* b = gpu->bodies.data + bodyId;
++		ENSURE( a->headContactKey == b->headContactKey );
++		ENSURE( a->contactCount == b->contactCount );
++	}
++	const b3SolverSet* cpuAwake = cpu->solverSets.data + b3_awakeSet;
++	const b3SolverSet* gpuAwake = gpu->solverSets.data + b3_awakeSet;
++	ENSURE( cpuAwake->contactIndices.count == gpuAwake->contactIndices.count );
++	for ( int i = 0; i < cpuAwake->contactIndices.count; ++i )
++	{
++		ENSURE( cpuAwake->contactIndices.data[i] == gpuAwake->contactIndices.data[i] );
++	}
++	return 0;
++}
++
++static int MetalFinalPairPlanOrderTest( void )
++{
++	b3WorldDef worldDef = b3DefaultWorldDef();
++	worldDef.gravity = b3Vec3_zero;
++	worldDef.enableSleep = false;
++	b3WorldId cpuWorldId = b3CreateWorld( &worldDef );
++	b3WorldId gpuWorldId = b3CreateWorld( &worldDef );
++	ENSURE( b3World_EnableMetal( gpuWorldId, 1 ) );
++	ENSURE( b3World_SetMetalBroadPhase( gpuWorldId, true ) );
++
++	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
++	b3ShapeDef shapeDef = b3DefaultShapeDef();
++	const int bodyCount = 8;
++	for ( int i = 0; i < bodyCount; ++i )
++	{
++		b3BodyDef bodyDef = b3DefaultBodyDef();
++		bodyDef.type = i == 0 ? b3_staticBody : b3_dynamicBody;
++		bodyDef.enableSleep = false;
++		bodyDef.position = (b3Pos){ 0.025f * (float)i, 0.0f, 0.0f };
++		b3BodyId cpuBody = b3CreateBody( cpuWorldId, &bodyDef );
++		b3BodyId gpuBody = b3CreateBody( gpuWorldId, &bodyDef );
++		b3CreateSphereShape( cpuBody, &shapeDef, &sphere );
++		b3CreateSphereShape( gpuBody, &shapeDef, &sphere );
++	}
++
++	b3World* cpu = b3GetWorldFromId( cpuWorldId );
++	b3World* gpu = b3GetWorldFromId( gpuWorldId );
++	b3UpdateBroadPhasePairs( cpu );
++	b3UpdateBroadPhasePairs( gpu );
++	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
++	ENSURE( cpu->broadPhase.pairSet.count == bodyCount * ( bodyCount - 1 ) / 2 );
++	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorldId );
++	ENSURE( profile.pairDispatchCount == 1 );
++	ENSURE( profile.pairFallbackCount == 0 );
++	ENSURE( profile.pairCpuCandidateTraversalBypassCount == 1 );
++	ENSURE( profile.lastPairCpuFilterMoveCount == 0 );
++	ENSURE( profile.lastPairCpuFilterCandidateCount == 0 );
++	ENSURE( profile.lastPairDirectCreateCount == bodyCount * ( bodyCount - 1 ) / 2 );
++	printf( "    final pair plan contacts=%d direct=%d cpuFilterMoves=%d exactTopology=yes\n",
++			cpu->broadPhase.pairSet.count, profile.lastPairDirectCreateCount, profile.lastPairCpuFilterMoveCount );
++
++	b3DestroyWorld( gpuWorldId );
++	b3DestroyWorld( cpuWorldId );
++	return 0;
++}
++
++static int MetalFinalPairRandomDifferentialTest( void )
++{
++	const int trialCount = 5;
++	const int bodyCount = 48;
++	for ( int trial = 0; trial < trialCount; ++trial )
++	{
++		b3WorldDef worldDef = b3DefaultWorldDef();
++		worldDef.gravity = b3Vec3_zero;
++		worldDef.enableSleep = false;
++		b3WorldId cpuWorldId = b3CreateWorld( &worldDef );
++		b3WorldId gpuWorldId = b3CreateWorld( &worldDef );
++		ENSURE( b3World_EnableMetal( gpuWorldId, 1 ) );
++		ENSURE( b3World_SetMetalBroadPhase( gpuWorldId, true ) );
++		b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.45f };
++		for ( int i = 0; i < bodyCount; ++i )
++		{
++			b3BodyDef bodyDef = b3DefaultBodyDef();
++			int typeRoll = (int)b3MetalRandomFloat( 0.0f, 10.0f );
++			bodyDef.type = typeRoll < 2 ? b3_staticBody : typeRoll < 3 ? b3_kinematicBody : b3_dynamicBody;
++			bodyDef.enableSleep = false;
++			bodyDef.position = (b3Pos){
++				3.0f * (float)( i % 4 ) + b3MetalRandomFloat( -0.3f, 0.3f ),
++				b3MetalRandomFloat( -0.3f, 0.3f ),
++				b3MetalRandomFloat( -0.3f, 0.3f ),
++			};
++			b3ShapeDef shapeDef = b3DefaultShapeDef();
++			int filterRoll = (int)b3MetalRandomFloat( 0.0f, 12.0f );
++			if ( filterRoll == 0 ) shapeDef.filter.groupIndex = -2;
++			if ( filterRoll == 1 ) shapeDef.filter.groupIndex = 3;
++			if ( filterRoll == 2 ) shapeDef.filter.maskBits = 0;
++			shapeDef.isSensor = filterRoll == 3;
++			b3BodyId cpuBody = b3CreateBody( cpuWorldId, &bodyDef );
++			b3BodyId gpuBody = b3CreateBody( gpuWorldId, &bodyDef );
++			b3CreateSphereShape( cpuBody, &shapeDef, &sphere );
++			b3CreateSphereShape( gpuBody, &shapeDef, &sphere );
++		}
++		b3World* cpu = b3GetWorldFromId( cpuWorldId );
++		b3World* gpu = b3GetWorldFromId( gpuWorldId );
++		b3UpdateBroadPhasePairs( cpu );
++		b3UpdateBroadPhasePairs( gpu );
++		ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
++		ENSURE( cpu->broadPhase.pairSet.count > 0 );
++		b3MetalProfile profile = b3World_GetMetalProfile( gpuWorldId );
++		ENSURE( profile.pairFallbackCount == 0 );
++		ENSURE( profile.lastPairCpuFilterMoveCount == 0 );
++		ENSURE( profile.lastPairCpuFilterCandidateCount == 0 );
++		ENSURE( profile.lastPairDirectCreateCount == cpu->broadPhase.pairSet.count );
++		b3DestroyWorld( gpuWorldId );
++		b3DestroyWorld( cpuWorldId );
++	}
++	printf( "    randomized final pair plans trials=%d bodies=%d exactTopology=yes\n", trialCount, bodyCount );
++	return 0;
++}
++
++typedef struct b3PairFilterCapture
++{
++	int count;
++	int rejectIndex1;
++	int shapeA[8];
++	int shapeB[8];
++} b3PairFilterCapture;
++
++static bool CapturePairFilter( b3ShapeId shapeIdA, b3ShapeId shapeIdB, void* context )
++{
++	b3PairFilterCapture* capture = context;
++	if ( capture->count < 8 )
++	{
++		capture->shapeA[capture->count] = shapeIdA.index1;
++		capture->shapeB[capture->count] = shapeIdB.index1;
++	}
++	capture->count += 1;
++	return shapeIdA.index1 != capture->rejectIndex1 && shapeIdB.index1 != capture->rejectIndex1;
++}
++
++static b3JointId CreatePairFilterScene( b3WorldId worldId, b3PairFilterCapture* capture, const b3CompoundData* compound )
++{
++	b3World_SetCustomFilterCallback( worldId, CapturePairFilter, capture );
++	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
++	b3BodyId jointBodies[2] = { 0 };
++	for ( int pairIndex = 0; pairIndex < 4; ++pairIndex )
++	{
++		b3BodyDef bodyDef = b3DefaultBodyDef();
++		bodyDef.type = pairIndex == 3 ? b3_dynamicBody : b3_staticBody;
++		bodyDef.enableSleep = false;
++		bodyDef.position = (b3Pos){ 4.0f * (float)pairIndex, 0.0f, 0.0f };
++		b3BodyId bodyA = b3CreateBody( worldId, &bodyDef );
++		bodyDef.type = b3_dynamicBody;
++		bodyDef.position.x += 0.25f;
++		b3BodyId bodyB = b3CreateBody( worldId, &bodyDef );
++		b3ShapeDef shapeDef = b3DefaultShapeDef();
++		shapeDef.enableCustomFiltering = pairIndex == 1 || pairIndex == 2;
++		b3ShapeId shapeA = b3CreateSphereShape( bodyA, &shapeDef, &sphere );
++		shapeDef.enableCustomFiltering = false;
++		b3CreateSphereShape( bodyB, &shapeDef, &sphere );
++		if ( pairIndex == 2 ) capture->rejectIndex1 = shapeA.index1;
++		if ( pairIndex == 3 )
++		{
++			jointBodies[0] = bodyA;
++			jointBodies[1] = bodyB;
++		}
++	}
++	b3BodyDef compoundBodyDef = b3DefaultBodyDef();
++	compoundBodyDef.position = (b3Pos){ 16.0f, 0.0f, 0.0f };
++	b3BodyId compoundBody = b3CreateBody( worldId, &compoundBodyDef );
++	b3ShapeDef compoundShapeDef = b3DefaultShapeDef();
++	b3CreateBakedCompoundShape( compoundBody, &compoundShapeDef, compound );
++	compoundBodyDef.type = b3_dynamicBody;
++	compoundBodyDef.enableSleep = false;
++	b3BodyId compoundVisitor = b3CreateBody( worldId, &compoundBodyDef );
++	b3CreateSphereShape( compoundVisitor, &compoundShapeDef, &sphere );
++
++	b3DistanceJointDef jointDef = b3DefaultDistanceJointDef();
++	jointDef.base.bodyIdA = jointBodies[0];
++	jointDef.base.bodyIdB = jointBodies[1];
++	jointDef.base.collideConnected = false;
++	jointDef.length = 0.25f;
++	return b3CreateDistanceJoint( worldId, &jointDef );
++}
++
++static int MetalFinalPairFilterExceptionTest( void )
++{
++	b3WorldDef worldDef = b3DefaultWorldDef();
++	worldDef.gravity = b3Vec3_zero;
++	worldDef.enableSleep = false;
++	b3WorldId cpuWorldId = b3CreateWorld( &worldDef );
++	b3WorldId gpuWorldId = b3CreateWorld( &worldDef );
++	ENSURE( b3World_EnableMetal( gpuWorldId, 1 ) );
++	ENSURE( b3World_SetMetalBroadPhase( gpuWorldId, true ) );
++	b3PairFilterCapture cpuCapture = { 0 };
++	b3PairFilterCapture gpuCapture = { 0 };
++	b3SurfaceMaterial material = b3DefaultSurfaceMaterial();
++	b3CompoundSphereDef children[2] = {
++		{ .sphere = { { -0.25f, 0.0f, 0.0f }, 0.5f }, .material = material },
++		{ .sphere = { { 0.25f, 0.0f, 0.0f }, 0.5f }, .material = material },
++	};
++	b3CompoundDef compoundDef = { .spheres = children, .sphereCount = 2 };
++	b3CompoundData* compound = b3CreateCompound( &compoundDef );
++	b3JointId cpuJoint = CreatePairFilterScene( cpuWorldId, &cpuCapture, compound );
++	b3JointId gpuJoint = CreatePairFilterScene( gpuWorldId, &gpuCapture, compound );
++
++	b3World* cpu = b3GetWorldFromId( cpuWorldId );
++	b3World* gpu = b3GetWorldFromId( gpuWorldId );
++	b3UpdateBroadPhasePairs( cpu );
++	b3UpdateBroadPhasePairs( gpu );
++	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
++	ENSURE( cpu->broadPhase.pairSet.count == 4 );
++	ENSURE( cpuCapture.count == gpuCapture.count );
++	ENSURE( cpuCapture.count == 2 );
++	for ( int i = 0; i < cpuCapture.count; ++i )
++	{
++		ENSURE( cpuCapture.shapeA[i] == gpuCapture.shapeA[i] );
++		ENSURE( cpuCapture.shapeB[i] == gpuCapture.shapeB[i] );
++	}
++	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorldId );
++	ENSURE( profile.pairCpuCandidateTraversalBypassCount == 1 );
++	ENSURE( profile.lastPairDirectCreateCount == 1 );
++	ENSURE( profile.lastPairCpuFilterMoveCount == 4 );
++	ENSURE( profile.lastPairCpuFilterCandidateCount == 4 );
++
++	b3Joint_SetCollideConnected( cpuJoint, true );
++	b3Joint_SetCollideConnected( gpuJoint, true );
++	b3UpdateBroadPhasePairs( cpu );
++	b3UpdateBroadPhasePairs( gpu );
++	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
++	ENSURE( cpu->broadPhase.pairSet.count == 5 );
++	profile = b3World_GetMetalProfile( gpuWorldId );
++	ENSURE( profile.pairMetadataUploadCount == 2 );
++	ENSURE( profile.lastPairCpuFilterMoveCount == 1 );
++	ENSURE( profile.lastPairCpuFilterCandidateCount == 1 );
++	ENSURE( profile.lastPairDirectCreateCount == 0 );
++	printf( "    final pair exceptions direct=1 filtered=4 callbacks=%d compoundChildren=2 jointMutation=exact\n",
++			cpuCapture.count );
++
++	b3DestroyWorld( gpuWorldId );
++	b3DestroyWorld( cpuWorldId );
++	b3DestroyCompound( compound );
 +	return 0;
 +}
 +
@@ -19496,10 +20064,12 @@ index 0000000..12b059a
 +	b3BroadPhase* broadPhase = &world->broadPhase;
 +	const b3MetalPairQueryRecord* records = NULL;
 +	const b3MetalPairCandidate* candidates = NULL;
++	const int* cpuFilterMoves = NULL;
++	int cpuFilterMoveCount = 0;
 +	int candidateCount = 0;
 +	b3MetalDispatchStats stats = { 0 };
 +	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, broadPhase->moveArray.count,
-+										   &records, &candidates, &candidateCount, &stats ) );
++										   &records, &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
 +	ENSURE( candidateCount == 1 );
 +	ENSURE( stats.pairSetUploadCount == 1 );
 +
@@ -19511,7 +20081,7 @@ index 0000000..12b059a
 +	b3BufferMove( broadPhase, world->shapes.data[shapeIndexB].proxyKey );
 +	stats = (b3MetalDispatchStats){ 0 };
 +	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, broadPhase->moveArray.count,
-+										   &records, &candidates, &candidateCount, &stats ) );
++										   &records, &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
 +	ENSURE( candidateCount == 0 );
 +	ENSURE( stats.pairSetUploadCount == 1 );
 +	ENSURE( VerifyResidentPairTraversal( world ) == 0 );
@@ -19525,7 +20095,7 @@ index 0000000..12b059a
 +	b3BufferMove( broadPhase, world->shapes.data[shapeIndexB].proxyKey );
 +	stats = (b3MetalDispatchStats){ 0 };
 +	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, broadPhase->moveArray.count,
-+										   &records, &candidates, &candidateCount, &stats ) );
++										   &records, &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &stats ) );
 +	ENSURE( candidateCount == 1 );
 +	ENSURE( stats.pairSetUploadCount == 1 );
 +	ENSURE( stats.metadataUploadCount == 1 );
@@ -21873,6 +22443,9 @@ index 0000000..12b059a
 +	RUN_SUBTEST( MetalResidentCollisionBypassFallbackTest );
 +	RUN_SUBTEST( MetalResidentCollisionBypassTransitionTest );
 +	RUN_SUBTEST( MetalPairTraversalTest );
++	RUN_SUBTEST( MetalFinalPairPlanOrderTest );
++	RUN_SUBTEST( MetalFinalPairRandomDifferentialTest );
++	RUN_SUBTEST( MetalFinalPairFilterExceptionTest );
 +	RUN_SUBTEST( MetalExistingPairFilterTest );
 +	RUN_SUBTEST( MetalPairTraversalFallbackTest );
 +	RUN_SUBTEST( MetalShapeCompactionTest );
