@@ -344,7 +344,12 @@ typedef struct b3World
 	int metalLastPairMoveCount;
 	int metalLastPairCandidateCount;
 	uint64_t metalLastPairMoveUploadBytes;
+	uint64_t metalPairCpuCandidateTraversalBypassCount;
+	int metalLastPairCpuFilterMoveCount;
+	int metalLastPairCpuFilterCandidateCount;
+	int metalLastPairDirectCreateCount;
 	uint64_t metalPairShapeRevision;
+	uint64_t metalPairFilterRevision;
 	uint64_t metalContactMaterialRevision;
 	uint64_t metalBodyTransformRevision;
 	bool metalDefaultFrictionCallback;

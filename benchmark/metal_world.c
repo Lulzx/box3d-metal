@@ -82,7 +82,9 @@ int main( void )
 		"transform_device_refreshes,pair_kernel_ms,pair_dispatches,"
 		"body_state_uploads,body_state_reuses,last_body_state_upload_bytes,body_state_revision_checks,body_state_syncs,last_body_state_readback_bytes,"
 		"body_property_uploads,body_property_reuses,last_body_property_upload_bytes,pair_fallbacks,resident_pair_moves,"
-		"enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,last_pair_move_upload_bytes,speedup\n" );
+		"enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,last_pair_move_upload_bytes,"
+		"pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,last_pair_cpu_filter_candidates,"
+		"last_pair_direct_create_candidates,speedup\n" );
 	const int counts[] = { 512, 2048, 8192, 32768, 131072, 524288 };
 	int testCount = selectedBodyCount > 0 ? 1 : (int)( sizeof( counts ) / sizeof( counts[0] ) );
 	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
@@ -127,7 +129,7 @@ int main( void )
 				return 1;
 			}
 		}
-		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%.3f\n",
+		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%llu,%d,%d,%d,%.3f\n",
 			bodyCount,
 			repeats, cpuMs, gpuMs,
 			metal.lastUnconstrainedGpuMilliseconds, (unsigned long long)metal.lastFinalizationReadbackBytes,
@@ -155,7 +157,10 @@ int main( void )
 				(unsigned long long)metal.residentPairMoveDispatchCount,
 				(unsigned long long)metal.enlargedShapeTraversalBypassCount,
 				metal.lastPairMoveCount, metal.lastPairCandidateCount,
-				(unsigned long long)metal.lastPairMoveUploadBytes, cpuMs / gpuMs );
+				(unsigned long long)metal.lastPairMoveUploadBytes,
+				(unsigned long long)metal.pairCpuCandidateTraversalBypassCount,
+				metal.lastPairCpuFilterMoveCount, metal.lastPairCpuFilterCandidateCount,
+				metal.lastPairDirectCreateCount, cpuMs / gpuMs );
 		b3DestroyWorld( gpuWorld );
 	}
 	return 0;

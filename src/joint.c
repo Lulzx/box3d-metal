@@ -216,6 +216,9 @@ static b3JointPair b3CreateJoint( b3World* world, const b3JointDef* def, b3Joint
 	}
 	bodyB->headJointKey = keyB;
 	bodyB->jointCount += 1;
+#if defined( BOX3D_METAL )
+	world->metalPairFilterRevision += 1;
+#endif
 
 	b3JointSim* jointSim;
 
@@ -724,6 +727,9 @@ b3JointId b3CreateWheelJoint( b3WorldId worldId, const b3WheelJointDef* def )
 void b3DestroyJointInternal( b3World* world, b3Joint* joint, bool wakeBodies )
 {
 	int jointId = joint->jointId;
+#if defined( BOX3D_METAL )
+	world->metalPairFilterRevision += 1;
+#endif
 
 	b3JointEdge* edgeA = joint->edges + 0;
 	b3JointEdge* edgeB = joint->edges + 1;
@@ -925,6 +931,9 @@ void b3Joint_SetCollideConnected( b3JointId jointId, bool shouldCollide )
 	}
 
 	joint->collideConnected = shouldCollide;
+#if defined( BOX3D_METAL )
+	world->metalPairFilterRevision += 1;
+#endif
 
 	b3Body* bodyA = b3Array_Get( world->bodies, joint->edges[0].bodyId );
 	b3Body* bodyB = b3Array_Get( world->bodies, joint->edges[1].bodyId );

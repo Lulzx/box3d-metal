@@ -155,6 +155,15 @@ typedef struct b3MetalProfile
 	/// CPU-to-Metal move-list bytes written by the latest pair phase. This is zero
 	/// when the private shape-finalization list is consumed directly.
 	uint64_t lastPairMoveUploadBytes;
+	/// Pair phases where ordinary candidate ranges bypassed the CPU filtering
+	/// task and were committed directly in deterministic reverse traversal order.
+	uint64_t pairCpuCandidateTraversalBypassCount;
+	/// Residual-filter exception moves and candidates on the latest pair phase.
+	int lastPairCpuFilterMoveCount;
+	int lastPairCpuFilterCandidateCount;
+	/// Ordinary GPU-planned candidates sent directly to deterministic CPU contact
+	/// creation on the latest pair phase.
+	int lastPairDirectCreateCount;
 	uint64_t narrowPhaseDispatchCount;
 	uint64_t narrowPhaseFallbackCount;
 	uint64_t narrowPhaseGeometryUploadCount;

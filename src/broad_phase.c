@@ -404,12 +404,13 @@ typedef struct b3MetalFindPairsContext
 	b3World* world;
 	const b3MetalPairQueryRecord* records;
 	const b3MetalPairCandidate* candidates;
+	const int* cpuFilterMoves;
 } b3MetalFindPairsContext;
 
 // Implements b3ParallelForCallback. Metal has already traversed the trees and
 // rejected exact moved-proxy duplicates, existing non-compound contacts, and
-// built-in shape filters. Common candidates go directly to the remaining
-// joint/custom checks. Compounds retain the complete callback and child query.
+// built-in shape filters. Only GPU-compacted joint/custom/compound exception
+// moves reach this task; ordinary ranges go directly to serial contact commit.
 static void b3FindPairsMetalTask( int startIndex, int endIndex, int workerIndex, void* context )
 {
 	b3TracyCZoneNC( pair_metal_consume, "Pair Metal Consume", b3_colorAquamarine, true );
@@ -422,12 +423,13 @@ static void b3FindPairsMetalTask( int startIndex, int endIndex, int workerIndex,
 	queryContext.world = world;
 	queryContext.compoundShapeIndex = B3_NULL_INDEX;
 	queryContext.compoundProxyId = B3_NULL_INDEX;
-	for ( int i = startIndex; i < endIndex; ++i )
+	for ( int filterIndex = startIndex; filterIndex < endIndex; ++filterIndex )
 	{
-		queryContext.moveResult = bp->moveResults + i;
+		int moveIndex = metalContext->cpuFilterMoves != NULL ? metalContext->cpuFilterMoves[filterIndex] : filterIndex;
+		queryContext.moveResult = bp->moveResults + filterIndex;
 		queryContext.moveResult->pairList = NULL;
 
-		const b3MetalPairQueryRecord* record = metalContext->records + i;
+		const b3MetalPairQueryRecord* record = metalContext->records + moveIndex;
 		int queryProxyKey = record->queryProxyKey;
 		queryContext.queryProxyKey = queryProxyKey;
 		queryContext.queryShapeIndex = record->queryShapeIndex;
@@ -517,7 +519,12 @@ void b3UpdateBroadPhasePairs( b3World* world )
 	bool usedMetalPairs = false;
 	bool pairsAreEmpty = false;
 #if defined( BOX3D_METAL )
+	bool directMetalPlan = false;
+	const b3MetalPairQueryRecord* metalRecords = NULL;
+	const b3MetalPairCandidate* metalCandidates = NULL;
+	const int* metalCpuFilterMoves = NULL;
 	int candidateCount = 0;
+	int cpuFilterMoveCount = 0;
 #endif
 #ifndef NDEBUG
 	extern b3AtomicInt b3_probeCount;
@@ -526,22 +533,46 @@ void b3UpdateBroadPhasePairs( b3World* world )
 #if defined( BOX3D_METAL )
 	if ( world->metalBroadPhaseEnabled && ( useResidentMoves || moveCount >= world->metalMinimumBodyCount ) )
 	{
-		const b3MetalPairQueryRecord* records = NULL;
-		const b3MetalPairCandidate* candidates = NULL;
 		b3MetalDispatchStats stats = { 0 };
 		const int* moveArray = useResidentMoves ? NULL : bp->moveArray.data;
-		if ( b3MetalGeneratePairCandidates( world->metalContext, world, moveArray, moveCount, &records, &candidates,
-				&candidateCount, &stats ) )
+		if ( b3MetalGeneratePairCandidates( world->metalContext, world, moveArray, moveCount, &metalRecords, &metalCandidates,
+				&candidateCount, &metalCpuFilterMoves, &cpuFilterMoveCount, &stats ) )
 		{
 			pairsAreEmpty = candidateCount == 0;
+			directMetalPlan = candidateCount <= 16 * moveCount;
 			if ( pairsAreEmpty == false )
 			{
-				bp->moveResults = (b3MoveResult*)b3StackAlloc( alloc, moveCount * sizeof( b3MoveResult ), "move results" );
-				bp->movePairCapacity = 16 * moveCount;
-				bp->movePairs = (b3MovePair*)b3StackAlloc( alloc, bp->movePairCapacity * sizeof( b3MovePair ), "move pairs" );
-				b3AtomicStoreInt( &bp->movePairIndex, 0 );
-				b3MetalFindPairsContext metalContext = { world, records, candidates };
-				b3ParallelFor( world, b3FindPairsMetalTask, moveCount, minRange, &metalContext, "pairs metal" );
+				// Ordinary records are already the final pair plan. Preserve the
+				// historical fixed-capacity behavior by using the legacy all-record
+				// consume path if the GPU candidate count exceeds that bound.
+				int filterCount = directMetalPlan ? cpuFilterMoveCount : moveCount;
+				if ( filterCount > 0 )
+				{
+					bp->moveResults = (b3MoveResult*)b3StackAlloc( alloc, filterCount * sizeof( b3MoveResult ), "move results" );
+					bp->movePairCapacity = 16 * moveCount;
+					bp->movePairs = (b3MovePair*)b3StackAlloc( alloc, bp->movePairCapacity * sizeof( b3MovePair ), "move pairs" );
+					b3AtomicStoreInt( &bp->movePairIndex, 0 );
+					b3MetalFindPairsContext metalContext = {
+						world,
+						metalRecords,
+						metalCandidates,
+						directMetalPlan ? metalCpuFilterMoves : NULL,
+					};
+					b3ParallelFor( world, b3FindPairsMetalTask, filterCount, minRange, &metalContext, "pairs metal filter" );
+				}
+			}
+
+			int cpuFilterCandidateCount = 0;
+			int directCreateCount = 0;
+			if ( directMetalPlan )
+			{
+				for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
+				{
+					int count = (int)metalRecords[moveIndex].count;
+					if ( metalRecords[moveIndex].requiresCpuFiltering ) cpuFilterCandidateCount += count;
+					else directCreateCount += count;
+				}
+				world->metalPairCpuCandidateTraversalBypassCount += directCreateCount > 0 ? 1 : 0;
 			}
 			world->metalPairDispatchCount += 1;
 			world->metalResidentPairMoveDispatchCount += useResidentMoves ? 1 : 0;
@@ -551,6 +582,9 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			world->metalLastPairMoveCount = moveCount;
 			world->metalLastPairCandidateCount = candidateCount;
 			world->metalLastPairMoveUploadBytes = useResidentMoves ? 0 : (uint64_t)moveCount * sizeof( int );
+			world->metalLastPairCpuFilterMoveCount = directMetalPlan ? cpuFilterMoveCount : moveCount;
+			world->metalLastPairCpuFilterCandidateCount = directMetalPlan ? cpuFilterCandidateCount : candidateCount;
+			world->metalLastPairDirectCreateCount = directMetalPlan ? directCreateCount : 0;
 			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
 			usedMetalPairs = true;
 		}
@@ -602,11 +636,29 @@ void b3UpdateBroadPhasePairs( b3World* world )
 	}
 
 	// Single-threaded work
-	// - Clear move flags
 	// - Create contacts in deterministic order
+	// GPU traversal emits candidates in callback order. Erin's CPU staging path
+	// prepends them, so ordinary GPU-planned ranges are consumed in reverse.
 	for ( int i = 0; pairsAreEmpty == false && i < moveCount; ++i )
 	{
-		b3MoveResult* result = bp->moveResults + i;
+#if defined( BOX3D_METAL )
+		if ( directMetalPlan && metalRecords[i].requiresCpuFiltering == 0 )
+		{
+			const b3MetalPairQueryRecord* record = metalRecords + i;
+			b3Shape* shapeB = b3Array_Get( world->shapes, record->queryShapeIndex );
+			for ( uint32_t candidateIndex = record->count; candidateIndex-- > 0; )
+			{
+				const b3MetalPairCandidate* candidate = metalCandidates + record->offset + candidateIndex;
+				b3Shape* shapeA = b3Array_Get( world->shapes, candidate->shapeIndex );
+				b3CreateContact( world, shapeA, shapeB, 0 );
+			}
+			continue;
+		}
+		int resultIndex = directMetalPlan ? (int)metalRecords[i].cpuFilterOffset : i;
+#else
+		int resultIndex = i;
+#endif
+		b3MoveResult* result = bp->moveResults + resultIndex;
 		b3MovePair* pair = result->pairList;
 		while ( pair != NULL )
 		{

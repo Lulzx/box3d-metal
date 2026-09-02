@@ -92,7 +92,8 @@ int main( void )
 			"sim_syncs,last_sim_count,shape_syncs,"
 			"schedule_packs,schedule_reuses,store_bypasses,event_syncs,public_syncs,index_bytes,prior_stream_bytes,impulse_bytes,"
 			"prior_impulse_bytes,resident_pair_moves,enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,"
-			"last_pair_move_upload_bytes\n" );
+			"last_pair_move_upload_bytes,pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,"
+			"last_pair_cpu_filter_candidates,last_pair_direct_create_candidates\n" );
 	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
 	{
 		int contactCount = requestedCount > 0 ? requestedCount : counts[testIndex];
@@ -116,7 +117,7 @@ int main( void )
 		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
 		uint64_t priorImpulseBytes = (uint64_t)profile.lastResidentConvexConstraintCount * 1696;
 		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%"
-				"llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu\n",
+				"llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%llu,%d,%d,%d\n",
 				contactCount, repeats, cpuMs, gpuMs, cpuMs / gpuMs, (unsigned long long)profile.contactPrepareDispatchCount,
 				(unsigned long long)profile.contactPrepareDeviceRefreshCount,
 				(unsigned long long)profile.contactCollisionBypassCount, (unsigned long long)profile.contactCollisionCpuCount,
@@ -146,7 +147,10 @@ int main( void )
 				(unsigned long long)profile.residentPairMoveDispatchCount,
 				(unsigned long long)profile.enlargedShapeTraversalBypassCount,
 				profile.lastPairMoveCount, profile.lastPairCandidateCount,
-				(unsigned long long)profile.lastPairMoveUploadBytes );
+				(unsigned long long)profile.lastPairMoveUploadBytes,
+				(unsigned long long)profile.pairCpuCandidateTraversalBypassCount,
+				profile.lastPairCpuFilterMoveCount, profile.lastPairCpuFilterCandidateCount,
+				profile.lastPairDirectCreateCount );
 		b3DestroyWorld( gpuWorld );
 	}
 	return 0;

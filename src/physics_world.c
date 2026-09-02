@@ -820,6 +820,10 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.lastPairMoveCount = world->metalLastPairMoveCount;
 	profile.lastPairCandidateCount = world->metalLastPairCandidateCount;
 	profile.lastPairMoveUploadBytes = world->metalLastPairMoveUploadBytes;
+	profile.pairCpuCandidateTraversalBypassCount = world->metalPairCpuCandidateTraversalBypassCount;
+	profile.lastPairCpuFilterMoveCount = world->metalLastPairCpuFilterMoveCount;
+	profile.lastPairCpuFilterCandidateCount = world->metalLastPairCpuFilterCandidateCount;
+	profile.lastPairDirectCreateCount = world->metalLastPairDirectCreateCount;
 	profile.narrowPhaseDispatchCount = world->metalNarrowPhaseDispatchCount;
 	profile.narrowPhaseFallbackCount = world->metalNarrowPhaseFallbackCount;
 	profile.narrowPhaseGeometryUploadCount = world->metalNarrowPhaseGeometryUploadCount;

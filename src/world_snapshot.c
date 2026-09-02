@@ -1345,6 +1345,7 @@ bool b3DeserializeIntoShell( const uint8_t* data, int size, b3World* world, b3Re
 		// Advance explicit revisions so resident narrow-phase tables cannot match
 		// a pre-seek key by coincidence.
 		world->metalPairShapeRevision += 1;
+		world->metalPairFilterRevision += 1;
 		world->metalBodyTransformRevision += 1;
 		b3BumpMetalContactInputRevision( world );
 		b3BumpMetalAwakeBodyRevision( world );

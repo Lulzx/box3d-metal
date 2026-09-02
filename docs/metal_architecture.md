@@ -270,10 +270,15 @@ enlargement traversal, and move-list round trip. Public queries, CPU mutation,
 route changes, and dispatch failure conservatively restore every moving CPU
 leaf and repopulate Erin's move set before returning to the CPU oracle.
 The first unexpectedly dense call may submit one write-only retry after growing
-the persistent candidate buffer; the steady path submits and waits once. CPU
-consumption sends ordinary candidates directly to joint/custom filtering and
-move-pair append. Compound children retain the complete upstream callback.
-Deterministic contact creation remains CPU-owned. Unsupported
+the persistent candidate buffer; the steady path submits and waits once. Each
+move record also carries a residual-filter bit. A second stable scan compacts
+only move indices involving body joints, custom filtering, or a compound target.
+Ordinary candidate ranges bypass the CPU filtering task and fixed move-pair
+allocation; the serial commit consumes each range in reverse traversal order,
+exactly matching Erin's prepend-list creation order. Exception moves retain
+`b3ShouldBodiesCollide`, custom callbacks, compound-child traversal, and the
+existing move-pair path. Deterministic contact creation and all coupled contact,
+body-edge, solver-set, pair-set, event, and island topology remain CPU-owned. Unsupported
 threadgroup geometry, tree heights at or
 above 63, shader stack overflow, changing counts, allocation failure, or more
 than 64 raw candidates per moved proxy on average fall back to the full CPU
@@ -440,7 +445,7 @@ paths, not yet the final performance architecture.
 | Distance joints, including spring, limit, and motor modes | GPU-resident across all substeps |
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
-| Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, custom/joint filtering, and contact creation remain |
+| Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, candidate planning, and residual-filter move compaction. Ordinary ranges bypass CPU candidate filtering; joint/custom/compound exceptions and deterministic contact topology creation remain CPU-owned |
 | Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Ordered callback/topology/first-touch exceptions retain the CPU path. Lazy CPU mirrors synchronize only at explicit boundaries. CPU retains cold/revision packing, manifold allocation, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
 | Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts a 112-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
@@ -579,6 +584,9 @@ The follow-on removal of the steady awake-body ID scan is recorded in
 Private enlarged-proxy residency, direct pair consumption, and the current
 whole-world measurements are recorded in
 [`benchmarks/m4-pro-resident-pair-moves-2026-09-03.md`](benchmarks/m4-pro-resident-pair-moves-2026-09-03.md).
+GPU final pair planning, residual-filter move compaction, and exact topology
+differentials are recorded in
+[`benchmarks/m4-pro-final-pair-planning-2026-09-03.md`](benchmarks/m4-pro-final-pair-planning-2026-09-03.md).
 Fully resident convex-contact state, sim, shape-bound, and body-finalization
 ownership is recorded in
 [`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).
