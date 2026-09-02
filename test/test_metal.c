@@ -8,6 +8,7 @@
 #include "body.h"
 #include "broad_phase.h"
 #include "math_internal.h"
+#include "manifold.h"
 #include "metal_backend.h"
 #include "physics_world.h"
 #include "shape.h"
@@ -451,14 +452,22 @@ static int MetalFinalizationTest( void )
 	return 0;
 }
 
-static int MetalSphereManifoldTest( void )
+static int MetalConvexManifoldTest( void )
 {
 #if defined( BOX3D_DOUBLE_PRECISION )
 	// AABB mirrors remain float, so widely separated small deltas at 1e12 are
 	// intentionally not used as independent broad-phase cells.
 	const int pairCount = 1;
+	const int capsuleSphereCount = 1;
+	const int separatedCapsuleSphereCount = 1;
+	const int crossedCapsuleCount = 1;
+	const int parallelCapsuleCount = 1;
 #else
 	const int pairCount = 32;
+	const int capsuleSphereCount = 8;
+	const int separatedCapsuleSphereCount = 1;
+	const int crossedCapsuleCount = 8;
+	const int parallelCapsuleCount = 8;
 #endif
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.gravity = b3Vec3_zero;
@@ -477,26 +486,83 @@ static int MetalSphereManifoldTest( void )
 	{
 		b3BodyDef bodyDef = b3DefaultBodyDef();
 		bodyDef.type = b3_staticBody;
-		bodyDef.position = (b3Pos){ base + 4.0 * i, 0.0, 0.0 };
+		bodyDef.position = (b3Pos){ base, 0.0, 4.0 * i };
 		b3BodyId bodyA = b3CreateBody( worldId, &bodyDef );
 		b3CreateSphereShape( bodyA, &shapeDef, &sphereA );
 		bodyDef.type = b3_dynamicBody;
-		bodyDef.position = (b3Pos){ base + 4.0 * i + 0.72, 0.08, -0.04 };
+		bodyDef.position = (b3Pos){ base + 0.72, 0.08, 4.0 * i - 0.04 };
 		bodyDef.rotation = b3MakeQuatFromAxisAngle( b3Normalize( (b3Vec3){ 0.3f, 0.8f, -0.2f } ), 0.15f * (float)( i % 3 ) );
 		b3BodyId bodyB = b3CreateBody( worldId, &bodyDef );
 		b3CreateSphereShape( bodyB, &shapeDef, &sphereB );
 	}
+	int pairOffset = pairCount;
+	b3Capsule capsuleA = { .center1 = { 0.0f, -0.45f, 0.0f }, .center2 = { 0.0f, 0.45f, 0.0f }, .radius = 0.30f };
+	b3Capsule crossedCapsule = { .center1 = { 0.0f, 0.0f, -0.45f }, .center2 = { 0.0f, 0.0f, 0.45f }, .radius = 0.30f };
+	b3Sphere capsuleSphere = { .center = { 0.02f, -0.04f, 0.01f }, .radius = 0.35f };
+	for ( int i = 0; i < capsuleSphereCount; ++i )
+	{
+		b3BodyDef capsuleDef = b3DefaultBodyDef();
+		capsuleDef.type = b3_staticBody;
+		capsuleDef.position = (b3Pos){ base, 0.0, 4.0 * ( pairOffset + i ) };
+		b3BodyId bodyA = b3CreateBody( worldId, &capsuleDef );
+		b3CreateCapsuleShape( bodyA, &shapeDef, &capsuleA );
+		capsuleDef.type = b3_dynamicBody;
+		capsuleDef.position.x = base + 0.48;
+		b3BodyId bodyB = b3CreateBody( worldId, &capsuleDef );
+		b3CreateSphereShape( bodyB, &shapeDef, &capsuleSphere );
+	}
+	pairOffset += capsuleSphereCount;
+	for ( int i = 0; i < separatedCapsuleSphereCount; ++i )
+	{
+		b3BodyDef capsuleDef = b3DefaultBodyDef();
+		capsuleDef.type = b3_staticBody;
+		capsuleDef.position = (b3Pos){ base, 0.0, 4.0 * ( pairOffset + i ) };
+		b3BodyId bodyA = b3CreateBody( worldId, &capsuleDef );
+		b3CreateCapsuleShape( bodyA, &shapeDef, &capsuleA );
+		capsuleDef.type = b3_dynamicBody;
+		capsuleDef.position.x = base + 0.66;
+		b3BodyId bodyB = b3CreateBody( worldId, &capsuleDef );
+		b3CreateSphereShape( bodyB, &shapeDef, &capsuleSphere );
+	}
+	pairOffset += separatedCapsuleSphereCount;
+	for ( int i = 0; i < crossedCapsuleCount; ++i )
+	{
+		b3BodyDef capsuleDef = b3DefaultBodyDef();
+		capsuleDef.type = b3_staticBody;
+		capsuleDef.position = (b3Pos){ base, 0.0, 4.0 * ( pairOffset + i ) };
+		b3BodyId bodyA = b3CreateBody( worldId, &capsuleDef );
+		b3CreateCapsuleShape( bodyA, &shapeDef, &capsuleA );
+		capsuleDef.type = b3_dynamicBody;
+		capsuleDef.position.x = base + 0.42;
+		b3BodyId bodyB = b3CreateBody( worldId, &capsuleDef );
+		b3CreateCapsuleShape( bodyB, &shapeDef, &crossedCapsule );
+	}
+	pairOffset += crossedCapsuleCount;
+	for ( int i = 0; i < parallelCapsuleCount; ++i )
+	{
+		b3BodyDef capsuleDef = b3DefaultBodyDef();
+		capsuleDef.type = b3_staticBody;
+		capsuleDef.position = (b3Pos){ base, 0.0, 4.0 * ( pairOffset + i ) };
+		b3BodyId bodyA = b3CreateBody( worldId, &capsuleDef );
+		b3CreateCapsuleShape( bodyA, &shapeDef, &capsuleA );
+		capsuleDef.type = b3_dynamicBody;
+		capsuleDef.position.x = base + 0.42;
+		capsuleDef.position.y = 0.08;
+		b3BodyId bodyB = b3CreateBody( worldId, &capsuleDef );
+		b3CreateCapsuleShape( bodyB, &shapeDef, &capsuleA );
+	}
+	pairOffset += parallelCapsuleCount;
 
 	// One unsupported hull contact proves that eligibility is per record and
 	// the ordinary CPU path remains available in the same narrow-phase batch.
 	b3BoxHull box = b3MakeBoxHull( 0.5f, 0.5f, 0.5f );
 	b3BodyDef bodyDef = b3DefaultBodyDef();
 	bodyDef.type = b3_staticBody;
-	bodyDef.position = (b3Pos){ base, 10.0, 0.0 };
+	bodyDef.position = (b3Pos){ base, 0.0, 4.0 * pairOffset };
 	b3BodyId boxA = b3CreateBody( worldId, &bodyDef );
 	b3CreateHullShape( boxA, &shapeDef, &box.base );
 	bodyDef.type = b3_dynamicBody;
-	bodyDef.position.y = 10.6;
+	bodyDef.position.y = 0.6;
 	b3BodyId boxB = b3CreateBody( worldId, &bodyDef );
 	b3CreateHullShape( boxB, &shapeDef, &box.base );
 
@@ -505,7 +571,9 @@ static int MetalSphereManifoldTest( void )
 	ENSURE( b3World_EnableMetal( worldId, 1 ) );
 	b3World* world = b3GetWorldFromId( worldId );
 	int contactCount = b3GetIdCount( &world->contactIdPool );
-	ENSURE( contactCount == pairCount + 1 );
+	int expectedEligibleCount = pairCount + capsuleSphereCount + separatedCapsuleSphereCount + crossedCapsuleCount +
+		parallelCapsuleCount;
+	ENSURE( contactCount == expectedEligibleCount + 1 );
 	int* contactIndices = malloc( (size_t)contactCount * sizeof( int ) );
 	ENSURE( contactIndices != NULL );
 	int cursor = 0;
@@ -519,28 +587,37 @@ static int MetalSphereManifoldTest( void )
 	for ( int i = 0; i < contactCount; ++i )
 	{
 		const b3Contact* contact = world->contacts.data + contactIndices[i];
-		if ( world->shapes.data[contact->shapeIdA].type == b3_sphereShape )
+		b3ShapeType typeA = world->shapes.data[contact->shapeIdA].type;
+		b3ShapeType typeB = world->shapes.data[contact->shapeIdB].type;
+		bool eligible = ( typeA == b3_sphereShape && typeB == b3_sphereShape ) ||
+			( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) );
+		if ( eligible )
 		{
-			ENSURE( contact->manifoldCount == 1 );
-			cpuStepManifolds[i] = contact->manifolds[0];
+			ENSURE( contact->manifoldCount == 0 || contact->manifoldCount == 1 );
+			if ( contact->manifoldCount == 1 ) cpuStepManifolds[i] = contact->manifolds[0];
 		}
 	}
 
-	const b3MetalSphereManifoldResult* gpu = NULL;
+	const b3MetalConvexManifoldResult* gpu = NULL;
 	int eligibleCount = 0;
 	b3MetalDispatchStats stats = { 0 };
-	ENSURE( b3MetalComputeSphereManifolds( world->metalContext, world, contactIndices, contactCount, &gpu,
+	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &gpu,
 		&eligibleCount, &stats ) );
-	ENSURE( eligibleCount == pairCount );
+	ENSURE( eligibleCount == expectedEligibleCount );
 	ENSURE( stats.commandBufferCount == 1 );
 	float maxError = 0.0f;
 	int ineligibleCount = 0;
+	int twoPointCount = 0;
+	int separatedCount = 0;
 	for ( int i = 0; i < contactCount; ++i )
 	{
 		const b3Contact* contact = world->contacts.data + contactIndices[i];
 		const b3Shape* shape1 = world->shapes.data + contact->shapeIdA;
 		const b3Shape* shape2 = world->shapes.data + contact->shapeIdB;
-		if ( shape1->type != b3_sphereShape || shape2->type != b3_sphereShape )
+		bool eligible = ( shape1->type == b3_sphereShape && shape2->type == b3_sphereShape ) ||
+			( shape1->type == b3_capsuleShape &&
+			  ( shape2->type == b3_sphereShape || shape2->type == b3_capsuleShape ) );
+		if ( eligible == false )
 		{
 			ENSURE( gpu[i].eligible == 0 );
 			ineligibleCount += 1;
@@ -550,31 +627,56 @@ static int MetalSphereManifoldTest( void )
 		b3Body* body2 = world->bodies.data + shape2->bodyId;
 		b3Transform relative = b3InvMulWorldTransforms( b3GetBodyTransformQuick( world, body1 ),
 			b3GetBodyTransformQuick( world, body2 ) );
-		b3LocalManifoldPoint point = { 0 };
-		b3LocalManifold reference = { .points = &point };
-		b3CollideSpheres( &reference, 1, &shape1->sphere, &shape2->sphere, relative );
+		b3LocalManifoldPoint points[2] = { 0 };
+		b3LocalManifold reference = { .points = points };
+		if ( shape1->type == b3_sphereShape )
+		{
+			b3CollideSpheres( &reference, 2, &shape1->sphere, &shape2->sphere, relative );
+		}
+		else if ( shape2->type == b3_sphereShape )
+		{
+			b3CollideCapsuleAndSphere( &reference, 2, &shape1->capsule, &shape2->sphere, relative );
+		}
+		else
+		{
+			b3CollideCapsules( &reference, 2, &shape1->capsule, &shape2->capsule, relative );
+		}
 		ENSURE( gpu[i].eligible == 1 );
-		ENSURE( gpu[i].touching == (uint32_t)( reference.pointCount == 1 ) );
-		if ( reference.pointCount == 1 )
+		ENSURE( gpu[i].touching == (uint32_t)( reference.pointCount > 0 ) );
+		ENSURE( gpu[i].pointCount == (uint32_t)reference.pointCount );
+		if ( reference.pointCount == 0 ) separatedCount += 1;
+		if ( reference.pointCount == 2 ) twoPointCount += 1;
+		if ( reference.pointCount > 0 )
 		{
 			maxError = b3MaxFloat( maxError, fabsf( gpu[i].normalX - reference.normal.x ) );
 			maxError = b3MaxFloat( maxError, fabsf( gpu[i].normalY - reference.normal.y ) );
 			maxError = b3MaxFloat( maxError, fabsf( gpu[i].normalZ - reference.normal.z ) );
-			maxError = b3MaxFloat( maxError, fabsf( gpu[i].pointX - point.point.x ) );
-			maxError = b3MaxFloat( maxError, fabsf( gpu[i].pointY - point.point.y ) );
-			maxError = b3MaxFloat( maxError, fabsf( gpu[i].pointZ - point.point.z ) );
-			maxError = b3MaxFloat( maxError, fabsf( gpu[i].separation - point.separation ) );
+			float gpuPointX[2] = { gpu[i].point1X, gpu[i].point2X };
+			float gpuPointY[2] = { gpu[i].point1Y, gpu[i].point2Y };
+			float gpuPointZ[2] = { gpu[i].point1Z, gpu[i].point2Z };
+			float gpuSeparation[2] = { gpu[i].separation1, gpu[i].separation2 };
+			uint32_t gpuFeatureId[2] = { gpu[i].featureId1, gpu[i].featureId2 };
+			for ( int pointIndex = 0; pointIndex < reference.pointCount; ++pointIndex )
+			{
+				maxError = b3MaxFloat( maxError, fabsf( gpuPointX[pointIndex] - points[pointIndex].point.x ) );
+				maxError = b3MaxFloat( maxError, fabsf( gpuPointY[pointIndex] - points[pointIndex].point.y ) );
+				maxError = b3MaxFloat( maxError, fabsf( gpuPointZ[pointIndex] - points[pointIndex].point.z ) );
+				maxError = b3MaxFloat( maxError, fabsf( gpuSeparation[pointIndex] - points[pointIndex].separation ) );
+				ENSURE( gpuFeatureId[pointIndex] == b3MakeFeatureId( points[pointIndex].pair ) );
+			}
 		}
 	}
 	ENSURE( ineligibleCount == 1 );
+	ENSURE( twoPointCount == parallelCapsuleCount );
+	ENSURE( separatedCount == separatedCapsuleSphereCount );
 	ENSURE( maxError <= 3.0e-5f );
 
-	b3MetalSphereManifoldResult* first = malloc( (size_t)contactCount * sizeof( b3MetalSphereManifoldResult ) );
+	b3MetalConvexManifoldResult* first = malloc( (size_t)contactCount * sizeof( b3MetalConvexManifoldResult ) );
 	ENSURE( first != NULL );
-	memcpy( first, gpu, (size_t)contactCount * sizeof( b3MetalSphereManifoldResult ) );
-	ENSURE( b3MetalComputeSphereManifolds( world->metalContext, world, contactIndices, contactCount, &gpu,
+	memcpy( first, gpu, (size_t)contactCount * sizeof( b3MetalConvexManifoldResult ) );
+	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &gpu,
 		&eligibleCount, &stats ) );
-	ENSURE( memcmp( first, gpu, (size_t)contactCount * sizeof( b3MetalSphereManifoldResult ) ) == 0 );
+	ENSURE( memcmp( first, gpu, (size_t)contactCount * sizeof( b3MetalConvexManifoldResult ) ) == 0 );
 
 	b3World_Step( worldId, 0.0f, 1 );
 	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
@@ -582,9 +684,14 @@ static int MetalSphereManifoldTest( void )
 	for ( int i = 0; i < contactCount; ++i )
 	{
 		b3Contact* contact = world->contacts.data + contactIndices[i];
-		if ( world->shapes.data[contact->shapeIdA].type != b3_sphereShape ) continue;
-		ENSURE( contact->manifoldCount == 1 );
+		b3ShapeType typeA = world->shapes.data[contact->shapeIdA].type;
+		b3ShapeType typeB = world->shapes.data[contact->shapeIdB].type;
+		bool eligible = ( typeA == b3_sphereShape && typeB == b3_sphereShape ) ||
+			( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) );
+		if ( eligible == false ) continue;
 		const b3Manifold* cpu = cpuStepManifolds + i;
+		ENSURE( contact->manifoldCount == ( cpu->pointCount > 0 ? 1 : 0 ) );
+		if ( contact->manifoldCount == 0 ) continue;
 		const b3Manifold* applied = contact->manifolds;
 		ENSURE( cpu->pointCount == applied->pointCount );
 		maxApplyError = b3MaxFloat( maxApplyError, b3Length( b3Sub( cpu->normal, applied->normal ) ) );
@@ -599,8 +706,8 @@ static int MetalSphereManifoldTest( void )
 			ENSURE( cpu->points[pointIndex].featureId == applied->points[pointIndex].featureId );
 		}
 	}
-	printf( "    sphere manifolds contacts=%d eligible=%d VF64=%s gpu=%.3f ms oracleError=%.3g applyError=%.3g deterministic=yes\n",
-		contactCount, eligibleCount,
+	printf( "    convex manifolds contacts=%d eligible=%d separated=%d twoPoint=%d VF64=%s gpu=%.3f ms oracleError=%.3g applyError=%.3g deterministic=yes\n",
+		contactCount, eligibleCount, separatedCount, twoPointCount,
 #if defined( BOX3D_DOUBLE_PRECISION )
 		"yes",
 #else
@@ -2073,7 +2180,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalPositionIntegrationTest );
 	RUN_SUBTEST( MetalFusedIntegrationTest );
 	RUN_SUBTEST( MetalFinalizationTest );
-	RUN_SUBTEST( MetalSphereManifoldTest );
+	RUN_SUBTEST( MetalConvexManifoldTest );
 	RUN_SUBTEST( MetalPairTraversalTest );
 	RUN_SUBTEST( MetalExistingPairFilterTest );
 	RUN_SUBTEST( MetalPairTraversalFallbackTest );

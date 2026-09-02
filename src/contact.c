@@ -481,7 +481,7 @@ void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies )
 
 static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact* contact, const b3Shape* shapeA,
 									 b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB,
-									 const b3LocalManifold* precomputedSphereManifold, b3Arena arena )
+									 const b3LocalManifold* precomputedConvexManifold, b3Arena arena )
 {
 	b3ShapeType typeA = shapeA->type;
 	b3ShapeType typeB = shapeB->type;
@@ -494,15 +494,16 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 	b3LocalManifold geomManifold = { 0 };
 	geomManifold.points = pointBuffer;
 
-	if ( precomputedSphereManifold != NULL )
+	if ( precomputedConvexManifold != NULL )
 	{
-		B3_ASSERT( typeA == b3_sphereShape && typeB == b3_sphereShape );
-		geomManifold = *precomputedSphereManifold;
+		B3_ASSERT( ( typeA == b3_sphereShape && typeB == b3_sphereShape ) ||
+			( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) ) );
+		geomManifold = *precomputedConvexManifold;
 		geomManifold.points = pointBuffer;
-		if ( precomputedSphereManifold->pointCount > 0 )
+		B3_ASSERT( 0 <= precomputedConvexManifold->pointCount && precomputedConvexManifold->pointCount <= 2 );
+		for ( int pointIndex = 0; pointIndex < precomputedConvexManifold->pointCount; ++pointIndex )
 		{
-			B3_ASSERT( precomputedSphereManifold->pointCount == 1 );
-			pointBuffer[0] = precomputedSphereManifold->points[0];
+			pointBuffer[pointIndex] = precomputedConvexManifold->points[pointIndex];
 		}
 	}
 	else
@@ -631,11 +632,11 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 
 static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* contact, b3Shape* shapeA, b3WorldTransform xfA,
 								   b3Shape* shapeB, b3WorldTransform xfB, bool flip,
-								   const b3LocalManifold* precomputedSphereManifold, b3Arena arena )
+								   const b3LocalManifold* precomputedConvexManifold, b3Arena arena )
 {
 	// Compute new manifold
 	bool touching = b3ComputeConvexManifold( world, workerIndex, contact, shapeA, xfA, shapeB, xfB,
-		precomputedSphereManifold, arena );
+		precomputedConvexManifold, arena );
 
 	if ( touching == false )
 	{
@@ -747,7 +748,7 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
 // Note: do not assume the shape AABBs are overlapping or are valid.
 bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Shape* shapeA, b3Vec3 localCenterA,
 					  b3WorldTransform xfA, b3Shape* shapeB, b3Vec3 localCenterB, b3WorldTransform xfB, bool isFast,
-					  const b3LocalManifold* precomputedSphereManifold, b3Arena arena )
+					  const b3LocalManifold* precomputedConvexManifold, b3Arena arena )
 {
 	bool touching;
 
@@ -872,7 +873,7 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
 		// Convex-vs-convex
 		bool flip = false;
 		touching = b3UpdateConvexContact( world, workerIndex, contact, shapeA, xfA, shapeB, xfB, flip,
-			precomputedSphereManifold, arena );
+			precomputedConvexManifold, arena );
 	}
 
 	if ( touching )

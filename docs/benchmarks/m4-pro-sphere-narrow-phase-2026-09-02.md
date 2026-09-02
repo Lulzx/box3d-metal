@@ -45,6 +45,6 @@ was not established as benchmark-clean. They are not speedup evidence. This
 route still packs contact inputs on the CPU and exposes a shared geometry result
 array, so it does not yet prove a device-resident manifold pipeline.
 
-The next meaningful slice is capsule-sphere and capsule-capsule geometry,
-followed by resident convex shape/transform inputs and direct manifold storage so
-the shared narrow-phase result stream can disappear.
+Capsule-sphere and capsule-capsule geometry followed in the capsule checkpoint.
+Resident convex shape/transform inputs and direct manifold storage are still
+needed before the shared narrow-phase streams can disappear.

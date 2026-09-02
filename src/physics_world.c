@@ -899,29 +899,43 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
 		contact->flags |= b3_relativeTransformValid;
 
-		// This updates solid contacts. Metal sphere results contain only local
+		// This updates solid contacts. Metal convex results contain only local
 		// geometry; the CPU still owns material callbacks, manifold persistence,
 		// events, recycling, and graph/island transitions.
-		const b3LocalManifold* precomputedSphereManifold = NULL;
+		const b3LocalManifold* precomputedConvexManifold = NULL;
 #if defined( BOX3D_METAL )
-		b3LocalManifold localSphereManifold = { 0 };
-		b3LocalManifoldPoint localSpherePoint = { 0 };
-		if ( stepContext->metalSphereManifolds != NULL )
+		b3LocalManifold localConvexManifold = { 0 };
+		b3LocalManifoldPoint localConvexPoints[2] = { 0 };
+		if ( stepContext->metalConvexManifolds != NULL )
 		{
-			const b3MetalSphereManifoldResult* result = stepContext->metalSphereManifolds + i;
+			const b3MetalConvexManifoldResult* result = stepContext->metalConvexManifolds + i;
 			if ( result->eligible != 0 )
 			{
-				localSphereManifold.normal = (b3Vec3){ result->normalX, result->normalY, result->normalZ };
-				localSphereManifold.points = &localSpherePoint;
-				localSphereManifold.pointCount = result->touching != 0 ? 1 : 0;
-				localSpherePoint.point = (b3Vec3){ result->pointX, result->pointY, result->pointZ };
-				localSpherePoint.separation = result->separation;
-				precomputedSphereManifold = &localSphereManifold;
+				B3_ASSERT( result->pointCount <= 2 );
+				localConvexManifold.normal = (b3Vec3){ result->normalX, result->normalY, result->normalZ };
+				localConvexManifold.points = localConvexPoints;
+				localConvexManifold.pointCount = result->touching != 0 ? (int)result->pointCount : 0;
+				localConvexPoints[0].point = (b3Vec3){ result->point1X, result->point1Y, result->point1Z };
+				localConvexPoints[0].separation = result->separation1;
+				localConvexPoints[1].point = (b3Vec3){ result->point2X, result->point2Y, result->point2Z };
+				localConvexPoints[1].separation = result->separation2;
+				uint32_t featureIds[2] = { result->featureId1, result->featureId2 };
+				for ( int pointIndex = 0; pointIndex < localConvexManifold.pointCount; ++pointIndex )
+				{
+					uint32_t featureId = featureIds[pointIndex];
+					localConvexPoints[pointIndex].pair = (b3FeaturePair){
+						.owner1 = (uint8_t)( featureId >> 24 ),
+						.index1 = (uint8_t)( featureId >> 16 ),
+						.owner2 = (uint8_t)( featureId >> 8 ),
+						.index2 = (uint8_t)featureId,
+					};
+				}
+				precomputedConvexManifold = &localConvexManifold;
 			}
 		}
 #endif
 		bool touching = b3UpdateContact( world, workerIndex, contact, shapeA, bodySimA->localCenter, transformA, shapeB,
-										 bodySimB->localCenter, transformB, isFast, precomputedSphereManifold,
+										 bodySimB->localCenter, transformB, isFast, precomputedConvexManifold,
 										 taskContext->arena );
 
 		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
@@ -1052,7 +1066,7 @@ static void b3Collide( b3StepContext* context )
 	}
 
 	context->awakeContactIndices = contactIndices;
-	context->metalSphereManifolds = NULL;
+	context->metalConvexManifolds = NULL;
 
 	// Contact bit set on ids because contact pointers are unstable as they move between touching and not touching.
 	int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
@@ -1069,15 +1083,15 @@ static void b3Collide( b3StepContext* context )
 #if defined( BOX3D_METAL )
 	if ( world->metalContext != NULL && contactCount >= world->metalMinimumBodyCount )
 	{
-		const b3MetalSphereManifoldResult* sphereResults = NULL;
+		const b3MetalConvexManifoldResult* convexResults = NULL;
 		int eligibleCount = 0;
 		b3MetalDispatchStats stats = { 0 };
-		if ( b3MetalComputeSphereManifolds( world->metalContext, world, contactIndices, contactCount, &sphereResults,
+		if ( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &convexResults,
 			&eligibleCount, &stats ) )
 		{
 			if ( eligibleCount > 0 )
 			{
-				context->metalSphereManifolds = sphereResults;
+				context->metalConvexManifolds = convexResults;
 				world->metalNarrowPhaseDispatchCount += 1;
 				world->metalLastNarrowPhaseGpuMilliseconds = stats.gpuMilliseconds;
 			}
@@ -1095,7 +1109,7 @@ static void b3Collide( b3StepContext* context )
 
 	b3StackFree( &world->stack, contactIndices );
 	context->awakeContactIndices = NULL;
-	context->metalSphereManifolds = NULL;
+	context->metalConvexManifolds = NULL;
 	contactIndices = NULL;
 
 	// Serially update contact state

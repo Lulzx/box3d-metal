@@ -35,19 +35,23 @@ typedef struct b3MetalPairCandidate
 	int padding;
 } b3MetalPairCandidate;
 
-// Local sphere-sphere geometry in shape A's body frame. The record array is
+// Local sphere/capsule geometry in shape A's body frame. The record array is
 // indexed exactly like the narrow-phase contact-index array. eligible == 0
 // means the CPU path owns that contact; eligible != 0 is authoritative even
 // when touching == 0.
-typedef struct b3MetalSphereManifoldResult
+typedef struct b3MetalConvexManifoldResult
 {
 	uint32_t eligible;
 	uint32_t touching;
+	uint32_t pointCount;
+	uint32_t padding1;
 	float normalX, normalY, normalZ;
-	float pointX, pointY, pointZ;
-	float separation;
-	float padding;
-} b3MetalSphereManifoldResult;
+	float padding2;
+	float point1X, point1Y, point1Z, separation1;
+	float point2X, point2Y, point2Z, separation2;
+	uint32_t featureId1, featureId2;
+	uint32_t padding3[2];
+} b3MetalConvexManifoldResult;
 
 typedef struct b3MetalDispatchStats
 {
@@ -121,8 +125,8 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 // array order and use exact VF64 subtraction for double-precision world
 // translations before converting the relative displacement to float, matching
 // Box3D's scalar narrow-phase boundary.
-bool b3MetalComputeSphereManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
-	int contactCount, const b3MetalSphereManifoldResult** results, int* eligibleCount, b3MetalDispatchStats* stats );
+bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
+	int contactCount, const b3MetalConvexManifoldResult** results, int* eligibleCount, b3MetalDispatchStats* stats );
 
 // Mark the resident tree snapshot as matching CPU bounds after a successful
 // shape-result leaf update/refit and the corresponding CPU bookkeeping pass.

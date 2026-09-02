@@ -14,6 +14,8 @@
 #include "shape.h"
 #include "solver_set.h"
 
+#include "box3d/constants.h"
+
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,7 +54,7 @@ struct b3MetalContext
 	id<MTLComputePipelineState> pairAddOffsetsPipeline;
 	id<MTLComputePipelineState> pairUpdateLeavesPipeline;
 	id<MTLComputePipelineState> pairRefitPipeline;
-	id<MTLComputePipelineState> sphereManifoldPipeline;
+	id<MTLComputePipelineState> convexManifoldPipeline;
 	id<MTLComputePipelineState> warmStartContactsPipeline;
 	id<MTLComputePipelineState> solveContactsPipeline;
 	id<MTLComputePipelineState> restitutionContactsPipeline;
@@ -118,10 +120,10 @@ struct b3MetalContext
 	id<MTLBuffer> pairSummaryBuffer;
 	id<MTLBuffer> pairBlockBuffer;
 	NSUInteger pairBlockCapacity;
-	id<MTLBuffer> sphereManifoldInputBuffer;
-	NSUInteger sphereManifoldInputCapacity;
-	id<MTLBuffer> sphereManifoldResultBuffer;
-	NSUInteger sphereManifoldResultCapacity;
+	id<MTLBuffer> convexManifoldInputBuffer;
+	NSUInteger convexManifoldInputCapacity;
+	id<MTLBuffer> convexManifoldResultBuffer;
+	NSUInteger convexManifoldResultCapacity;
 	id<MTLBuffer> contactConstraintBuffer;
 	NSUInteger contactConstraintCapacity;
 	id<MTLBuffer> meshContactBuffer;
@@ -204,19 +206,21 @@ typedef struct b3MetalPairShape
 	uint64_t maskBits;
 } b3MetalPairShape;
 
-typedef struct b3MetalSphereManifoldInput
+typedef struct b3MetalConvexManifoldInput
 {
 	uint32_t eligible;
-	uint32_t padding;
-	float centerAX, centerAY, centerAZ, radiusA;
-	float centerBX, centerBY, centerBZ, radiusB;
+	uint32_t typeA, typeB, padding;
+	float centerA1X, centerA1Y, centerA1Z, radiusA;
+	float centerA2X, centerA2Y, centerA2Z, paddingA;
+	float centerB1X, centerB1Y, centerB1Z, radiusB;
+	float centerB2X, centerB2Y, centerB2Z, paddingB;
 	float qAX, qAY, qAZ, qAW;
 	float qBX, qBY, qBZ, qBW;
 	float positionAX, positionAY, positionAZ;
 	float positionBX, positionBY, positionBZ;
 	uint64_t positionAXBits, positionAYBits, positionAZBits;
 	uint64_t positionBXBits, positionBYBits, positionBZBits;
-} b3MetalSphereManifoldInput;
+} b3MetalConvexManifoldInput;
 
 _Static_assert( sizeof( b3MetalBodyProperties ) == 128, "Metal body property ABI changed" );
 _Static_assert( sizeof( b3MetalFinalizeProperties ) == 64, "Metal finalization-property ABI changed" );
@@ -234,8 +238,8 @@ _Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI 
 _Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
 _Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
 _Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed" );
-_Static_assert( sizeof( b3MetalSphereManifoldInput ) == 144, "Metal sphere-manifold input ABI changed" );
-_Static_assert( sizeof( b3MetalSphereManifoldResult ) == 40, "Metal sphere-manifold result ABI changed" );
+_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 184, "Metal convex-manifold input ABI changed" );
+_Static_assert( sizeof( b3MetalConvexManifoldResult ) == 80, "Metal convex-manifold result ABI changed" );
 _Static_assert( sizeof( b3SetItem ) == 16, "Metal pair-set item ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintPointWide ) == 192, "Metal wide contact point ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintWide ) == 1696, "Metal wide contact ABI changed" );
@@ -375,13 +379,16 @@ static const char* b3_metalSource =
 	"struct PairBlock { uint sum,flags,offset,padding; };\n"
 	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates,shapeCount,pairCapacity,p1,p2; };\n"
 	"struct PairPrefixParams { uint moveCount,candidateCapacity,candidateLimit,padding; };\n"
-	"struct SphereManifoldInput {\n"
-	"  uint eligible,padding; float centerAX,centerAY,centerAZ,radiusA; float centerBX,centerBY,centerBZ,radiusB;\n"
+	"struct ConvexManifoldInput {\n"
+	"  uint eligible,typeA,typeB,padding; float centerA1X,centerA1Y,centerA1Z,radiusA;\n"
+	"  float centerA2X,centerA2Y,centerA2Z,paddingA; float centerB1X,centerB1Y,centerB1Z,radiusB;\n"
+	"  float centerB2X,centerB2Y,centerB2Z,paddingB;\n"
 	"  float qAX,qAY,qAZ,qAW,qBX,qBY,qBZ,qBW; float positionAX,positionAY,positionAZ,positionBX,positionBY,positionBZ;\n"
 	"  ulong positionAXBits,positionAYBits,positionAZBits,positionBXBits,positionBYBits,positionBZBits;\n"
 	"};\n"
-	"struct SphereManifoldResult { uint eligible,touching; float nx,ny,nz,px,py,pz,separation,padding; };\n"
-	"struct SphereManifoldParams { uint contactCount,p0,p1,p2; };\n"
+	"struct ConvexManifoldResult { uint eligible,touching,pointCount,padding1; float nx,ny,nz,padding2;\n"
+	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,padding3,padding4; };\n"
+	"struct ConvexManifoldParams { uint contactCount; float linearSlop,speculativeDistance,padding; };\n"
 	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
 	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
 	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
@@ -791,11 +798,27 @@ static const char* b3_metalSource =
 	"                                constant PairPrefixParams& p [[buffer(2)]],uint i [[thread_position_in_grid]]) {\n"
 	"  if(i<p.moveCount){PairQueryRecord r=records[i];r.offset+=blocks[i/256u].offset;records[i]=r;}\n"
 	"}\n"
-	"kernel void b3_sphere_manifolds(const device SphereManifoldInput* inputs [[buffer(0)]],\n"
-	"                                device SphereManifoldResult* results [[buffer(1)]],\n"
-	"                                constant SphereManifoldParams& p [[buffer(2)]],\n"
+	"float3 point_segment(float3 a,float3 b,float3 q){float3 ab=b-a;float alpha=dot(ab,q-a);\n"
+	"  if(alpha<=0.0f)return a;float denominator=dot(ab,ab);if(alpha>denominator)return b;return a+(alpha/denominator)*ab;}\n"
+	"struct SegmentResult { float3 point1,point2; float fraction1,fraction2; };\n"
+	"SegmentResult segment_distance(float3 p1,float3 q1,float3 p2,float3 q2){SegmentResult r;float3 d1=q1-p1,d2=q2-p2,delta=p1-p2;\n"
+	"  float a=dot(d1,d1),b=dot(d1,d2),c=dot(d1,delta),e=dot(d2,d2),f=dot(d2,delta);float s1,s2;\n"
+	"  if(a<100.0f*1.19209290e-7f&&e<100.0f*1.19209290e-7f){s1=0.0f;s2=0.0f;}\n"
+	"  else if(a<100.0f*1.19209290e-7f){s1=0.0f;s2=clamp(f/e,0.0f,1.0f);}\n"
+	"  else if(e<100.0f*1.19209290e-7f){s1=clamp(-c/a,0.0f,1.0f);s2=0.0f;}\n"
+	"  else{float denom=a*e-b*b;s1=denom>1000.0f*1.17549435e-38f?clamp((b*f-c*e)/denom,0.0f,1.0f):0.0f;\n"
+	"    s2=(b*s1+f)/e;if(s2<0.0f){s1=clamp(-c/a,0.0f,1.0f);s2=0.0f;}else if(s2>1.0f){s1=clamp((b-c)/a,0.0f,1.0f);s2=1.0f;}}\n"
+	"  r.point1=p1+s1*d1;r.fraction1=s1;r.point2=p2+s2*d2;r.fraction2=s2;return r;}\n"
+	"uint clip_segment(thread float3& a,thread uint& fa,thread float3& b,thread uint& fb,float3 n,float planeOffset){\n"
+	"  float da=dot(n,a)-planeOffset,db=dot(n,b)-planeOffset;float3 oa=a,ob=b;uint ofa=fa,ofb=fb;uint count=0u;\n"
+	"  if(da<=0.0f){a=oa;fa=ofa;count=1u;}if(db<=0.0f){if(count==0u){a=ob;fa=ofb;}else{b=ob;fb=ofb;}count++;}\n"
+	"  if(da*db<0.0f){float t=da/(da-db);float3 v=(1.0f-t)*oa+t*ob;uint feature=da>0.0f?ofa:ofb;\n"
+	"    if(count==0u){a=v;fa=feature;}else{b=v;fb=feature;}count++;}return count;}\n"
+	"kernel void b3_convex_manifolds(const device ConvexManifoldInput* inputs [[buffer(0)]],\n"
+	"                                device ConvexManifoldResult* results [[buffer(1)]],\n"
+	"                                constant ConvexManifoldParams& p [[buffer(2)]],\n"
 	"                                uint i [[thread_position_in_grid]]) {\n"
-	"  if(i>=p.contactCount)return; SphereManifoldInput in=inputs[i]; SphereManifoldResult out={};\n"
+	"  if(i>=p.contactCount)return; ConvexManifoldInput in=inputs[i]; ConvexManifoldResult out={};\n"
 	"  if(in.eligible==0u){results[i]=out;return;} out.eligible=1u;\n"
 	"  float3 d;\n"
 	"#if defined(B3_DOUBLE_PRECISION)\n"
@@ -807,15 +830,29 @@ static const char* b3_metalSource =
 	"#endif\n"
 	"  float4 qA=float4(in.qAX,in.qAY,in.qAZ,in.qAW),qB=float4(in.qBX,in.qBY,in.qBZ,in.qBW);\n"
 	"  float3 relativePosition=inv_rotate(qA,d); float4 relativeRotation=quat_mul(float4(-qA.xyz,qA.w),qB);\n"
-	"  float3 center1=float3(in.centerAX,in.centerAY,in.centerAZ);\n"
-	"  float3 center2=rotate(relativeRotation,float3(in.centerBX,in.centerBY,in.centerBZ))+relativePosition;\n"
-	"  float totalRadius=in.radiusA+in.radiusB; float3 offset=center2-center1; float distanceSq=dot(offset,offset);\n"
-	"  if(distanceSq>totalRadius*totalRadius){results[i]=out;return;}\n"
-	"  float distance=sqrt(distanceSq); float3 normal=float3(0.0f,1.0f,0.0f);\n"
-	"  if(distance*distance>1000.0f*1.17549435e-38f)normal=offset/distance;\n"
-	"  float3 point=0.5f*((center1+in.radiusA*normal+center2)-in.radiusB*normal);\n"
-	"  out.touching=1u;out.nx=normal.x;out.ny=normal.y;out.nz=normal.z;\n"
-	"  out.px=point.x;out.py=point.y;out.pz=point.z;out.separation=distance-totalRadius;results[i]=out;\n"
+	"  float3 a1=float3(in.centerA1X,in.centerA1Y,in.centerA1Z),a2=float3(in.centerA2X,in.centerA2Y,in.centerA2Z);\n"
+	"  float3 b1=rotate(relativeRotation,float3(in.centerB1X,in.centerB1Y,in.centerB1Z))+relativePosition;\n"
+	"  float3 b2=rotate(relativeRotation,float3(in.centerB2X,in.centerB2Y,in.centerB2Z))+relativePosition;\n"
+	"  float radius=in.radiusA+in.radiusB;float3 cpA,cpB;\n"
+	"  if(in.typeA==5u){cpA=a1;cpB=b1;}else if(in.typeB==5u){cpB=b1;cpA=point_segment(a1,a2,cpB);}\n"
+	"  else{SegmentResult sr=segment_distance(a1,a2,b1,b2);cpA=sr.point1;cpB=sr.point2;float3 initialOffset=cpB-cpA;\n"
+	"    float distanceSquared=dot(initialOffset,initialOffset),maxDistance=radius+p.speculativeDistance,minDistance=0.01f*p.linearSlop;\n"
+	"    if(distanceSquared>maxDistance*maxDistance||distanceSquared<minDistance*minDistance){results[i]=out;return;}\n"
+	"    float3 segmentA=a2-a1,segmentB=b2-b1;float lengthA=length(segmentA),lengthB=length(segmentB);\n"
+	"    if(lengthA<p.linearSlop||lengthB<p.linearSlop){results[i]=out;return;}float3 edgeA=segmentA/lengthA,edgeB=segmentB/lengthB;\n"
+	"    if(dot(cross(edgeA,edgeB),cross(edgeA,edgeB))<0.0025f){float3 v1=b1,v2=b2;uint f1=0u,f2=0x00010001u;\n"
+	"      uint count=clip_segment(v1,f1,v2,f2,-edgeA,-dot(edgeA,a1));if(count==2u)count=clip_segment(v1,f1,v2,f2,edgeA,dot(edgeA,a2));\n"
+	"      if(count==2u){float3 c1=point_segment(a1,a2,v1),c2=point_segment(a1,a2,v2);float d1=distance(c1,v1),d2=distance(c2,v2);\n"
+	"        if(d1<=radius&&d2<=radius){if(d1<minDistance||d2<minDistance){results[i]=out;return;}float3 n1=(v1-c1)/d1,n2=(v2-c2)/d2;\n"
+	"          float3 normal=normalize(n1+n2);float3 point1=0.5f*((v1+in.radiusA*n1+c1)-in.radiusB*normal);\n"
+	"          float3 point2=0.5f*((v2+in.radiusA*n2+c2)-in.radiusB*normal);out.touching=1u;out.pointCount=2u;\n"
+	"          out.nx=normal.x;out.ny=normal.y;out.nz=normal.z;out.p1x=point1.x;out.p1y=point1.y;out.p1z=point1.z;out.separation1=d1-radius;\n"
+	"          out.p2x=point2.x;out.p2y=point2.y;out.p2z=point2.z;out.separation2=d2-radius;out.feature1=f1;out.feature2=f2;results[i]=out;return;}}}}\n"
+	"  float3 offset=cpB-cpA;float distanceSq=dot(offset,offset);if(in.typeB==5u&&distanceSq>radius*radius){results[i]=out;return;}\n"
+	"  float distance=sqrt(distanceSq);float3 normal=float3(0.0f,1.0f,0.0f);if(distance*distance>1000.0f*1.17549435e-38f)normal=offset/distance;\n"
+	"  float3 point=0.5f*((cpA+in.radiusA*normal+cpB)-in.radiusB*normal);out.touching=1u;out.pointCount=1u;\n"
+	"  out.nx=normal.x;out.ny=normal.y;out.nz=normal.z;out.p1x=point.x;out.p1y=point.y;out.p1z=point.z;\n"
+	"  out.separation1=distance-radius;out.feature1=0u;results[i]=out;\n"
 	"}\n";
 #pragma clang diagnostic pop
 
@@ -1205,11 +1242,11 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			? [device newComputePipelineStateWithFunction:pairRefitFunction error:&error]
 			: nil;
 		[pairRefitFunction release];
-		id<MTLFunction> sphereManifoldFunction = [library newFunctionWithName:@"b3_sphere_manifolds"];
-		id<MTLComputePipelineState> sphereManifoldPipeline = sphereManifoldFunction != nil
-			? [device newComputePipelineStateWithFunction:sphereManifoldFunction error:&error]
+		id<MTLFunction> convexManifoldFunction = [library newFunctionWithName:@"b3_convex_manifolds"];
+		id<MTLComputePipelineState> convexManifoldPipeline = convexManifoldFunction != nil
+			? [device newComputePipelineStateWithFunction:convexManifoldFunction error:&error]
 			: nil;
-		[sphereManifoldFunction release];
+		[convexManifoldFunction release];
 		[library release];
 
 		NSString* contactSource = [NSString stringWithUTF8String:b3_contactSource];
@@ -1292,7 +1329,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			 shapeScanBlocksPipeline == nil || shapePrefixPipeline == nil || shapeScatterPipeline == nil ||
 			 pairCandidatesPipeline == nil || pairScanBlocksPipeline == nil || pairPrefixPipeline == nil ||
 			 pairAddOffsetsPipeline == nil || pairUpdateLeavesPipeline == nil || pairRefitPipeline == nil ||
-			 sphereManifoldPipeline == nil ||
+			 convexManifoldPipeline == nil ||
 			 warmStartPipeline == nil || solvePipeline == nil ||
 			 restitutionPipeline == nil || warmStartMeshPipeline == nil || solveMeshPipeline == nil || restitutionMeshPipeline == nil ||
 			 warmStartOverflowPipeline == nil || solveOverflowPipeline == nil || restitutionOverflowPipeline == nil ||
@@ -1313,7 +1350,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[pairAddOffsetsPipeline release];
 			[pairUpdateLeavesPipeline release];
 			[pairRefitPipeline release];
-			[sphereManifoldPipeline release];
+			[convexManifoldPipeline release];
 			[warmStartPipeline release];
 			[solvePipeline release];
 			[restitutionPipeline release];
@@ -1351,7 +1388,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[pairAddOffsetsPipeline release];
 			[pairUpdateLeavesPipeline release];
 			[pairRefitPipeline release];
-			[sphereManifoldPipeline release];
+			[convexManifoldPipeline release];
 			[warmStartPipeline release];
 			[solvePipeline release];
 			[restitutionPipeline release];
@@ -1388,7 +1425,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		context->pairAddOffsetsPipeline = pairAddOffsetsPipeline;
 		context->pairUpdateLeavesPipeline = pairUpdateLeavesPipeline;
 		context->pairRefitPipeline = pairRefitPipeline;
-		context->sphereManifoldPipeline = sphereManifoldPipeline;
+		context->convexManifoldPipeline = convexManifoldPipeline;
 		context->warmStartContactsPipeline = warmStartPipeline;
 		context->solveContactsPipeline = solvePipeline;
 		context->restitutionContactsPipeline = restitutionPipeline;
@@ -1436,8 +1473,8 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->pairCandidateBuffer release];
 	[context->pairSummaryBuffer release];
 	[context->pairBlockBuffer release];
-	[context->sphereManifoldInputBuffer release];
-	[context->sphereManifoldResultBuffer release];
+	[context->convexManifoldInputBuffer release];
+	[context->convexManifoldResultBuffer release];
 	[context->contactConstraintBuffer release];
 	[context->meshContactBuffer release];
 	[context->meshManifoldBuffer release];
@@ -1457,7 +1494,7 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->pairAddOffsetsPipeline release];
 	[context->pairUpdateLeavesPipeline release];
 	[context->pairRefitPipeline release];
-	[context->sphereManifoldPipeline release];
+	[context->convexManifoldPipeline release];
 	[context->warmStartContactsPipeline release];
 	[context->solveContactsPipeline release];
 	[context->restitutionContactsPipeline release];
@@ -1586,27 +1623,27 @@ static bool b3MetalEnsureFinalizePropertiesCapacity( b3MetalContext* context, NS
 	return true;
 }
 
-static bool b3MetalEnsureSphereManifoldCapacity( b3MetalContext* context, NSUInteger inputBytes, NSUInteger resultBytes )
+static bool b3MetalEnsureConvexManifoldCapacity( b3MetalContext* context, NSUInteger inputBytes, NSUInteger resultBytes )
 {
-	if ( context->sphereManifoldInputCapacity < inputBytes )
+	if ( context->convexManifoldInputCapacity < inputBytes )
 	{
-		NSUInteger capacity = context->sphereManifoldInputCapacity > 0 ? context->sphereManifoldInputCapacity : 4096;
+		NSUInteger capacity = context->convexManifoldInputCapacity > 0 ? context->convexManifoldInputCapacity : 4096;
 		while ( capacity < inputBytes ) capacity *= 2;
 		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
 		if ( buffer == nil ) return false;
-		[context->sphereManifoldInputBuffer release];
-		context->sphereManifoldInputBuffer = buffer;
-		context->sphereManifoldInputCapacity = capacity;
+		[context->convexManifoldInputBuffer release];
+		context->convexManifoldInputBuffer = buffer;
+		context->convexManifoldInputCapacity = capacity;
 	}
-	if ( context->sphereManifoldResultCapacity < resultBytes )
+	if ( context->convexManifoldResultCapacity < resultBytes )
 	{
-		NSUInteger capacity = context->sphereManifoldResultCapacity > 0 ? context->sphereManifoldResultCapacity : 4096;
+		NSUInteger capacity = context->convexManifoldResultCapacity > 0 ? context->convexManifoldResultCapacity : 4096;
 		while ( capacity < resultBytes ) capacity *= 2;
 		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
 		if ( buffer == nil ) return false;
-		[context->sphereManifoldResultBuffer release];
-		context->sphereManifoldResultBuffer = buffer;
-		context->sphereManifoldResultCapacity = capacity;
+		[context->convexManifoldResultBuffer release];
+		context->convexManifoldResultBuffer = buffer;
+		context->convexManifoldResultCapacity = capacity;
 	}
 	return true;
 }
@@ -2949,8 +2986,8 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 	}
 }
 
-bool b3MetalComputeSphereManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
-	int contactCount, const b3MetalSphereManifoldResult** resultsOut, int* eligibleCountOut, b3MetalDispatchStats* stats )
+bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
+	int contactCount, const b3MetalConvexManifoldResult** resultsOut, int* eligibleCountOut, b3MetalDispatchStats* stats )
 {
 	if ( resultsOut != NULL ) *resultsOut = NULL;
 	if ( eligibleCountOut != NULL ) *eligibleCountOut = 0;
@@ -2961,18 +2998,18 @@ bool b3MetalComputeSphereManifolds( b3MetalContext* context, const b3World* worl
 		return false;
 	}
 	if ( contactCount == 0 ) return true;
-	if ( (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalSphereManifoldInput ) ||
-		 (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalSphereManifoldResult ) )
+	if ( (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldInput ) ||
+		 (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldResult ) )
 	{
 		return false;
 	}
 
 	@autoreleasepool
 	{
-		NSUInteger inputBytes = (NSUInteger)contactCount * sizeof( b3MetalSphereManifoldInput );
-		NSUInteger resultBytes = (NSUInteger)contactCount * sizeof( b3MetalSphereManifoldResult );
-		if ( b3MetalEnsureSphereManifoldCapacity( context, inputBytes, resultBytes ) == false ) return false;
-		b3MetalSphereManifoldInput* inputs = context->sphereManifoldInputBuffer.contents;
+		NSUInteger inputBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldInput );
+		NSUInteger resultBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldResult );
+		if ( b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes ) == false ) return false;
+		b3MetalConvexManifoldInput* inputs = context->convexManifoldInputBuffer.contents;
 		memset( inputs, 0, inputBytes );
 		int eligibleCount = 0;
 		for ( int i = 0; i < contactCount; ++i )
@@ -2987,21 +3024,52 @@ bool b3MetalComputeSphereManifolds( b3MetalContext* context, const b3World* worl
 			}
 			const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
 			const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
-			if ( shapeA->type != b3_sphereShape || shapeB->type != b3_sphereShape ) continue;
+			bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
+				( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
+				( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape );
+			if ( eligible == false ) continue;
 			const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
 			const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
 			b3WorldTransform transformA = b3GetBodyTransformQuick( (b3World*)world, (b3Body*)bodyA );
 			b3WorldTransform transformB = b3GetBodyTransformQuick( (b3World*)world, (b3Body*)bodyB );
-			b3MetalSphereManifoldInput* input = inputs + i;
+			b3MetalConvexManifoldInput* input = inputs + i;
 			input->eligible = 1;
-			input->centerAX = shapeA->sphere.center.x;
-			input->centerAY = shapeA->sphere.center.y;
-			input->centerAZ = shapeA->sphere.center.z;
-			input->radiusA = shapeA->sphere.radius;
-			input->centerBX = shapeB->sphere.center.x;
-			input->centerBY = shapeB->sphere.center.y;
-			input->centerBZ = shapeB->sphere.center.z;
-			input->radiusB = shapeB->sphere.radius;
+			input->typeA = (uint32_t)shapeA->type;
+			input->typeB = (uint32_t)shapeB->type;
+			if ( shapeA->type == b3_sphereShape )
+			{
+				input->centerA1X = input->centerA2X = shapeA->sphere.center.x;
+				input->centerA1Y = input->centerA2Y = shapeA->sphere.center.y;
+				input->centerA1Z = input->centerA2Z = shapeA->sphere.center.z;
+				input->radiusA = shapeA->sphere.radius;
+			}
+			else
+			{
+				input->centerA1X = shapeA->capsule.center1.x;
+				input->centerA1Y = shapeA->capsule.center1.y;
+				input->centerA1Z = shapeA->capsule.center1.z;
+				input->centerA2X = shapeA->capsule.center2.x;
+				input->centerA2Y = shapeA->capsule.center2.y;
+				input->centerA2Z = shapeA->capsule.center2.z;
+				input->radiusA = shapeA->capsule.radius;
+			}
+			if ( shapeB->type == b3_sphereShape )
+			{
+				input->centerB1X = input->centerB2X = shapeB->sphere.center.x;
+				input->centerB1Y = input->centerB2Y = shapeB->sphere.center.y;
+				input->centerB1Z = input->centerB2Z = shapeB->sphere.center.z;
+				input->radiusB = shapeB->sphere.radius;
+			}
+			else
+			{
+				input->centerB1X = shapeB->capsule.center1.x;
+				input->centerB1Y = shapeB->capsule.center1.y;
+				input->centerB1Z = shapeB->capsule.center1.z;
+				input->centerB2X = shapeB->capsule.center2.x;
+				input->centerB2Y = shapeB->capsule.center2.y;
+				input->centerB2Z = shapeB->capsule.center2.z;
+				input->radiusB = shapeB->capsule.radius;
+			}
 			input->qAX = transformA.q.v.x;
 			input->qAY = transformA.q.v.y;
 			input->qAZ = transformA.q.v.z;
@@ -3028,14 +3096,16 @@ bool b3MetalComputeSphereManifolds( b3MetalContext* context, const b3World* worl
 		}
 		if ( eligibleCount == 0 ) return true;
 
-		struct { uint32_t contactCount, padding[3]; } params = { (uint32_t)contactCount, { 0, 0, 0 } };
+		struct { uint32_t contactCount; float linearSlop, speculativeDistance, padding; } params = {
+			(uint32_t)contactCount, B3_LINEAR_SLOP, B3_SPECULATIVE_DISTANCE, 0.0f,
+		};
 		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
 		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
 		if ( commandBuffer == nil || encoder == nil ) return false;
-		id<MTLComputePipelineState> pipeline = context->sphereManifoldPipeline;
+		id<MTLComputePipelineState> pipeline = context->convexManifoldPipeline;
 		[encoder setComputePipelineState:pipeline];
-		[encoder setBuffer:context->sphereManifoldInputBuffer offset:0 atIndex:0];
-		[encoder setBuffer:context->sphereManifoldResultBuffer offset:0 atIndex:1];
+		[encoder setBuffer:context->convexManifoldInputBuffer offset:0 atIndex:0];
+		[encoder setBuffer:context->convexManifoldResultBuffer offset:0 atIndex:1];
 		[encoder setBytes:&params length:sizeof( params ) atIndex:2];
 		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
@@ -3043,7 +3113,7 @@ bool b3MetalComputeSphereManifolds( b3MetalContext* context, const b3World* worl
 		[commandBuffer commit];
 		[commandBuffer waitUntilCompleted];
 		if ( commandBuffer.status != MTLCommandBufferStatusCompleted ) return false;
-		*resultsOut = context->sphereManifoldResultBuffer.contents;
+		*resultsOut = context->convexManifoldResultBuffer.contents;
 		*eligibleCountOut = eligibleCount;
 		if ( stats != NULL )
 		{
