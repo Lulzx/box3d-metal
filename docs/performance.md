@@ -111,6 +111,13 @@ scatter. Its compact shared record grows from 80 to 160 bytes pending the next
 exception-only topology path. A loaded-host 512-contact smoke measured `0.131x`;
 that regression result is retained explicitly and is not crossover evidence.
 
+The next checkpoint refreshes stable 152-byte preparation records directly in
+the same scatter. Across eight warmups and 20 measured 512-contact steps it
+reported 13,824 device refreshes, exactly all contacts on the 27 post-seed
+steps. Whole-world time was `0.173540 ms` CPU versus `1.472546 ms` Metal
+(`0.118x`). This is regression evidence, not acceleration: the compact
+160-byte finalized-manifold stream and CPU contact/topology traversal remain.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.

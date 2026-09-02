@@ -59,9 +59,12 @@ Transient per-contact ownership now carries that authority through persistence,
 and topology into solver setup. Pre-solve callbacks remain CPU-owned. When every
 colored convex contact is resident-authoritative and no convex overflow exists,
 a Metal kernel now prepares Erin's SIMD-wide contact constraints in the existing
-solver command buffer. CPU workers write remaining body indices, manifold
-identity, callback results, and finalized contact state into a generation-tagged
-152-byte contact-ID record during the existing topology pass.
+solver command buffer. CPU workers seed a generation-tagged 152-byte contact-ID
+record with body indices and manifold identity. On later generation-stable
+steps, the manifold scatter refreshes the record directly with current indices,
+finalized anchors and materials, prior contact-scope impulses, persistence, and
+normal warm starts. Recycling, pre-solve, and custom material callbacks remain
+CPU-written exceptions.
 Solver submission bulk-copies only a deterministic four-byte ID schedule per
 SIMD lane and no longer dereferences contacts to repack those records. Mixed,
 recycled, callback, overflow, and unsupported routes fail closed, including
@@ -179,6 +182,11 @@ event fixture synchronizes exactly one exception contact.
 The resident contact-finalization checkpoint moves feature persistence,
 COM-relative anchors, and default material/tangent finalization into the
 manifold scatter while preserving custom callback exceptions.
+The device-refresh checkpoint then updates all 81 stable preparation records on
+each of three post-seed steps (243 refreshes), while custom material callbacks
+report zero. It removes steady-state CPU table writes, not the compact shared
+result stream or CPU topology traversal; the 512-contact smoke remains a
+documented `0.118x` regression.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

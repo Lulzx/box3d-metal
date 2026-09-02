@@ -25,8 +25,10 @@
   bypass the all-contact CPU store; compact hit-enabled exceptions and explicit
   public/debug/snapshot consumers synchronize individual records. The
   contact-ID lane schedule remains resident across unchanged graph revisions
-  and exact counts. CPU persistence, graph construction, final event ordering,
-  and topology remain.
+  and exact counts. Stable default-callback contacts also refresh their
+  152-byte preparation records directly in the manifold scatter after the CPU
+  seed. CPU manifold application, graph construction, callback/recycling
+  exceptions, final event ordering, and topology remain.
 - Body and awake-shape finalization have an experimental Metal path, but the CPU
   still owns topology mutation, sleeping/island
   mutation, events, and CCD. Successful resident refits now use a stable
@@ -50,8 +52,8 @@ Resident contact results now carry warm starts by contact generation and feature
 ID. Public-manifold synchronization is lazy, and hit events use a compact
 exception list assembled during narrow-phase packing.
 
-1. Move supported persistence fully on-device while returning only compact
-   callback, topology, and unsupported-geometry exceptions.
+1. Classify callback and topology exceptions so unchanged resident contacts
+   bypass CPU manifold application, then return only the compact exceptions.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,

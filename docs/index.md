@@ -63,6 +63,7 @@ for review.
 - [Resident warm-start carry](benchmarks/m4-pro-resident-warm-start-2026-09-02.md)
 - [Lazy contact-impulse synchronization](benchmarks/m4-pro-lazy-contact-impulse-sync-2026-09-02.md)
 - [Resident contact finalization](benchmarks/m4-pro-contact-finalization-residency-2026-09-02.md)
+- [Device contact-prepare refresh](benchmarks/m4-pro-device-contact-prepare-refresh-2026-09-02.md)
 
 ## Repository map
 

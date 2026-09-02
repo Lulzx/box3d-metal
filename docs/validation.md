@@ -118,6 +118,11 @@ Direct primitive tests separately cover packed state and integration kernels.
   tangent finalization, plus material-registry mutation. A separate fixture
   proves custom friction/restitution callbacks remain CPU-owned while rolling
   and tangent values come from Metal.
+- Four stable 81-contact steps report 243 direct device refreshes of the
+  preparation table: every contact on all three post-seed steps. A
+  generation-guard fixture reports exactly one valid refresh after rejecting a
+  deliberately stale contact generation, while a two-step custom-material
+  fixture reports zero refreshes and retains its CPU callback values.
 
 ## Recorded error maxima
 
@@ -211,6 +216,11 @@ The contact-impulse residency checkpoint again passed the portable CPU full
 suite, float and double/VF64 warning-as-error Metal suites, full AddressSanitizer
 and float UndefinedBehaviorSanitizer suites, and focused double/VF64
 UndefinedBehaviorSanitizer Metal suite.
+
+The device contact-prepare refresh checkpoint passed the same matrix. Float and
+double/VF64 differentials both reported 243 stable refreshes; CPU/GPU velocity
+error remained `3.58e-07`, and the warm-start generation fixture remained
+`4.47e-08`.
 
 ## What the tests do not prove
 

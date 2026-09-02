@@ -238,8 +238,12 @@ anchors, persistence, normal warm starts, default materials, and tangent
 velocity flow through the shared record; body indices, custom callback results,
 contact-scope impulses, contact generation, point feature IDs, and manifold identity live in a
 generation-tagged 152-byte shared table
-indexed by contact ID. Collision workers write disjoint records during the
-existing persistence pass. Solver submission initializes tail lanes and
+indexed by contact ID. The CPU seeds first-touch records. On later
+generation-stable steps, the manifold scatter validates the prior impulse and
+preparation records, then refreshes current body indices, finalized anchors and
+materials, contact-scope impulses, feature IDs, persistence, and normal warm
+starts directly in the table. Collision workers retain disjoint writes for
+recycling, pre-solve, custom material callbacks, and first-touch records. Solver submission initializes tail lanes and
 bulk-copies each active color's four-byte contact IDs without dereferencing
 world contact/manifold storage. The kernel computes Erin's tangent frame,
 softness, normal/tangent/twist/rolling
@@ -247,7 +251,7 @@ masses, friction centers, lever arms, relative velocities, and projected
 warm-start impulses. Mixed, recycled, callback, overflow, stale, or malformed
 sets fail closed. If another unsupported constraint rejects the Metal solver
 after CPU preparation was skipped, Box3D reruns convex preparation before the
-CPU solver fallback. CPU allocation/callback table writes, graph scheduling,
+CPU solver fallback. CPU allocation/exception table writes, graph scheduling,
 events, and topology remain the next residency boundary. After restitution, a
 kernel in the same command buffer writes world-axis friction, twist, rolling,
 point normal/total impulses, and pre-solve normal velocity into a
