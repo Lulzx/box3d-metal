@@ -65,7 +65,12 @@ end to end:
 
 ```c
 b3World_SetMetalFinalization(world, true);
+b3World_SetMetalBroadPhase(world, true);
 ```
+
+The broad-phase opt-in currently moves only raw dynamic-tree traversal. It is
+profitable only in the recorded large sparse worlds and retains explicit CPU
+fallback for depth, candidate-capacity, allocation, or dispatch limits.
 
 ## Inspect the route
 
@@ -82,7 +87,8 @@ Dispatch counts prove that a Metal stage ran. A zero fallback count proves only
 that the recorded supported stages did not fall back; it is not a claim that
 broad-phase tree mutation, pair generation, narrow phase, CCD, or sleeping ran
 on the GPU. The separately enabled finalization path has body and shape
-dispatch/fallback counters.
+dispatch/fallback counters. Pair traversal has independent pair dispatch,
+fallback, and GPU-time fields.
 
 ## Disable and release
 

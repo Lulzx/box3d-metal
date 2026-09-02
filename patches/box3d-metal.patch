@@ -22,10 +22,10 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..0b5f7b8 100644
+index cfe16e4..a7854bb 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,58 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,60 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -40,10 +40,11 @@ index cfe16e4..0b5f7b8 100644
 +restitution. Contact and joint graph overflow is solved in deterministic scalar
 +order inside dedicated Metal kernels. Distance joints (including springs,
 +limits, and motors) and parallel joints share the GPU-resident command graph;
-+other joint types fall back safely. An experimental, separately opt-in kernel
-+also ports final rotation, origin offset, sleep-motion metrics, and world-inertia
-+finalization. It remains off by default because current end-to-end measurements
-+do not show a stable speedup.
++other joint types fall back safely. Experimental, separately opt-in stages port
++body/shape finalization and traverse Erin's existing broad-phase trees on Metal
++while retaining deterministic CPU filtering and contact creation. They remain
++off by default; shape readback is still a regression, while GPU tree traversal
++crosses over only in large measured worlds.
 +See [the architecture and compatibility contract](docs/metal_architecture.md)
 +for the exact supported surface and current CPU-only stages.
 +
@@ -74,6 +75,7 @@ index cfe16e4..0b5f7b8 100644
 +
 +/* Research path: correct and fused, but not yet a measured whole-world win. */
 +b3World_SetMetalFinalization(world, true);
++b3World_SetMetalBroadPhase(world, true);
 +```
 +
 +Inspect `b3World_GetMetalProfile(world)` to verify device selection, dispatches,
@@ -938,10 +940,10 @@ index 0000000..9f2dcfa
 +}
 diff --git a/benchmark/metal_world.c b/benchmark/metal_world.c
 new file mode 100644
-index 0000000..1771ed2
+index 0000000..c05713a
 --- /dev/null
 +++ b/benchmark/metal_world.c
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,97 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -998,10 +1000,12 @@ index 0000000..1771ed2
 +{
 +	const int workerCount = 8;
 +	bool enableFinalization = getenv( "BOX3D_METAL_FINALIZATION" ) != NULL;
++	bool enableBroadPhase = getenv( "BOX3D_METAL_BROAD_PHASE" ) != NULL;
 +	bool createShapes = getenv( "BOX3D_METAL_SHAPES" ) != NULL;
-+	printf( "# operation=whole_world_unconstrained substeps=4 workers=%d timing=wall_clock_step metal_finalization=%s shapes=%s\n",
-+		workerCount, enableFinalization ? "on" : "off", createShapes ? "sphere_per_body" : "none" );
-+	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,speedup\n" );
++	printf( "# operation=whole_world_unconstrained substeps=4 workers=%d timing=wall_clock_step metal_finalization=%s "
++		"metal_broad_phase=%s shapes=%s\n", workerCount, enableFinalization ? "on" : "off",
++		enableBroadPhase ? "on" : "off", createShapes ? "sphere_per_body" : "none" );
++	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,pair_kernel_ms,pair_dispatches,pair_fallbacks,speedup\n" );
 +	const int counts[] = { 512, 2048, 8192, 32768, 131072, 524288 };
 +	for ( int testIndex = 0; testIndex < (int)( sizeof( counts ) / sizeof( counts[0] ) ); ++testIndex )
 +	{
@@ -1023,10 +1027,16 @@ index 0000000..1771ed2
 +			fprintf( stderr, "Metal finalization enable failed\n" );
 +			return 1;
 +		}
++		if ( enableBroadPhase && b3World_SetMetalBroadPhase( gpuWorld, true ) == false )
++		{
++			fprintf( stderr, "Metal broad phase enable failed\n" );
++			return 1;
++		}
 +		double gpuMs = TimeWorld( gpuWorld, repeats );
 +		b3MetalProfile metal = b3World_GetMetalProfile( gpuWorld );
-+		printf( "%d,%d,%.6f,%.6f,%.6f,%.3f\n", bodyCount, repeats, cpuMs, gpuMs,
-+			metal.lastUnconstrainedGpuMilliseconds, cpuMs / gpuMs );
++		printf( "%d,%d,%.6f,%.6f,%.6f,%.6f,%llu,%llu,%.3f\n", bodyCount, repeats, cpuMs, gpuMs,
++			metal.lastUnconstrainedGpuMilliseconds, metal.lastPairGpuMilliseconds,
++			(unsigned long long)metal.pairDispatchCount, (unsigned long long)metal.pairFallbackCount, cpuMs / gpuMs );
 +		b3DestroyWorld( gpuWorld );
 +	}
 +	return 0;
@@ -1324,6 +1334,66 @@ index 0000000..4daca2b
 +cmake --build build/metal-release --target metal_mesh_benchmark
 +./build/metal-release/bin/metal_mesh_benchmark
 +```
+diff --git a/docs/benchmarks/m4-pro-pair-generation-2026-09-02.md b/docs/benchmarks/m4-pro-pair-generation-2026-09-02.md
+new file mode 100644
+index 0000000..697777c
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-pair-generation-2026-09-02.md
+@@ -0,0 +1,54 @@
++# M4 Pro GPU pair generation — 2026-09-02
++
++## Scope
++
++This is the first broad-phase slice, not yet a device-resident replacement for
++the CPU tree. Metal receives the three existing Box3D dynamic-tree node arrays
++and the deterministic move array. A count traversal, stable CPU prefix, and
++write traversal reproduce upstream leaf visitation order. The CPU then applies
++the unchanged Box3D pair callback and creates contacts in the same order.
++
++The direct oracle used 96 mixed static, kinematic, and dynamic proxies. It
++compared all 1,012 raw candidates, including proxy id, tree type, shape id, and
++per-move order, exactly. An 80-body fully overlapping case exceeded the
++64-candidate-average guard and verified one CPU fallback with zero Metal pair
++dispatches. A ten-step contact world exercised GPU traversal plus CPU filtering,
++contact creation, Metal shape finalization, and the GPU contact solver.
++
++## Whole-world result
++
++Each body owns one collision-filtered offset sphere. Both modes enable Metal
++integration plus body/shape finalization; the experimental mode additionally
++enables Metal broad-phase traversal. Three alternating warm processes were
++recorded for each mode. Times are complete `b3World_Step` medians.
++
++| Bodies/shapes | Metal pairs off (ms) | Metal pairs on (ms) | Change |
++| ---: | ---: | ---: | ---: |
++| 512 | 0.287 | 0.594 | +107.1% |
++| 2,048 | 0.390 | 0.726 | +86.1% |
++| 8,192 | 0.827 | 1.098 | +32.7% |
++| 32,768 | 2.842 | 2.751 | -3.2% |
++| 131,072 | 11.809 | 11.507 | -2.6% |
++| 524,288 | 48.441 | 45.356 | -6.4% |
++
++At 524,288 shapes the last two Metal traversal kernels used about 3.0 ms, while
++removing CPU tree traversal saved about 6.1% at the whole-step median. Small
++worlds remain dominated by two submissions and an intermediate CPU prefix.
++
++This establishes a large-world traversal crossover, but it does not close the
++residency goal. Shape results are still read by the CPU, applied to the CPU
++tree, copied back to Metal on the following step, and raw candidates are read
++back for filtering. The next implementation must update or rebuild a GPU-owned
++broad-phase structure directly from resident shape bounds, perform prefix and
++compaction on-device, and return only the CPU-required compact candidate slice.
++
++## Reproduction
++
++```sh
++cmake --build build/metal-release --target test metal_world_benchmark
++./build/metal-release/bin/test MetalTest
++BOX3D_METAL_SHAPES=1 BOX3D_METAL_FINALIZATION=1 \
++  ./build/metal-release/bin/metal_world_benchmark
++BOX3D_METAL_SHAPES=1 BOX3D_METAL_FINALIZATION=1 BOX3D_METAL_BROAD_PHASE=1 \
++  ./build/metal-release/bin/metal_world_benchmark
++```
 diff --git a/docs/benchmarks/m4-pro-parallel-joints-2026-09-02.md b/docs/benchmarks/m4-pro-parallel-joints-2026-09-02.md
 new file mode 100644
 index 0000000..6b91226
@@ -1492,10 +1562,10 @@ index 0000000..a1d1c04
 +```
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..d7d022f
+index 0000000..1b5caf5
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,169 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -1558,7 +1628,7 @@ index 0000000..d7d022f
 +their upstream local bounds. The kernel applies speculative and fat-AABB
 +margins and emits deterministic flat results in body/shape-list order. CPU code
 +still owns double-precision outward rounding, CCD, events, sleeping/island
-+mutation, dynamic-tree mutation, and pair generation. It is separately opt-in
++mutation, and dynamic-tree mutation. It is separately opt-in
 +because reading one 64-byte result per awake shape has not demonstrated a
 +whole-world win; the next residency boundary is GPU pair generation consuming
 +these bounds before any compact CPU handoff.
@@ -1569,6 +1639,7 @@ index 0000000..d7d022f
 +b3WorldId world = b3CreateWorld(&worldDef);
 +bool enabled = b3World_EnableMetal(world, minimumBodyCount);
 +b3World_SetMetalFinalization(world, true); // experimental
++b3World_SetMetalBroadPhase(world, true);   // experimental
 +```
 +
 +Use `b3World_GetMetalProfile` to verify the selected device, dispatch count,
@@ -1576,9 +1647,19 @@ index 0000000..d7d022f
 +resources. `minimumBodyCount` is deliberately caller-controlled until benchmark
 +coverage establishes stable defaults across Apple GPU families.
 +
-+Broad-phase tree mutation and queries, narrow phase, contact and joint
-+preparation, unsupported joint solution, continuous collision, events, and
-+sleeping/island mutation still run on the CPU. Unsupported
++An independently opt-in pair stage copies Erin's existing static, kinematic,
++and dynamic tree topology into persistent shared Metal buffers. A count pass
++traverses leaves in upstream stack order, the CPU assigns stable per-move
++offsets, and a second pass writes disjoint candidate ranges. CPU consumption
++then reuses the complete upstream callback for moved-proxy de-duplication,
++compound children, sensors, filters, joint collision overrides, and custom user
++filters. Tree heights at or above 63, shader stack overflow, changing counts,
++allocation failure, or more than 64 raw candidates per moved proxy on average
++fall back to the full CPU traversal before any partial result is consumed.
++
++Broad-phase tree mutation, narrow phase, contact and joint preparation,
++unsupported joint solution, continuous collision, events, and sleeping/island
++mutation still run on the CPU. Unsupported
 +constrained worlds retain the position-only path, which may lose to the CPU once
 +transfer and command-buffer latency are included. These are correct production
 +paths, not yet the final performance architecture.
@@ -1591,7 +1672,8 @@ index 0000000..d7d022f
 +| Distance joints, including spring, limit, and motor modes | GPU-resident across all substeps |
 +| Parallel joints | GPU-resident across all substeps |
 +| Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
-+| Broad/narrow phase and manifolds | CPU |
++| Broad phase | Experimental opt-in Metal tree traversal; CPU tree mutation, candidate filtering, and contact creation |
++| Narrow phase and manifolds | CPU |
 +| Contact preparation and impulse storage | CPU |
 +| Body and awake-shape finalization | Experimental opt-in Metal kernels; CPU applies flat results and retains CCD/tree topology |
 +| CCD, sleeping/island mutation, events, recording, queries | CPU |
@@ -1651,6 +1733,8 @@ index 0000000..d7d022f
 +[`benchmarks/m4-pro-finalization-2026-09-02.md`](benchmarks/m4-pro-finalization-2026-09-02.md).
 +The follow-on shape-AABB implementation and result-stream measurements are in
 +[`benchmarks/m4-pro-shape-finalization-2026-09-02.md`](benchmarks/m4-pro-shape-finalization-2026-09-02.md).
++Experimental dynamic-tree traversal results are in
++[`benchmarks/m4-pro-pair-generation-2026-09-02.md`](benchmarks/m4-pro-pair-generation-2026-09-02.md).
 diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
 index 2e82590..cd49acf 100644
 --- a/include/box3d/box3d.h
@@ -1667,10 +1751,10 @@ index 2e82590..cd49acf 100644
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000..285b529
+index 0000000..9a2157c
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,69 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -1691,6 +1775,7 @@ index 0000000..285b529
 +{
 +	bool enabled;
 +	bool finalizationEnabled;
++	bool broadPhaseEnabled;
 +	int minimumBodyCount;
 +	uint64_t positionDispatchCount;
 +	uint64_t positionFallbackCount;
@@ -1704,11 +1789,14 @@ index 0000000..285b529
 +	uint64_t finalizationFallbackCount;
 +	uint64_t shapeDispatchCount;
 +	uint64_t shapeFallbackCount;
++	uint64_t pairDispatchCount;
++	uint64_t pairFallbackCount;
 +	double lastPositionGpuMilliseconds;
 +	double lastUnconstrainedGpuMilliseconds;
 +	double lastContactGpuMilliseconds;
 +	double lastJointGpuMilliseconds;
 +	double lastFinalizationGpuMilliseconds;
++	double lastPairGpuMilliseconds;
 +	char deviceName[128];
 +} b3MetalProfile;
 +
@@ -1722,6 +1810,12 @@ index 0000000..285b529
 +/// separate because current whole-world benchmarks do not yet show a stable
 +/// speedup; it is useful for correctness and pipeline-residency development.
 +B3_API bool b3World_SetMetalFinalization( b3WorldId worldId, bool enabled );
++
++/// Opt into experimental GPU dynamic-tree traversal for broad-phase candidate
++/// generation. Candidate filtering and deterministic contact creation remain
++/// on the CPU. Any unsupported tree depth, capacity, or dispatch failure falls
++/// back to the complete CPU traversal for that step.
++B3_API bool b3World_SetMetalBroadPhase( b3WorldId worldId, bool enabled );
 +
 +/// Disable Metal compute and release the world's GPU resources.
 +B3_API void b3World_DisableMetal( b3WorldId worldId );
@@ -1764,6 +1858,112 @@ index 941c6fb..17d7911 100644
  elseif (EMSCRIPTEN)
  	message(STATUS "Box3D on Emscripten")
  	# SSE2/wasm SIMD flags are set directory-wide in the top-level CMakeLists so the
+diff --git a/src/broad_phase.c b/src/broad_phase.c
+index a369ca6..d92c30b 100644
+--- a/src/broad_phase.c
++++ b/src/broad_phase.c
+@@ -12,6 +12,9 @@
+ #include "physics_world.h"
+ #include "platform.h"
+ #include "shape.h"
++#if defined( BOX3D_METAL )
++#include "metal_backend.h"
++#endif
+ 
+ #include <string.h>
+ 
+@@ -384,6 +387,55 @@ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void
+ 	b3TracyCZoneEnd( pair_task );
+ }
+ 
++#if defined( BOX3D_METAL )
++typedef struct b3MetalFindPairsContext
++{
++	b3World* world;
++	const b3MetalPairQueryRecord* records;
++	const b3MetalPairCandidate* candidates;
++} b3MetalFindPairsContext;
++
++// Implements b3ParallelForCallback. Metal performs only the dynamic-tree
++// traversal; this task deliberately reuses the complete CPU callback for
++// de-duplication, filters, compounds, joints, sensors, and custom user code.
++static void b3FindPairsMetalTask( int startIndex, int endIndex, int workerIndex, void* context )
++{
++	b3TracyCZoneNC( pair_metal_consume, "Pair Metal Consume", b3_colorAquamarine, true );
++	B3_UNUSED( workerIndex );
++	b3MetalFindPairsContext* metalContext = context;
++	b3World* world = metalContext->world;
++	b3BroadPhase* bp = &world->broadPhase;
++
++	b3QueryPairContext queryContext = { 0 };
++	queryContext.world = world;
++	queryContext.compoundShapeIndex = B3_NULL_INDEX;
++	queryContext.compoundProxyId = B3_NULL_INDEX;
++	for ( int i = startIndex; i < endIndex; ++i )
++	{
++		queryContext.moveResult = bp->moveResults + i;
++		queryContext.moveResult->pairList = NULL;
++
++		int queryProxyKey = bp->moveArray.data[i];
++		b3BodyType queryType = B3_PROXY_TYPE( queryProxyKey );
++		int queryProxyId = B3_PROXY_ID( queryProxyKey );
++		const b3DynamicTree* queryTree = bp->trees + queryType;
++		queryContext.queryProxyKey = queryProxyKey;
++		queryContext.queryShapeIndex = (int)b3DynamicTree_GetUserData( queryTree, queryProxyId );
++		queryContext.aabb = b3DynamicTree_GetAABB( queryTree, queryProxyId );
++		B3_VALIDATE( world->shapes.data[queryContext.queryShapeIndex].type != b3_compoundShape );
++
++		const b3MetalPairQueryRecord* record = metalContext->records + i;
++		for ( uint32_t candidateIndex = 0; candidateIndex < record->count; ++candidateIndex )
++		{
++			const b3MetalPairCandidate* candidate = metalContext->candidates + record->offset + candidateIndex;
++			queryContext.queryTreeType = (b3BodyType)candidate->treeType;
++			b3PairQueryCallback( candidate->proxyId, (uint64_t)(uint32_t)candidate->shapeIndex, &queryContext );
++		}
++	}
++	b3TracyCZoneEnd( pair_metal_consume );
++}
++#endif
++
+ static void b3UpdateTreesTask( void* context )
+ {
+ 	b3TracyCZoneNC( tree_task, "Rebuild Trees", b3_colorFireBrick, true );
+@@ -423,7 +475,34 @@ void b3UpdateBroadPhasePairs( b3World* world )
+ #endif
+ 
+ 	int minRange = 64;
+-	b3ParallelFor( world, b3FindPairsTask, moveCount, minRange, world, "pairs" );
++	bool usedMetalPairs = false;
++#if defined( BOX3D_METAL )
++	if ( world->metalBroadPhaseEnabled && moveCount >= world->metalMinimumBodyCount )
++	{
++		const b3MetalPairQueryRecord* records = NULL;
++		const b3MetalPairCandidate* candidates = NULL;
++		int candidateCount = 0;
++		b3MetalDispatchStats stats = { 0 };
++		if ( b3MetalGeneratePairCandidates( world->metalContext, bp, bp->moveArray.data, moveCount, &records, &candidates,
++				&candidateCount, &stats ) )
++		{
++			B3_UNUSED( candidateCount );
++			b3MetalFindPairsContext metalContext = { world, records, candidates };
++			b3ParallelFor( world, b3FindPairsMetalTask, moveCount, minRange, &metalContext, "pairs metal" );
++			world->metalPairDispatchCount += 1;
++			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
++			usedMetalPairs = true;
++		}
++		else
++		{
++			world->metalPairFallbackCount += 1;
++		}
++	}
++#endif
++	if ( usedMetalPairs == false )
++	{
++		b3ParallelFor( world, b3FindPairsTask, moveCount, minRange, world, "pairs" );
++	}
+ 
+ 	b3TracyCZoneNC( create_contacts, "Create Contacts", b3_colorCoral, true );
+ 
 diff --git a/src/contact_solver.c b/src/contact_solver.c
 index 48de409..ce69ae1 100644
 --- a/src/contact_solver.c
@@ -1980,10 +2180,10 @@ index d85f233..ffa6859 100644
  int b3GetWideContactConstraintByteCount( void );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000..31aa983
+index 0000000..514aa28
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,96 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2000,6 +2200,23 @@ index 0000000..31aa983
 +typedef struct b3ContactConstraintWide b3ContactConstraintWide;
 +typedef struct b3ContactConstraint b3ContactConstraint;
 +typedef struct b3ManifoldConstraint b3ManifoldConstraint;
++typedef struct b3BroadPhase b3BroadPhase;
++
++typedef struct b3MetalPairQueryRecord
++{
++	uint32_t count;
++	uint32_t offset;
++	uint32_t flags;
++	uint32_t padding;
++} b3MetalPairQueryRecord;
++
++typedef struct b3MetalPairCandidate
++{
++	int proxyId;
++	int treeType;
++	int shapeIndex;
++	int padding;
++} b3MetalPairCandidate;
 +
 +typedef struct b3MetalDispatchStats
 +{
@@ -2056,12 +2273,19 @@ index 0000000..31aa983
 +bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, const b3BodySim* sims,
 +	int bodyCount, float invTimeStep, bool statesAreResident, const b3MetalFinalizeResult** results,
 +	b3MetalDispatchStats* stats );
++
++// Traverse the existing Box3D dynamic trees on Metal. Per-move records and
++// candidates preserve move-array and tree traversal order. Returns false before
++// exposing results if the bounded Metal traversal cannot represent the step.
++bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase* broadPhase,
++	const int* moveArray, int moveCount, const b3MetalPairQueryRecord** records,
++	const b3MetalPairCandidate** candidates, int* candidateCount, b3MetalDispatchStats* stats );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..f5840cb
+index 0000000..7bc12e3
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,2393 @@
+@@ -0,0 +1,2639 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2071,6 +2295,7 @@ index 0000000..f5840cb
 +#include "metal_backend.h"
 +
 +#include "constraint_graph.h"
++#include "broad_phase.h"
 +#include "contact_solver.h"
 +#include "joint.h"
 +#include "physics_world.h"
@@ -2098,6 +2323,7 @@ index 0000000..f5840cb
 +	id<MTLComputePipelineState> integrateUnconstrainedPipeline;
 +	id<MTLComputePipelineState> finalizeBodiesPipeline;
 +	id<MTLComputePipelineState> finalizeShapesPipeline;
++	id<MTLComputePipelineState> pairCandidatesPipeline;
 +	id<MTLComputePipelineState> warmStartContactsPipeline;
 +	id<MTLComputePipelineState> solveContactsPipeline;
 +	id<MTLComputePipelineState> restitutionContactsPipeline;
@@ -2125,6 +2351,14 @@ index 0000000..f5840cb
 +	NSUInteger shapeInputCapacity;
 +	id<MTLBuffer> shapeResultBuffer;
 +	NSUInteger shapeResultCapacity;
++	id<MTLBuffer> pairMoveBuffer;
++	NSUInteger pairMoveCapacity;
++	id<MTLBuffer> pairTreeBuffer;
++	NSUInteger pairTreeCapacity;
++	id<MTLBuffer> pairRecordBuffer;
++	NSUInteger pairRecordCapacity;
++	id<MTLBuffer> pairCandidateBuffer;
++	NSUInteger pairCandidateCapacity;
 +	id<MTLBuffer> contactConstraintBuffer;
 +	NSUInteger contactConstraintCapacity;
 +	id<MTLBuffer> meshContactBuffer;
@@ -2186,6 +2420,13 @@ index 0000000..f5840cb
 +_Static_assert( sizeof( b3MetalFinalizeResult ) == 100, "Metal finalization-result ABI changed" );
 +_Static_assert( sizeof( b3MetalShapeInput ) == 72, "Metal shape-input ABI changed" );
 +_Static_assert( sizeof( b3MetalShapeAABBResult ) == 64, "Metal shape-result ABI changed" );
++_Static_assert( sizeof( b3TreeNode ) == 48, "Metal tree-node ABI changed" );
++_Static_assert( offsetof( b3TreeNode, categoryBits ) == 24, "Metal tree-node ABI changed" );
++_Static_assert( offsetof( b3TreeNode, children ) == 32, "Metal tree-node ABI changed" );
++_Static_assert( offsetof( b3TreeNode, parent ) == 40, "Metal tree-node ABI changed" );
++_Static_assert( offsetof( b3TreeNode, flags ) == 46, "Metal tree-node ABI changed" );
++_Static_assert( sizeof( b3MetalPairQueryRecord ) == 16, "Metal pair-record ABI changed" );
++_Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI changed" );
 +_Static_assert( sizeof( b3ContactConstraintPointWide ) == 192, "Metal wide contact point ABI changed" );
 +_Static_assert( sizeof( b3ContactConstraintWide ) == 1696, "Metal wide contact ABI changed" );
 +_Static_assert( sizeof( b3ManifoldConstraintPoint ) == 48, "Metal mesh contact-point ABI changed" );
@@ -2311,6 +2552,12 @@ index 0000000..f5840cb
 +	"  uint shapeId, bodyIndex, enlarged, padding;\n"
 +	"  float lx,ly,lz,ux,uy,uz; float flx,fly,flz,fux,fuy,fuz;\n"
 +	"};\n"
++	"struct TreeNode {\n"
++	"  float lx,ly,lz,ux,uy,uz; ulong categoryBits; uint child1,child2; int parent; ushort height,flags;\n"
++	"};\n"
++	"struct PairQueryRecord { uint count,offset,flags,padding; };\n"
++	"struct PairCandidate { int proxyId,treeType,shapeIndex,padding; };\n"
++	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates; };\n"
 +	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
 +	"struct ShapeParams { uint shapeCount; float extra; uint p0; uint p1; };\n"
 +	"struct FusedParams {\n"
@@ -2540,6 +2787,38 @@ index 0000000..f5840cb
 +	"  ShapeResult out; out.shapeId=in.shapeId; out.bodyIndex=in.bodyIndex; out.enlarged=enlarged?1u:0u; out.padding=0;\n"
 +	"  out.lx=lo.x;out.ly=lo.y;out.lz=lo.z;out.ux=hi.x;out.uy=hi.y;out.uz=hi.z;\n"
 +	"  out.flx=fatLo.x;out.fly=fatLo.y;out.flz=fatLo.z;out.fux=fatHi.x;out.fuy=fatHi.y;out.fuz=fatHi.z; results[i]=out;\n"
++	"}\n"
++	"inline bool tree_overlap(TreeNode n,float3 lo,float3 hi) {\n"
++	"  return !(n.ux<lo.x||n.lx>hi.x||n.uy<lo.y||n.ly>hi.y||n.uz<lo.z||n.lz>hi.z);\n"
++	"}\n"
++	"inline void query_pair_tree(const device TreeNode* nodes,int root,uint nodeOffset,int treeType,float3 lo,float3 hi,\n"
++	"                            device PairCandidate* candidates,uint outputOffset,uint expected,uint writeCandidates,\n"
++	"                            thread int* stack,thread uint& candidateCount,thread uint& queryFlags) {\n"
++	"  if(root<0||queryFlags!=0u) return; uint stackCount=0u; stack[stackCount++]=root;\n"
++	"  while(stackCount>0u) { int nodeId=stack[--stackCount]; TreeNode n=nodes[nodeOffset+uint(nodeId)];\n"
++	"    if(n.categoryBits==0ul||!tree_overlap(n,lo,hi)) continue;\n"
++	"    if((n.flags&4u)!=0u) {\n"
++	"      if(writeCandidates!=0u) { if(candidateCount>=expected) { queryFlags|=2u; return; }\n"
++	"        PairCandidate c; c.proxyId=nodeId;c.treeType=treeType;c.shapeIndex=int(n.child1);c.padding=0;\n"
++	"        candidates[outputOffset+candidateCount]=c; } candidateCount+=1u;\n"
++	"    } else { if(stackCount>=63u) { queryFlags|=1u; return; }\n"
++	"      stack[stackCount++]=int(n.child1); stack[stackCount++]=int(n.child2); }\n"
++	"  }\n"
++	"}\n"
++	"kernel void b3_pair_candidates(const device int* moves [[buffer(0)]],const device TreeNode* nodes [[buffer(1)]],\n"
++	"                               device PairQueryRecord* records [[buffer(2)]],device PairCandidate* candidates [[buffer(3)]],\n"
++	"                               constant PairParams& p [[buffer(4)]],uint i [[thread_position_in_grid]]) {\n"
++	"  if(i>=p.moveCount) return; int key=moves[i];int queryType=key&3;int proxyId=key>>2;\n"
++	"  uint queryOffset=queryType==0?p.offset0:(queryType==1?p.offset1:p.offset2);\n"
++	"  TreeNode q=nodes[queryOffset+uint(proxyId)];float3 lo=float3(q.lx,q.ly,q.lz),hi=float3(q.ux,q.uy,q.uz);\n"
++	"  PairQueryRecord record=records[i];uint count=0u,flags=0u;thread int stack[64];\n"
++	"  if(queryType==2) {\n"
++	"    query_pair_tree(nodes,p.root1,p.offset1,1,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
++	"    query_pair_tree(nodes,p.root0,p.offset0,0,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
++	"  }\n"
++	"  query_pair_tree(nodes,p.root2,p.offset2,2,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
++	"  if(p.writeCandidates==0u) record.count=count; else if(count!=record.count) flags|=2u;\n"
++	"  record.flags=flags;records[i]=record;\n"
 +	"}\n";
 +#pragma clang diagnostic pop
 +
@@ -2877,6 +3156,11 @@ index 0000000..f5840cb
 +			? [device newComputePipelineStateWithFunction:finalizeShapesFunction error:&error]
 +			: nil;
 +		[finalizeShapesFunction release];
++		id<MTLFunction> pairCandidatesFunction = [library newFunctionWithName:@"b3_pair_candidates"];
++		id<MTLComputePipelineState> pairCandidatesPipeline = pairCandidatesFunction != nil
++			? [device newComputePipelineStateWithFunction:pairCandidatesFunction error:&error]
++			: nil;
++		[pairCandidatesFunction release];
 +		[library release];
 +
 +		NSString* contactSource = [NSString stringWithUTF8String:b3_contactSource];
@@ -2956,6 +3240,7 @@ index 0000000..f5840cb
 +		[solveJointOverflowFunction release];
 +		[contactLibrary release];
 +		if ( positionPipeline == nil || fusedPipeline == nil || finalizePipeline == nil || finalizeShapesPipeline == nil ||
++			 pairCandidatesPipeline == nil ||
 +			 warmStartPipeline == nil || solvePipeline == nil ||
 +			 restitutionPipeline == nil || warmStartMeshPipeline == nil || solveMeshPipeline == nil || restitutionMeshPipeline == nil ||
 +			 warmStartOverflowPipeline == nil || solveOverflowPipeline == nil || restitutionOverflowPipeline == nil ||
@@ -2967,6 +3252,7 @@ index 0000000..f5840cb
 +			[fusedPipeline release];
 +			[finalizePipeline release];
 +			[finalizeShapesPipeline release];
++			[pairCandidatesPipeline release];
 +			[warmStartPipeline release];
 +			[solvePipeline release];
 +			[restitutionPipeline release];
@@ -2995,6 +3281,7 @@ index 0000000..f5840cb
 +			[fusedPipeline release];
 +			[finalizePipeline release];
 +			[finalizeShapesPipeline release];
++			[pairCandidatesPipeline release];
 +			[warmStartPipeline release];
 +			[solvePipeline release];
 +			[restitutionPipeline release];
@@ -3022,6 +3309,7 @@ index 0000000..f5840cb
 +		context->integrateUnconstrainedPipeline = fusedPipeline;
 +		context->finalizeBodiesPipeline = finalizePipeline;
 +		context->finalizeShapesPipeline = finalizeShapesPipeline;
++		context->pairCandidatesPipeline = pairCandidatesPipeline;
 +		context->warmStartContactsPipeline = warmStartPipeline;
 +		context->solveContactsPipeline = solvePipeline;
 +		context->restitutionContactsPipeline = restitutionPipeline;
@@ -3055,6 +3343,10 @@ index 0000000..f5840cb
 +	[context->finalizePropertiesBuffer release];
 +	[context->shapeInputBuffer release];
 +	[context->shapeResultBuffer release];
++	[context->pairMoveBuffer release];
++	[context->pairTreeBuffer release];
++	[context->pairRecordBuffer release];
++	[context->pairCandidateBuffer release];
 +	[context->contactConstraintBuffer release];
 +	[context->meshContactBuffer release];
 +	[context->meshManifoldBuffer release];
@@ -3065,6 +3357,7 @@ index 0000000..f5840cb
 +	[context->integrateUnconstrainedPipeline release];
 +	[context->finalizeBodiesPipeline release];
 +	[context->finalizeShapesPipeline release];
++	[context->pairCandidatesPipeline release];
 +	[context->warmStartContactsPipeline release];
 +	[context->solveContactsPipeline release];
 +	[context->restitutionContactsPipeline release];
@@ -3219,6 +3512,53 @@ index 0000000..f5840cb
 +	return true;
 +}
 +#endif
++
++static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveBytes, NSUInteger treeBytes,
++	NSUInteger recordBytes, NSUInteger candidateBytes )
++{
++	if ( context->pairMoveCapacity < moveBytes )
++	{
++		NSUInteger capacity = context->pairMoveCapacity > 0 ? context->pairMoveCapacity : 4096;
++		while ( capacity < moveBytes ) capacity *= 2;
++		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
++		if ( buffer == nil ) return false;
++		[context->pairMoveBuffer release];
++		context->pairMoveBuffer = buffer;
++		context->pairMoveCapacity = capacity;
++	}
++	if ( context->pairTreeCapacity < treeBytes )
++	{
++		NSUInteger capacity = context->pairTreeCapacity > 0 ? context->pairTreeCapacity : 4096;
++		while ( capacity < treeBytes ) capacity *= 2;
++		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
++		if ( buffer == nil ) return false;
++		[context->pairTreeBuffer release];
++		context->pairTreeBuffer = buffer;
++		context->pairTreeCapacity = capacity;
++	}
++	if ( context->pairRecordCapacity < recordBytes )
++	{
++		NSUInteger capacity = context->pairRecordCapacity > 0 ? context->pairRecordCapacity : 4096;
++		while ( capacity < recordBytes ) capacity *= 2;
++		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
++		if ( buffer == nil ) return false;
++		[context->pairRecordBuffer release];
++		context->pairRecordBuffer = buffer;
++		context->pairRecordCapacity = capacity;
++	}
++	candidateBytes = candidateBytes > 0 ? candidateBytes : sizeof( b3MetalPairCandidate );
++	if ( context->pairCandidateCapacity < candidateBytes )
++	{
++		NSUInteger capacity = context->pairCandidateCapacity > 0 ? context->pairCandidateCapacity : 4096;
++		while ( capacity < candidateBytes ) capacity *= 2;
++		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
++		if ( buffer == nil ) return false;
++		[context->pairCandidateBuffer release];
++		context->pairCandidateBuffer = buffer;
++		context->pairCandidateCapacity = capacity;
++	}
++	return true;
++}
 +
 +static bool b3MetalEnsureContactCapacity( b3MetalContext* context, NSUInteger requiredBytes )
 +{
@@ -3929,6 +4269,136 @@ index 0000000..f5840cb
 +	}
 +}
 +
++bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase* broadPhase,
++	const int* moveArray, int moveCount, const b3MetalPairQueryRecord** recordsOut,
++	const b3MetalPairCandidate** candidatesOut, int* candidateCountOut, b3MetalDispatchStats* stats )
++{
++	if ( recordsOut != NULL ) *recordsOut = NULL;
++	if ( candidatesOut != NULL ) *candidatesOut = NULL;
++	if ( candidateCountOut != NULL ) *candidateCountOut = 0;
++	if ( stats != NULL ) *stats = (b3MetalDispatchStats){ .bodyCount = moveCount };
++	if ( context == NULL || broadPhase == NULL || moveArray == NULL || moveCount < 0 || recordsOut == NULL ||
++		 candidatesOut == NULL || candidateCountOut == NULL )
++	{
++		return false;
++	}
++	if ( moveCount == 0 ) return true;
++
++	// The shader uses a 64-entry private stack. Refuse the route before dispatch
++	// whenever the current tree topology cannot be represented exactly.
++	for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
++	{
++		if ( b3DynamicTree_GetHeight( broadPhase->trees + treeIndex ) >= 63 ) return false;
++	}
++
++	@autoreleasepool
++	{
++		NSUInteger moveBytes = (NSUInteger)moveCount * sizeof( int );
++		NSUInteger recordBytes = (NSUInteger)moveCount * sizeof( b3MetalPairQueryRecord );
++		uint32_t nodeOffsets[b3_bodyTypeCount] = { 0 };
++		uint64_t totalNodeCount = 0;
++		for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
++		{
++			nodeOffsets[treeIndex] = (uint32_t)totalNodeCount;
++			totalNodeCount += (uint64_t)broadPhase->trees[treeIndex].nodeCapacity;
++		}
++		if ( totalNodeCount > UINT32_MAX ) return false;
++		NSUInteger treeBytes = (NSUInteger)totalNodeCount * sizeof( b3TreeNode );
++		if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, recordBytes,
++				sizeof( b3MetalPairCandidate ) ) == false )
++		{
++			return false;
++		}
++
++		memcpy( context->pairMoveBuffer.contents, moveArray, moveBytes );
++		b3TreeNode* nodeDestination = context->pairTreeBuffer.contents;
++		for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
++		{
++			const b3DynamicTree* tree = broadPhase->trees + treeIndex;
++			memcpy( nodeDestination + nodeOffsets[treeIndex], tree->nodes,
++				(NSUInteger)tree->nodeCapacity * sizeof( b3TreeNode ) );
++		}
++		memset( context->pairRecordBuffer.contents, 0, recordBytes );
++
++		struct
++		{
++			int root0, root1, root2;
++			uint32_t offset0, offset1, offset2, moveCount, writeCandidates;
++		} params = {
++			broadPhase->trees[0].root, broadPhase->trees[1].root, broadPhase->trees[2].root,
++			nodeOffsets[0], nodeOffsets[1], nodeOffsets[2], (uint32_t)moveCount, 0,
++		};
++		_Static_assert( sizeof( params ) == 32, "Metal pair parameter ABI changed" );
++
++		id<MTLComputePipelineState> pipeline = context->pairCandidatesPipeline;
++		id<MTLCommandBuffer> countCommand = [context->queue commandBuffer];
++		id<MTLComputeCommandEncoder> countEncoder = [countCommand computeCommandEncoder];
++		if ( countCommand == nil || countEncoder == nil ) return false;
++		[countEncoder setComputePipelineState:pipeline];
++		[countEncoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
++		[countEncoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
++		[countEncoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
++		[countEncoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
++		[countEncoder setBytes:&params length:sizeof( params ) atIndex:4];
++		[countEncoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
++			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
++		[countEncoder endEncoding];
++		[countCommand commit];
++		[countCommand waitUntilCompleted];
++		if ( countCommand.status != MTLCommandBufferStatusCompleted ) return false;
++
++		double gpuMilliseconds = countCommand.GPUEndTime >= countCommand.GPUStartTime
++			? 1000.0 * ( countCommand.GPUEndTime - countCommand.GPUStartTime ) : 0.0;
++		b3MetalPairQueryRecord* records = context->pairRecordBuffer.contents;
++		uint64_t totalCandidateCount = 0;
++		uint64_t candidateLimit = 64ull * (uint64_t)moveCount;
++		for ( int i = 0; i < moveCount; ++i )
++		{
++			if ( records[i].flags != 0 ) return false;
++			records[i].offset = (uint32_t)totalCandidateCount;
++			totalCandidateCount += records[i].count;
++			if ( totalCandidateCount > candidateLimit || totalCandidateCount > INT32_MAX ) return false;
++		}
++
++		NSUInteger candidateBytes = (NSUInteger)totalCandidateCount * sizeof( b3MetalPairCandidate );
++		if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, recordBytes, candidateBytes ) == false ) return false;
++		records = context->pairRecordBuffer.contents;
++		if ( totalCandidateCount > 0 )
++		{
++			params.writeCandidates = 1;
++			id<MTLCommandBuffer> writeCommand = [context->queue commandBuffer];
++			id<MTLComputeCommandEncoder> writeEncoder = [writeCommand computeCommandEncoder];
++			if ( writeCommand == nil || writeEncoder == nil ) return false;
++			[writeEncoder setComputePipelineState:pipeline];
++			[writeEncoder setBuffer:context->pairMoveBuffer offset:0 atIndex:0];
++			[writeEncoder setBuffer:context->pairTreeBuffer offset:0 atIndex:1];
++			[writeEncoder setBuffer:context->pairRecordBuffer offset:0 atIndex:2];
++			[writeEncoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
++			[writeEncoder setBytes:&params length:sizeof( params ) atIndex:4];
++			[writeEncoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
++				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
++			[writeEncoder endEncoding];
++			[writeCommand commit];
++			[writeCommand waitUntilCompleted];
++			if ( writeCommand.status != MTLCommandBufferStatusCompleted ) return false;
++			if ( writeCommand.GPUEndTime >= writeCommand.GPUStartTime )
++			{
++				gpuMilliseconds += 1000.0 * ( writeCommand.GPUEndTime - writeCommand.GPUStartTime );
++			}
++			for ( int i = 0; i < moveCount; ++i )
++			{
++				if ( records[i].flags != 0 ) return false;
++			}
++		}
++
++		*recordsOut = records;
++		*candidatesOut = context->pairCandidateBuffer.contents;
++		*candidateCountOut = (int)totalCandidateCount;
++		if ( stats != NULL ) stats->gpuMilliseconds = gpuMilliseconds;
++		return true;
++	}
++}
++
 +bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepContext,
 +	int velocityIterations, int relaxIterations, int restitutionIterations, b3MetalDispatchStats* stats )
 +{
@@ -4456,7 +4926,7 @@ index 0000000..f5840cb
 +	}
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..6741a02 100644
+index 29c13c7..8571932 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -4469,7 +4939,7 @@ index 29c13c7..6741a02 100644
  
  #include "box3d/box3d.h"
  #include "box3d/constants.h"
-@@ -411,6 +414,12 @@ void b3DestroyWorld( b3WorldId worldId )
+@@ -411,6 +414,13 @@ void b3DestroyWorld( b3WorldId worldId )
  
  	world->locked = true;
  
@@ -4477,12 +4947,13 @@ index 29c13c7..6741a02 100644
 +	b3MetalDestroyContext( world->metalContext );
 +	world->metalContext = NULL;
 +	world->metalFinalizationEnabled = false;
++	world->metalBroadPhaseEnabled = false;
 +#endif
 +
  	// Detach any recording before teardown. The user owns and frees the recording buffer.
  	b3StopRecordingInternal( world );
  
-@@ -538,6 +547,90 @@ int b3GetWorldCount( void )
+@@ -538,6 +548,108 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -4521,6 +4992,18 @@ index 29c13c7..6741a02 100644
 +	return true;
 +}
 +
++bool b3World_SetMetalBroadPhase( b3WorldId worldId, bool enabled )
++{
++	b3World* world = b3GetWorldFromId( worldId );
++	if ( world == NULL || world->locked || ( enabled && world->metalContext == NULL ) )
++	{
++		return false;
++	}
++
++	world->metalBroadPhaseEnabled = enabled;
++	return true;
++}
++
 +void b3World_DisableMetal( b3WorldId worldId )
 +{
 +	b3World* world = b3GetUnlockedWorldFromId( worldId );
@@ -4531,6 +5014,8 @@ index 29c13c7..6741a02 100644
 +
 +	b3MetalDestroyContext( world->metalContext );
 +	world->metalContext = NULL;
++	world->metalFinalizationEnabled = false;
++	world->metalBroadPhaseEnabled = false;
 +}
 +
 +b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
@@ -4544,6 +5029,7 @@ index 29c13c7..6741a02 100644
 +
 +	profile.enabled = world->metalContext != NULL;
 +	profile.finalizationEnabled = world->metalFinalizationEnabled;
++	profile.broadPhaseEnabled = world->metalBroadPhaseEnabled;
 +	profile.minimumBodyCount = world->metalMinimumBodyCount;
 +	profile.positionDispatchCount = world->metalPositionDispatchCount;
 +	profile.positionFallbackCount = world->metalPositionFallbackCount;
@@ -4557,11 +5043,14 @@ index 29c13c7..6741a02 100644
 +	profile.finalizationFallbackCount = world->metalFinalizationFallbackCount;
 +	profile.shapeDispatchCount = world->metalShapeDispatchCount;
 +	profile.shapeFallbackCount = world->metalShapeFallbackCount;
++	profile.pairDispatchCount = world->metalPairDispatchCount;
++	profile.pairFallbackCount = world->metalPairFallbackCount;
 +	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
 +	profile.lastUnconstrainedGpuMilliseconds = world->metalLastUnconstrainedGpuMilliseconds;
 +	profile.lastContactGpuMilliseconds = world->metalLastContactGpuMilliseconds;
 +	profile.lastJointGpuMilliseconds = world->metalLastJointGpuMilliseconds;
 +	profile.lastFinalizationGpuMilliseconds = world->metalLastFinalizationGpuMilliseconds;
++	profile.lastPairGpuMilliseconds = world->metalLastPairGpuMilliseconds;
 +	if ( world->metalContext != NULL )
 +	{
 +		b3MetalGetDeviceName( world->metalContext, profile.deviceName, sizeof( profile.deviceName ) );
@@ -4574,16 +5063,17 @@ index 29c13c7..6741a02 100644
  {
  	return b3_maxWorldCount;
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8..14790a0 100644
+index 8bd3df8..6a4d275 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
-@@ -266,6 +266,29 @@ typedef struct b3World
+@@ -266,6 +266,33 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
 +#if defined( BOX3D_METAL )
 +	struct b3MetalContext* metalContext;
 +	bool metalFinalizationEnabled;
++	bool metalBroadPhaseEnabled;
 +	uint64_t metalPositionDispatchCount;
 +	uint64_t metalPositionFallbackCount;
 +	uint64_t metalUnconstrainedDispatchCount;
@@ -4596,18 +5086,21 @@ index 8bd3df8..14790a0 100644
 +	uint64_t metalFinalizationFallbackCount;
 +	uint64_t metalShapeDispatchCount;
 +	uint64_t metalShapeFallbackCount;
++	uint64_t metalPairDispatchCount;
++	uint64_t metalPairFallbackCount;
 +	double metalLastPositionGpuMilliseconds;
 +	double metalLastUnconstrainedGpuMilliseconds;
 +	double metalLastContactGpuMilliseconds;
 +	double metalLastJointGpuMilliseconds;
 +	double metalLastFinalizationGpuMilliseconds;
++	double metalLastPairGpuMilliseconds;
 +	int metalMinimumBodyCount;
 +#endif
 +
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -347,4 +370,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +374,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
@@ -5403,10 +5896,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..268db2a
+index 0000000..de0d0d2
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,1360 @@
+@@ -0,0 +1,1500 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -5415,8 +5908,10 @@ index 0000000..268db2a
 +#include "box3d/box3d.h"
 +
 +#include "body.h"
++#include "broad_phase.h"
 +#include "math_internal.h"
 +#include "metal_backend.h"
++#include "physics_world.h"
 +
 +#include <math.h>
 +#include <stdio.h>
@@ -5430,6 +5925,26 @@ index 0000000..268db2a
 +	b3MetalRandomState = 1664525u * b3MetalRandomState + 1013904223u;
 +	float unit = (float)( b3MetalRandomState >> 8 ) * ( 1.0f / 16777216.0f );
 +	return low + ( high - low ) * unit;
++}
++
++typedef struct b3PairCandidateCapture
++{
++	b3MetalPairCandidate* candidates;
++	int capacity;
++	int count;
++	int treeType;
++} b3PairCandidateCapture;
++
++static bool CapturePairCandidate( int proxyId, uint64_t userData, void* context )
++{
++	b3PairCandidateCapture* capture = context;
++	if ( capture->count >= capture->capacity ) return false;
++	capture->candidates[capture->count++] = (b3MetalPairCandidate){
++		.proxyId = proxyId,
++		.treeType = capture->treeType,
++		.shapeIndex = (int)userData,
++	};
++	return true;
 +}
 +
 +static void b3IntegratePositionsReference( b3BodyState* states, int count, float h, float maxLinearSpeed,
@@ -5747,6 +6262,119 @@ index 0000000..268db2a
 +	return 0;
 +}
 +
++static int MetalPairTraversalTest( void )
++{
++	const int bodyCount = 96;
++	b3WorldDef worldDef = b3DefaultWorldDef();
++	worldDef.gravity = b3Vec3_zero;
++	b3WorldId worldId = b3CreateWorld( &worldDef );
++	ENSURE( b3World_EnableMetal( worldId, 1 ) );
++	b3ShapeDef shapeDef = b3DefaultShapeDef();
++	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.46f };
++	for ( int i = 0; i < bodyCount; ++i )
++	{
++		b3BodyDef bodyDef = b3DefaultBodyDef();
++		bodyDef.type = i < 24 ? b3_staticBody : i < 48 ? b3_kinematicBody : b3_dynamicBody;
++		bodyDef.position = (b3Pos){ 0.62f * (float)( i % 8 ), 0.62f * (float)( ( i / 8 ) % 4 ),
++			0.62f * (float)( i / 32 ) };
++		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
++		b3CreateSphereShape( bodyId, &shapeDef, &sphere );
++	}
++
++	b3World* world = b3GetWorldFromId( worldId );
++	b3BroadPhase* broadPhase = &world->broadPhase;
++	int moveCount = broadPhase->moveArray.count;
++	ENSURE( moveCount == bodyCount );
++	const b3MetalPairQueryRecord* gpuRecords = NULL;
++	const b3MetalPairCandidate* gpuCandidates = NULL;
++	int gpuCandidateCount = 0;
++	b3MetalDispatchStats stats = { 0 };
++	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
++		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
++
++	int cpuCapacity = bodyCount * bodyCount;
++	b3MetalPairCandidate* cpuCandidates = malloc( (size_t)cpuCapacity * sizeof( b3MetalPairCandidate ) );
++	ENSURE( cpuCandidates != NULL );
++	b3PairCandidateCapture capture = { .candidates = cpuCandidates, .capacity = cpuCapacity };
++	int totalCpuCount = 0;
++	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
++	{
++		int proxyKey = broadPhase->moveArray.data[moveIndex];
++		b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
++		int proxyId = B3_PROXY_ID( proxyKey );
++		b3AABB fatAABB = b3DynamicTree_GetAABB( broadPhase->trees + proxyType, proxyId );
++		capture.count = 0;
++		if ( proxyType == b3_dynamicBody )
++		{
++			capture.treeType = b3_kinematicBody;
++			b3DynamicTree_Query( broadPhase->trees + b3_kinematicBody, fatAABB, B3_DEFAULT_MASK_BITS, false,
++				CapturePairCandidate, &capture );
++			capture.treeType = b3_staticBody;
++			b3DynamicTree_Query( broadPhase->trees + b3_staticBody, fatAABB, B3_DEFAULT_MASK_BITS, false,
++				CapturePairCandidate, &capture );
++		}
++		capture.treeType = b3_dynamicBody;
++		b3DynamicTree_Query( broadPhase->trees + b3_dynamicBody, fatAABB, B3_DEFAULT_MASK_BITS, false,
++			CapturePairCandidate, &capture );
++
++		ENSURE( gpuRecords[moveIndex].flags == 0 );
++		ENSURE( gpuRecords[moveIndex].count == (uint32_t)capture.count );
++		for ( int candidateIndex = 0; candidateIndex < capture.count; ++candidateIndex )
++		{
++			const b3MetalPairCandidate* cpu = cpuCandidates + candidateIndex;
++			const b3MetalPairCandidate* gpu = gpuCandidates + gpuRecords[moveIndex].offset + candidateIndex;
++			ENSURE( cpu->proxyId == gpu->proxyId );
++			ENSURE( cpu->treeType == gpu->treeType );
++			ENSURE( cpu->shapeIndex == gpu->shapeIndex );
++		}
++		totalCpuCount += capture.count;
++	}
++	ENSURE( totalCpuCount == gpuCandidateCount );
++	printf( "    pair traversal moves=%d candidates=%d gpu=%.3f ms exactOrder=yes\n", moveCount,
++		gpuCandidateCount, stats.gpuMilliseconds );
++
++	free( cpuCandidates );
++	b3DestroyWorld( worldId );
++	return 0;
++}
++
++static int MetalPairTraversalFallbackTest( void )
++{
++	const int bodyCount = 80;
++	b3WorldDef worldDef = b3DefaultWorldDef();
++	worldDef.gravity = b3Vec3_zero;
++	worldDef.enableSleep = false;
++	b3WorldId worldId = b3CreateWorld( &worldDef );
++	ENSURE( b3World_EnableMetal( worldId, 1 ) );
++	ENSURE( b3World_SetMetalBroadPhase( worldId, true ) );
++	b3ShapeDef shapeDef = b3DefaultShapeDef();
++	shapeDef.filter.maskBits = 0;
++	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 1.0f };
++	for ( int i = 0; i < bodyCount; ++i )
++	{
++		b3BodyDef bodyDef = b3DefaultBodyDef();
++		bodyDef.type = b3_dynamicBody;
++		bodyDef.enableSleep = false;
++		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
++		b3CreateSphereShape( bodyId, &shapeDef, &sphere );
++	}
++
++	b3World_Step( worldId, 1.0f / 60.0f, 1 );
++	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
++	printf( "    dense pair traversal dispatches=%llu fallbacks=%llu\n",
++		(unsigned long long)profile.pairDispatchCount, (unsigned long long)profile.pairFallbackCount );
++	ENSURE( profile.pairDispatchCount == 0 );
++	ENSURE( profile.pairFallbackCount == 1 );
++	ENSURE( b3World_SetMetalFinalization( worldId, true ) );
++	b3World_DisableMetal( worldId );
++	profile = b3World_GetMetalProfile( worldId );
++	ENSURE( profile.enabled == false );
++	ENSURE( profile.finalizationEnabled == false );
++	ENSURE( profile.broadPhaseEnabled == false );
++	b3DestroyWorld( worldId );
++	return 0;
++}
++
 +static int MetalWorldIntegrationTest( void )
 +{
 +	const int count = 2048;
@@ -5994,6 +6622,7 @@ index 0000000..268db2a
 +	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 +	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
 +	ENSURE( b3World_SetMetalFinalization( gpuWorld, true ) );
++	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, true ) );
 +
 +	b3ShapeDef shapeDef = b3DefaultShapeDef();
 +	shapeDef.baseMaterial.friction = 0.65f;
@@ -6060,6 +6689,8 @@ index 0000000..268db2a
 +		(unsigned long long)profile.contactDispatchCount, profile.lastContactGpuMilliseconds,
 +		maxTransformError, maxVelocityError );
 +	ENSURE( profile.contactDispatchCount == 40 );
++	ENSURE( profile.pairDispatchCount >= 1 );
++	ENSURE( profile.pairFallbackCount == 0 );
 +	ENSURE( profile.finalizationDispatchCount == 10 );
 +#if defined( BOX3D_DOUBLE_PRECISION )
 +	ENSURE( profile.shapeDispatchCount == 0 );
@@ -6754,6 +7385,8 @@ index 0000000..268db2a
 +	RUN_SUBTEST( MetalPositionIntegrationTest );
 +	RUN_SUBTEST( MetalFusedIntegrationTest );
 +	RUN_SUBTEST( MetalFinalizationTest );
++	RUN_SUBTEST( MetalPairTraversalTest );
++	RUN_SUBTEST( MetalPairTraversalFallbackTest );
 +	RUN_SUBTEST( MetalWorldIntegrationTest );
 +	RUN_SUBTEST( MetalDistanceJointContactTest );
 +	RUN_SUBTEST( MetalUnsupportedJointFallbackTest );

@@ -240,9 +240,12 @@ def quickstart_story():
         p("Enable per world", "h1"),
         code("b3WorldId world = b3CreateWorld(&worldDef);\nif (!b3World_EnableMetal(world, 32768)) {\n    /* CPU path remains usable. */\n}"),
         p("The body threshold is deliberately caller-selected. It is not a universal recommendation; measure your world with full-step timing."),
+        p("Experimental residency stages", "h2"),
+        code("b3World_SetMetalFinalization(world, true);\nb3World_SetMetalBroadPhase(world, true);"),
+        p("Finalization computes body and awake-shape results on Metal. Broad-phase mode currently moves raw dynamic-tree traversal only; CPU tree mutation, filtering, and contact creation remain."),
         p("Read route telemetry", "h2"),
-        code("b3MetalProfile p = b3World_GetMetalProfile(world);\nprintf(\"%s contacts=%llu joints=%llu fallbacks=%llu\\n\",\n       p.deviceName, p.contactDispatchCount,\n       p.jointDispatchCount, p.contactFallbackCount);"),
-        p("Dispatch counters prove a Metal stage ran. They do not imply that broad-phase tree mutation, pair generation, narrow phase, CCD, sleeping, or events ran on the GPU.", "callout"),
+        code("b3MetalProfile p = b3World_GetMetalProfile(world);\nprintf(\"%s contacts=%llu pairs=%llu pairFallbacks=%llu\\n\",\n       p.deviceName, p.contactDispatchCount,\n       p.pairDispatchCount, p.pairFallbackCount);"),
+        p("Dispatch counters prove a Metal stage ran. Pair dispatch means raw tree traversal, not GPU tree ownership, filtering, narrow phase, CCD, sleeping, or events.", "callout"),
         p("Next references", "h2"),
         *bullets(["docs/compatibility.md - exact supported and CPU fallback surface", "docs/performance.md - measured M4 Pro crossovers", "docs/troubleshooting.md - initialization, routing, and performance diagnosis"]),
     ]
@@ -256,6 +259,7 @@ def architecture_story():
         ("4", "Integrate position", "Position and normalized quaternion update"),
         ("5", "Relax", "Unbiased constraint iterations"),
         ("6", "Restitution", "Eligible convex and mesh contacts"),
+        ("7", "Finalize", "Optional body state and awake-shape AABBs"),
     ]
     return [
         p("One ordered command graph", "h1"),
@@ -278,21 +282,15 @@ def architecture_story():
         p("Constraints inside one non-overflow color never write the same dynamic body, so one GPU thread can own one constraint without atomics. Colors remain ordered with buffer barriers."),
         p("Deterministic overflow", "h2"),
         p("Overflow constraints may share bodies. A single Metal thread walks them in upstream order. Mixed distance/parallel overflow uses an eight-byte type/index descriptor, preserving order with one launch per phase."),
+        p("Experimental pair traversal", "h2"),
+        p("A separate two-pass Metal path traverses copies of Box3D's dynamic trees. Per-move counts receive a stable CPU prefix, then candidates are written in exact upstream tree and DFS order. CPU filters and contact creation remain unchanged. Bounded stack or capacity failures rerun the complete CPU traversal."),
         p("Apple GPU implementation choices", "h1"),
-        table(
-            ["Choice", "Reason"],
-            [
-                ("One command buffer per step", "Amortize submission and synchronization"),
-                ("Shared persistent storage", "Exploit unified memory without redundant contact copies"),
-                ("Pipeline-derived group width", "Match execution width and occupancy limits"),
-                ("No atomics in colored path", "Conflict graph provides exclusive body writes"),
-                ("Serial overflow kernel", "Correctness for body-sharing constraints"),
-                ("Safe Metal math", "Reduce avoidable drift from the CPU oracle"),
-            ],
-            [57 * mm, 105 * mm],
-        ),
-        Spacer(1, 8),
-        p("<b>Telemetry.</b> The profile reports device, threshold, dispatch/fallback counters, and latest GPU time for position, unconstrained, contact, and joint paths. Treat these as routing evidence, not as a whole-engine GPU percentage.", "callout"),
+        *bullets([
+            "One command buffer per solver step amortizes submission and synchronization.",
+            "Persistent shared storage avoids redundant contact copies; pipeline-derived group widths follow device occupancy.",
+            "Conflict-free colors avoid atomics, while body-sharing overflow stays serial and ordered.",
+            "Safe Metal math reduces avoidable drift from the CPU oracle.",
+        ]),
     ]
 
 
@@ -304,6 +302,7 @@ def compatibility_story():
         ("Distance joints", "Rigid, spring, limit, motor, static bodies"),
         ("Parallel joints", "Soft alignment, torque limiting, static bodies"),
         ("Overflow", "Serial deterministic contact and mixed supported-joint order"),
+        ("Pair traversal", "Experimental exact-order raw dynamic-tree candidates"),
     ]
     errors = [
         ("Convex friction", "4.77e-7 transform", "3.98e-6 velocity"),
@@ -319,9 +318,9 @@ def compatibility_story():
         table(["GPU-resident surface", "Modes"], supported, [45 * mm, 117 * mm]),
         p("Explicit CPU boundary", "h2"),
         *bullets([
-            "Narrow phase and manifold generation",
+            "Broad-phase tree mutation, pair filtering, narrow phase, and manifolds",
             "Contact and joint preparation",
-            "Broad-phase tree mutation and pair generation, events, islands, sleeping, and CCD",
+            "Events, islands, sleeping, and CCD",
             "Recording, queries, topology mutation, and public API calls",
             "Filter, motor, prismatic, revolute, spherical, weld, and wheel solving",
             "Any joint requesting reaction-threshold events",
@@ -331,15 +330,7 @@ def compatibility_story():
         p("Matching CPU and Metal worlds run for multiple steps/substeps. Transforms and linear/angular velocities are compared after each scenario. Values below are observed maxima, not universal bounds."),
         table(["Scenario", "Transform", "Velocity"], errors, [65 * mm, 48 * mm, 49 * mm]),
         p("Acceptance matrix", "h2"),
-        *bullets([
-            "Debug and Release full unit suites",
-            "CPU-only Release full suite",
-            "Double-precision Metal differential suite",
-            "AddressSanitizer and UndefinedBehaviorSanitizer",
-            "Warning-as-error build",
-            "Shared dylib demo and CMake install audit",
-            "Clean-clone patch reconstruction",
-        ]),
+        p("Debug and Release full suites; CPU-only Release; double-precision Metal differential tests; AddressSanitizer and UndefinedBehaviorSanitizer; warning-as-error build; shared dylib demo; CMake install audit; and clean-clone patch reconstruction."),
         p("<b>Failure semantics.</b> Initialization failure returns false and leaves the world usable. Unsupported work increments fallback counters. Disabling Metal releases resources without destroying the world.", "callout"),
     ]
 
@@ -355,6 +346,7 @@ def performance_story():
         ("Parallel joints", "none stable", "0.974x", "1,048,576"),
         ("Experimental GPU finalization", "none", "0.79x", "524,288"),
         ("GPU shape finalization", "none", "0.84x", "524,288"),
+        ("GPU tree traversal", "~32K", "1.068x", "524,288"),
     ]
     return [
         p("Measured platform", "h1"),
@@ -377,11 +369,10 @@ def performance_story():
         p("What the data says", "h2"),
         *bullets([
             "Command fusion is the largest demonstrated architectural win.",
-            "Experimental finalization arithmetic is correct but 27% slower at the paired 524,288-body median.",
-            "Shape AABBs are correct but the flat CPU result stream is 17.9% slower at 524,288 shapes.",
-            "Mesh contacts cross earlier than convex-wide stacks in the recorded workloads.",
-            "Distance joints benefit only at very large scale.",
-            "Parallel joints expand compatibility but do not justify default GPU routing.",
+            "Body finalization is 27% slower and shape AABBs are 17.9% slower at 524,288 because CPU result streams remain.",
+            "Exact-order tree traversal is 6.4% faster at 524,288 shapes, but regresses small worlds.",
+            "Mesh contacts cross earlier than convex-wide stacks; distance joints benefit only at very large scale.",
+            "Parallel joints expand compatibility without justifying default GPU routing.",
         ]),
         p("No universal threshold", "h1"),
         p("GPU frequency, worker scheduling, topology, contact density, and CPU-resident stages move crossover. The API therefore requires a caller-selected awake-body threshold."),
@@ -389,7 +380,7 @@ def performance_story():
         p("Run each complete executable in at least three separate processes and compare medians. Do not use GPU kernel time alone as a whole-world claim.", "callout"),
         p("Next performance work", "h2"),
         *bullets([
-            "Move pair generation and broad phase onto resident shape bounds, returning compact candidates instead of one CPU result per shape.",
+            "Move deterministic prefixing on-device, then build/update a GPU-owned broad phase from resident shape bounds.",
             "Retain state across steps and add joint types only with mode matrices and whole-world evidence.",
         ]),
     ]

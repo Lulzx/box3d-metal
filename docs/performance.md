@@ -32,6 +32,7 @@ readback unless explicitly labeled a primitive.
 | Parallel-joint whole world | No stable crossover | 0.974x at 1,048,576 median point |
 | Experimental GPU finalization | No crossover | 27% slower at 524,288 bodies |
 | GPU shape finalization | No crossover | 17.9% slower at 524,288 shapes |
+| Experimental GPU tree traversal | Around 32,768 shapes | 1.068x at 524,288 shapes |
 
 ## Interpretation
 
@@ -52,6 +53,14 @@ a 17.9% regression. The CPU still reads every 64-byte shape result, mutates the
 dynamic tree, and traverses it for pairs. GPU pair generation must consume
 resident bounds before this stage can remove that stream.
 
+The first Metal dynamic-tree traversal slice produces an exact raw candidate
+stream, but still copies the CPU tree, synchronizes between count and write for
+a CPU prefix, and returns candidates to CPU filtering. Against the same Metal
+finalization configuration, it improved the paired 524,288-shape median from
+48.441 ms to 45.356 ms (6.4%) while adding 86-107% below 2,048 shapes. Its two
+kernels used about 3.0 ms at the largest point. This is a large-world traversal
+crossover, not proof of a device-resident broad phase.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.
@@ -63,6 +72,8 @@ density, and unsupported stages can move the crossover substantially.
 ./scripts/run-benchmarks.sh ../box3d-metal-worktree
 BOX3D_METAL_SHAPES=1 ../box3d-metal-worktree/build/metal-release/bin/metal_world_benchmark
 BOX3D_METAL_SHAPES=1 BOX3D_METAL_FINALIZATION=1 \
+  ../box3d-metal-worktree/build/metal-release/bin/metal_world_benchmark
+BOX3D_METAL_SHAPES=1 BOX3D_METAL_FINALIZATION=1 BOX3D_METAL_BROAD_PHASE=1 \
   ../box3d-metal-worktree/build/metal-release/bin/metal_world_benchmark
 ```
 

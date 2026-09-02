@@ -10,8 +10,10 @@ joints, parallel joints, restitution, and deterministic graph overflow. The
 original CPU implementation remains the behavioral reference and fallback.
 An experimental, separately opt-in finalization kernel also computes final
 rotation, origin offset, sleep-motion metrics, world-space inverse inertia, and
-awake-shape AABBs. It remains off by default because the CPU still consumes a
-flat result per shape and it has not demonstrated a whole-world win.
+awake-shape AABBs. A second experimental opt-in traverses Box3D's existing
+dynamic trees on Metal, preserving upstream candidate order before the
+unchanged CPU filtering/contact callback. Both remain off by default while the
+CPU still owns tree mutation and consumes shared result streams.
 
 ## Quick start
 
@@ -58,6 +60,7 @@ CPU work:
 | Parallel joints | No stable whole-world crossover demonstrated |
 | Experimental GPU finalization | Correct, but 27% slower at the 524,288-body paired median |
 | GPU shape finalization | Correct, but 17.9% slower at 524,288 shapes |
+| Experimental GPU tree traversal | 1.068x at 524,288 shapes; small worlds regress |
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

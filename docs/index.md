@@ -42,6 +42,7 @@ for review.
 - [Parallel joints](benchmarks/m4-pro-parallel-joints-2026-09-02.md)
 - [Experimental body finalization](benchmarks/m4-pro-finalization-2026-09-02.md)
 - [Awake-shape AABB finalization](benchmarks/m4-pro-shape-finalization-2026-09-02.md)
+- [GPU pair generation](benchmarks/m4-pro-pair-generation-2026-09-02.md)
 
 ## Repository map
 
