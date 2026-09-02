@@ -32,11 +32,13 @@ Revision-stable steps also reuse persistent 72-byte shape-input records after
 an exact awake-body id check, skipping shape counting, body shape-list traversal,
 local AABB computation, and record writes. Both stages remain off by default;
 CPU topology and cold/topology registry rebuilds are still in the path.
-The first shape-specialized narrow-phase route now batches sphere-sphere local
-manifold geometry in one Metal command buffer. CPU workers still own manifold
-persistence, material and pre-solve callbacks, events, and graph/island state;
-all other shape pairs remain on the CPU. Double worlds use the vendored VF64
-exact subtraction before narrowing relative translations to float.
+The shape-specialized narrow-phase route now batches sphere-sphere,
+capsule-sphere, and capsule-capsule local manifold geometry in one Metal
+command buffer, including ordered two-point capsule manifolds and feature ids.
+CPU workers still own manifold persistence, material and pre-solve callbacks,
+events, and graph/island state; all other shape pairs remain on the CPU. Double
+worlds use the vendored VF64 exact subtraction before narrowing relative
+translations to float.
 
 ## Quick start
 
@@ -97,8 +99,9 @@ The resident pair-filter checkpoint publishes exact-order correctness and
 metadata-residency evidence only; the host was still loaded.
 The existing-pair checkpoint likewise publishes lifecycle and residency
 evidence only, not timing from the loaded host.
-The sphere narrow-phase checkpoint likewise publishes CPU-oracle, deterministic
-replay, mixed-fallback, and VF64 far-world evidence only.
+The sphere/capsule narrow-phase checkpoint likewise publishes CPU-oracle,
+deterministic replay, mixed-fallback, two-point ordering, and VF64 far-world
+evidence only.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.
