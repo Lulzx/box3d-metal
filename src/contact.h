@@ -70,6 +70,12 @@ enum b3ContactFlags
 
 	// Enable speculative contact points
 	b3_enableSpeculativePoints = 0x01000000,
+
+	// The current manifold geometry came from the resident Metal contact-ID table.
+	// This is transient ownership state: collide clears it before considering
+	// recycling or the CPU narrow phase, then sets it only after a resident result
+	// is actually consumed. The solver uses it to build an exact GPU-prepare gate.
+	b3_simMetalManifold = 0x02000000,
 };
 
 // A contact edge is used to connect bodies and contacts together

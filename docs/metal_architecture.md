@@ -204,6 +204,16 @@ steps add no shared stream, command buffer, or wait. Entries are authoritative
 only for contacts marked eligible in the current successful dispatch; stale
 unsupported slots are never consumed.
 
+That authority now survives into solver setup explicitly. Each collision worker
+clears the transient ownership bit before overlap/recycling decisions and sets
+it only after the resident result is actually passed through Box3D's persistence,
+material, callback, and topology path. Solver setup counts those marked contact
+ids in graph-color order and exposes SIMD-wide coverage only when every colored
+convex contact is resident-table authoritative. A mixed or recycled set therefore
+keeps CPU preparation without inspecting or staging private table slots. This is
+the fail-closed gate for the next contact-preparation kernel; it does not yet skip
+CPU preparation by itself.
+
 Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 unsupported joint solution, continuous collision, events, and sleeping/island
 mutation still run on the CPU. Unsupported
@@ -313,6 +323,8 @@ Fused manifold orientation finalization is recorded in
 [`benchmarks/m4-pro-manifold-finalization-2026-09-02.md`](benchmarks/m4-pro-manifold-finalization-2026-09-02.md).
 The contact-id-indexed private manifold table is recorded in
 [`benchmarks/m4-pro-resident-manifold-table-2026-09-02.md`](benchmarks/m4-pro-resident-manifold-table-2026-09-02.md).
+The solver ownership gate is recorded in
+[`benchmarks/m4-pro-resident-solver-ownership-2026-09-02.md`](benchmarks/m4-pro-resident-solver-ownership-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

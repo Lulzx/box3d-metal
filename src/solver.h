@@ -265,6 +265,9 @@ typedef struct b3StepContext
 	int* awakeContactIndices;
 	const b3MetalConvexManifoldResult* metalConvexManifolds;
 	int metalConvexManifoldCount;
+	int metalResidentConvexContactCount;
+	int metalResidentConvexConstraintCount;
+	bool metalResidentConvexComplete;
 
 	// Flat view of the wide contact constraint array used by prepare and store.
 	// prepareSpans has activeColorCount + 1 entries, the last being a sentinel

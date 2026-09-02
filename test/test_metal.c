@@ -1055,6 +1055,45 @@ static int MetalPairTraversalTest( void )
 	return 0;
 }
 
+static int MetalResidentSolverOwnershipTest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	b3World_SetContactRecycleDistance( worldId, 0.0f );
+
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	b3BodyId bodyA = b3CreateBody( worldId, &bodyDef );
+	b3CreateSphereShape( bodyA, &shapeDef, &sphere );
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.enableSleep = false;
+	bodyDef.position = (b3Pos){ 0.99, 0.0, 0.0 };
+	b3BodyId bodyB = b3CreateBody( worldId, &bodyDef );
+	b3CreateSphereShape( bodyB, &shapeDef, &sphere );
+
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
+	ENSURE( profile.lastResidentConvexContactCount == 1 );
+	ENSURE( profile.lastResidentConvexConstraintCount == 1 );
+
+	// The next unchanged step deliberately takes the CPU recycling exception.
+	// A table slot still exists, but it must no longer authorize GPU preparation.
+	b3World_SetContactRecycleDistance( worldId, 0.1f );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
+	ENSURE( profile.lastResidentConvexContactCount == 0 );
+	ENSURE( profile.lastResidentConvexConstraintCount == 0 );
+
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
 static int MetalExistingPairFilterTest( void )
 {
 	b3WorldDef worldDef = b3DefaultWorldDef();
@@ -2370,6 +2409,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalFusedIntegrationTest );
 	RUN_SUBTEST( MetalFinalizationTest );
 	RUN_SUBTEST( MetalConvexManifoldTest );
+	RUN_SUBTEST( MetalResidentSolverOwnershipTest );
 	RUN_SUBTEST( MetalPairTraversalTest );
 	RUN_SUBTEST( MetalExistingPairFilterTest );
 	RUN_SUBTEST( MetalPairTraversalFallbackTest );

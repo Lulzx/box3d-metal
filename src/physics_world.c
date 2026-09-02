@@ -689,6 +689,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.lastNarrowPhaseUniqueHullCount = world->metalLastNarrowPhaseUniqueHullCount;
 	profile.lastNarrowPhaseResultCount = world->metalLastNarrowPhaseResultCount;
 	profile.lastNarrowPhaseManifoldTableCount = world->metalLastNarrowPhaseManifoldTableCount;
+	profile.lastResidentConvexContactCount = world->metalLastResidentConvexContactCount;
+	profile.lastResidentConvexConstraintCount = world->metalLastResidentConvexConstraintCount;
 	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
 	profile.lastUnconstrainedGpuMilliseconds = world->metalLastUnconstrainedGpuMilliseconds;
 	profile.lastContactGpuMilliseconds = world->metalLastContactGpuMilliseconds;
@@ -790,6 +792,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 
 		b3Contact* contact = contacts + contactIndex;
 		B3_VALIDATE( contact->contactId == contactIndex );
+		contact->flags &= ~b3_simMetalManifold;
 
 		b3Shape* shapeA = shapes + contact->shapeIdA;
 		b3Shape* shapeB = shapes + contact->shapeIdB;
@@ -976,6 +979,12 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 										 bodySimB->localCenter, transformB, isFast, precomputedConvexManifold,
 										 precomputedConvexManifold != NULL,
 										 taskContext->arena );
+#if defined( BOX3D_METAL )
+		if ( precomputedConvexManifold != NULL )
+		{
+			contact->flags |= b3_simMetalManifold;
+		}
+#endif
 
 		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
 		if ( bucketIndex > 0 )

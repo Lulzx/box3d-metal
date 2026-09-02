@@ -56,6 +56,12 @@ typedef struct b3MetalProfile
 	int lastNarrowPhaseUniqueHullCount;
 	int lastNarrowPhaseResultCount;
 	int lastNarrowPhaseManifoldTableCount;
+	/// GPU-authored convex contacts that survived callbacks/topology processing
+	/// and entered the current solver graph.
+	int lastResidentConvexContactCount;
+	/// SIMD-wide constraint records covered by those contacts. This is non-zero
+	/// only when every colored convex contact is resident-table authoritative.
+	int lastResidentConvexConstraintCount;
 	double lastPositionGpuMilliseconds;
 	double lastUnconstrainedGpuMilliseconds;
 	double lastContactGpuMilliseconds;

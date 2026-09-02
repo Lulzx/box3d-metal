@@ -1780,6 +1780,10 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 {
 	// Only count steps that advance the simulation
 	world->stepIndex += 1;
+#if defined( BOX3D_METAL )
+	world->metalLastResidentConvexContactCount = 0;
+	world->metalLastResidentConvexConstraintCount = 0;
+#endif
 
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
 	int awakeBodyCount = awakeSet->bodySims.count;
@@ -1856,6 +1860,8 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 
 		// c is the active color index
 		int wideContactCount = 0;
+		int convexContactCount = 0;
+		int residentConvexContactCount = 0;
 		int contactCount = 0;
 		int manifoldCount = 0;
 		int jointCount = 0;
@@ -1878,6 +1884,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 			int colorWideConstraintCount =
 				colorConvexContactCount > 0 ? ( ( colorConvexContactCount - 1 ) >> B3_SIMD_SHIFT ) + 1 : 0;
 			wideContactCount += colorWideConstraintCount;
+			convexContactCount += colorConvexContactCount;
+			for ( int j = 0; j < colorConvexContactCount; ++j )
+			{
+				int contactId = color->convexContacts.data[j];
+				const b3Contact* contact = b3Array_Get( world->contacts, contactId );
+				residentConvexContactCount += ( contact->flags & b3_simMetalManifold ) != 0;
+			}
 			colorWideContactCounts[c] = colorWideConstraintCount;
 
 			colorContactCounts[c] = colorContactCount;
@@ -1902,6 +1915,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 			c += 1;
 		}
 		activeColorCount = c;
+		stepContext->metalResidentConvexContactCount = residentConvexContactCount;
+		stepContext->metalResidentConvexComplete =
+			convexContactCount > 0 && residentConvexContactCount == convexContactCount;
+		stepContext->metalResidentConvexConstraintCount =
+			stepContext->metalResidentConvexComplete ? wideContactCount : 0;
+#if defined( BOX3D_METAL )
+		world->metalLastResidentConvexContactCount = residentConvexContactCount;
+		world->metalLastResidentConvexConstraintCount = stepContext->metalResidentConvexConstraintCount;
+#endif
 
 		// Prepare and store run as one flat parallel-for over the entire wide constraint range,
 		// partitioned into uniformly sized blocks. Color info is consulted inside the task via
