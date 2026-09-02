@@ -1,0 +1,2168 @@
+// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
+// SPDX-License-Identifier: MIT
+
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+
+#include "metal_backend.h"
+
+#include "constraint_graph.h"
+#include "contact_solver.h"
+#include "joint.h"
+#include "physics_world.h"
+#include "solver_set.h"
+
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+
+// These checks protect the shared C/MSL ABI. Metal's native float3 is 16-byte
+// aligned, so the shader deliberately uses scalar fields matching this layout.
+_Static_assert( sizeof( b3BodyState ) == 56, "Metal body-state ABI changed" );
+_Static_assert( offsetof( b3BodyState, angularVelocity ) == 12, "Metal body-state ABI changed" );
+_Static_assert( offsetof( b3BodyState, deltaPosition ) == 24, "Metal body-state ABI changed" );
+_Static_assert( offsetof( b3BodyState, deltaRotation ) == 36, "Metal body-state ABI changed" );
+_Static_assert( offsetof( b3BodyState, flags ) == 52, "Metal body-state ABI changed" );
+_Static_assert( B3_GYROSCOPIC_ITERATIONS == 1, "Metal fused integration must match the configured gyro iteration count" );
+
+struct b3MetalContext
+{
+	id<MTLDevice> device;
+	id<MTLCommandQueue> queue;
+	id<MTLComputePipelineState> integratePositionsPipeline;
+	id<MTLComputePipelineState> integrateUnconstrainedPipeline;
+	id<MTLComputePipelineState> finalizeBodiesPipeline;
+	id<MTLComputePipelineState> warmStartContactsPipeline;
+	id<MTLComputePipelineState> solveContactsPipeline;
+	id<MTLComputePipelineState> restitutionContactsPipeline;
+	id<MTLComputePipelineState> warmStartMeshPipeline;
+	id<MTLComputePipelineState> solveMeshPipeline;
+	id<MTLComputePipelineState> restitutionMeshPipeline;
+	id<MTLComputePipelineState> warmStartOverflowPipeline;
+	id<MTLComputePipelineState> solveOverflowPipeline;
+	id<MTLComputePipelineState> restitutionOverflowPipeline;
+	id<MTLComputePipelineState> warmStartDistancePipeline;
+	id<MTLComputePipelineState> solveDistancePipeline;
+	id<MTLComputePipelineState> warmStartParallelPipeline;
+	id<MTLComputePipelineState> solveParallelPipeline;
+	id<MTLComputePipelineState> warmStartJointOverflowPipeline;
+	id<MTLComputePipelineState> solveJointOverflowPipeline;
+	id<MTLBuffer> bodyStateBuffer;
+	NSUInteger bodyStateCapacity;
+	id<MTLBuffer> bodyPropertiesBuffer;
+	NSUInteger bodyPropertiesCapacity;
+	id<MTLBuffer> finalizeResultBuffer;
+	NSUInteger finalizeResultCapacity;
+	id<MTLBuffer> finalizePropertiesBuffer;
+	NSUInteger finalizePropertiesCapacity;
+	id<MTLBuffer> contactConstraintBuffer;
+	NSUInteger contactConstraintCapacity;
+	id<MTLBuffer> meshContactBuffer;
+	NSUInteger meshContactCapacity;
+	id<MTLBuffer> meshManifoldBuffer;
+	NSUInteger meshManifoldCapacity;
+	id<MTLBuffer> distanceJointBuffer;
+	NSUInteger distanceJointCapacity;
+	id<MTLBuffer> parallelJointBuffer;
+	NSUInteger parallelJointCapacity;
+	id<MTLBuffer> jointOverflowBuffer;
+	NSUInteger jointOverflowCapacity;
+};
+
+typedef struct b3MetalIntegrateParams
+{
+	uint32_t bodyCount;
+	float h;
+	float maxLinearSpeed;
+	float maxAngularSpeed;
+} b3MetalIntegrateParams;
+
+// Compact, stable transfer format. b3BodySim contains collision/finalization
+// fields the integration kernel never reads; excluding them saves bandwidth
+// and also keeps this ABI independent of BOX3D_DOUBLE_PRECISION.
+typedef struct b3MetalBodyProperties
+{
+	float qx, qy, qz, qw;
+	float forceX, forceY, forceZ;
+	float torqueX, torqueY, torqueZ;
+	float invMass;
+	float invInertiaLocal[9];
+	float invInertiaWorld[9];
+	float linearDamping, angularDamping, gravityScale;
+} b3MetalBodyProperties;
+
+typedef struct b3MetalFinalizeProperties
+{
+	float localCenterX, localCenterY, localCenterZ;
+	float maxExtentX, maxExtentY, maxExtentZ;
+	float padding[2];
+} b3MetalFinalizeProperties;
+
+_Static_assert( sizeof( b3MetalBodyProperties ) == 128, "Metal body property ABI changed" );
+_Static_assert( sizeof( b3MetalFinalizeProperties ) == 32, "Metal finalization-property ABI changed" );
+_Static_assert( sizeof( b3MetalFinalizeResult ) == 88, "Metal finalization-result ABI changed" );
+_Static_assert( sizeof( b3ContactConstraintPointWide ) == 192, "Metal wide contact point ABI changed" );
+_Static_assert( sizeof( b3ContactConstraintWide ) == 1696, "Metal wide contact ABI changed" );
+_Static_assert( sizeof( b3ManifoldConstraintPoint ) == 48, "Metal mesh contact-point ABI changed" );
+_Static_assert( sizeof( b3ManifoldConstraint ) == 308, "Metal mesh manifold ABI changed" );
+_Static_assert( sizeof( b3ContactConstraint ) == 176, "Metal mesh contact ABI changed" );
+
+typedef struct b3MetalFusedParams
+{
+	uint32_t bodyCount;
+	float h;
+	float maxLinearSpeed;
+	float maxAngularSpeed;
+	float gravityX, gravityY, gravityZ;
+	uint32_t integratePosition;
+} b3MetalFusedParams;
+
+typedef struct b3MetalContactParams
+{
+	uint32_t offset;
+	uint32_t count;
+	float invH;
+	float contactSpeed;
+	uint32_t useBias;
+	float restitutionThreshold;
+	uint32_t padding[2];
+} b3MetalContactParams;
+
+_Static_assert( sizeof( b3MetalContactParams ) == 32, "Metal contact parameter ABI changed" );
+
+typedef struct b3MetalDistanceJoint
+{
+	int indexA, indexB;
+	float invMassA, invMassB;
+	b3Matrix3 invIA, invIB;
+	b3Softness constraintSoftness;
+	b3Vec3 anchorA, anchorB, deltaCenter;
+	b3Softness distanceSoftness;
+	float length, hertz, lowerSpringForce, upperSpringForce;
+	float minLength, maxLength, maxMotorForce, motorSpeed;
+	float impulse, lowerImpulse, upperImpulse, motorImpulse, axialMass;
+	uint32_t flags;
+} b3MetalDistanceJoint;
+
+typedef struct b3MetalJointParams
+{
+	uint32_t offset, count;
+	float h, invH;
+	uint32_t useBias;
+	uint32_t padding[3];
+} b3MetalJointParams;
+
+typedef struct b3MetalParallelJoint
+{
+	int indexA, indexB;
+	b3Matrix3 invIA, invIB;
+	b3Softness softness;
+	b3Vec3 perpAxisX, perpAxisY;
+	b3Quat quatA, quatB;
+	float maxTorque;
+	b3Vec2 perpImpulse;
+	uint32_t fixedRotation;
+} b3MetalParallelJoint;
+
+typedef struct b3MetalJointOverflow
+{
+	uint32_t type;
+	uint32_t index;
+} b3MetalJointOverflow;
+
+_Static_assert( sizeof( b3MetalDistanceJoint ) == 204, "Metal distance-joint ABI changed" );
+_Static_assert( offsetof( b3MetalDistanceJoint, invIA ) == 16, "Metal distance-joint ABI changed" );
+_Static_assert( offsetof( b3MetalDistanceJoint, constraintSoftness ) == 88, "Metal distance-joint ABI changed" );
+_Static_assert( offsetof( b3MetalDistanceJoint, anchorA ) == 100, "Metal distance-joint ABI changed" );
+_Static_assert( offsetof( b3MetalDistanceJoint, distanceSoftness ) == 136, "Metal distance-joint ABI changed" );
+_Static_assert( offsetof( b3MetalDistanceJoint, flags ) == 200, "Metal distance-joint ABI changed" );
+_Static_assert( sizeof( b3MetalJointParams ) == 32, "Metal joint parameter ABI changed" );
+_Static_assert( sizeof( b3MetalParallelJoint ) == 164, "Metal parallel-joint ABI changed" );
+_Static_assert( offsetof( b3MetalParallelJoint, softness ) == 80, "Metal parallel-joint ABI changed" );
+_Static_assert( offsetof( b3MetalParallelJoint, quatA ) == 116, "Metal parallel-joint ABI changed" );
+_Static_assert( offsetof( b3MetalParallelJoint, fixedRotation ) == 160, "Metal parallel-joint ABI changed" );
+_Static_assert( sizeof( b3MetalJointOverflow ) == 8, "Metal joint-overflow ABI changed" );
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Woverlength-strings"
+static const char* b3_metalSource =
+	"#include <metal_stdlib>\n"
+	"using namespace metal;\n"
+	"struct BodyState {\n"
+	"  float lvx, lvy, lvz;\n"
+	"  float avx, avy, avz;\n"
+	"  float dpx, dpy, dpz;\n"
+	"  float qx, qy, qz, qw;\n"
+	"  uint flags;\n"
+	"};\n"
+	"struct Params { uint bodyCount; float h; float maxLinearSpeed; float maxAngularSpeed; };\n"
+	"struct BodyProperties {\n"
+	"  float qx, qy, qz, qw;\n"
+	"  float forceX, forceY, forceZ;\n"
+	"  float torqueX, torqueY, torqueZ;\n"
+	"  float invMass;\n"
+	"  float invInertiaLocal[9];\n"
+	"  float invInertiaWorld[9];\n"
+	"  float linearDamping, angularDamping, gravityScale;\n"
+	"};\n"
+	"struct FinalizeProperties {\n"
+	"  float localCenterX, localCenterY, localCenterZ;\n"
+	"  float maxExtentX, maxExtentY, maxExtentZ; float padding[2];\n"
+	"};\n"
+	"struct FinalizeResult {\n"
+	"  float dpx, dpy, dpz; float qx, qy, qz, qw;\n"
+	"  float originX, originY, originZ;\n"
+	"  float sleepVelocity, maxVelocity, maxDeltaPosition;\n"
+	"  float invInertiaWorld[9];\n"
+	"};\n"
+	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
+	"struct FusedParams {\n"
+	"  uint bodyCount; float h; float maxLinearSpeed; float maxAngularSpeed;\n"
+	"  float gravityX, gravityY, gravityZ; uint integratePosition;\n"
+	"};\n"
+	"float4 quat_mul(float4 a, float4 b) {\n"
+	"  return float4(cross(a.xyz, b.xyz) + a.w * b.xyz + b.w * a.xyz,\n"
+	"                a.w * b.w - dot(a.xyz, b.xyz));\n"
+	"}\n"
+	"float3 inv_rotate(float4 q, float3 v) {\n"
+	"  float3 t1 = cross(q.xyz, v);\n"
+	"  float3 t2 = t1 - q.w * v;\n"
+	"  return v + 2.0f * cross(q.xyz, t2);\n"
+	"}\n"
+	"float3 rotate(float4 q, float3 v) {\n"
+	"  float3 t1 = cross(q.xyz, v);\n"
+	"  float3 t2 = t1 + q.w * v;\n"
+	"  return v + 2.0f * cross(q.xyz, t2);\n"
+	"}\n"
+	"float3x3 invert_matrix(float3x3 m) {\n"
+	"  float det = dot(m[0], cross(m[1], m[2]));\n"
+	"  if (fabs(det) <= 1.17549435e-35f) return float3x3(0.0f);\n"
+	"  float invDet = 1.0f / det;\n"
+	"  float3x3 cof = float3x3(invDet * cross(m[1], m[2]),\n"
+	"                           invDet * cross(m[2], m[0]),\n"
+	"                           invDet * cross(m[0], m[1]));\n"
+	"  return transpose(cof);\n"
+	"}\n"
+	"float3 solve3(float3x3 m, float3 a) {\n"
+	"  float det = dot(m[0], cross(m[1], m[2]));\n"
+	"  if (fabs(det) <= 1.17549435e-35f) return float3(0.0f);\n"
+	"  float invDet = 1.0f / det;\n"
+	"  return float3(invDet * dot(cross(m[1], m[2]), a),\n"
+	"                invDet * dot(cross(m[2], m[0]), a),\n"
+	"                invDet * dot(cross(m[0], m[1]), a));\n"
+	"}\n"
+	"kernel void b3_integrate_unconstrained(device BodyState* states [[buffer(0)]],\n"
+	"                                        const device BodyProperties* props [[buffer(1)]],\n"
+	"                                        constant FusedParams& p [[buffer(2)]],\n"
+	"                                        uint i [[thread_position_in_grid]]) {\n"
+	"  if (i >= p.bodyCount) return;\n"
+	"  BodyState s = states[i];\n"
+	"  BodyProperties bp = props[i];\n"
+	"  float3 v = float3(s.lvx, s.lvy, s.lvz);\n"
+	"  float3 w = float3(s.avx, s.avy, s.avz);\n"
+	"  float linearDamping = 1.0f / (1.0f + p.h * bp.linearDamping);\n"
+	"  float angularDamping = 1.0f / (1.0f + p.h * bp.angularDamping);\n"
+	"  float gravityScale = bp.invMass > 0.0f ? bp.gravityScale : 0.0f;\n"
+	"  float3 force = float3(bp.forceX, bp.forceY, bp.forceZ);\n"
+	"  float3 gravity = float3(p.gravityX, p.gravityY, p.gravityZ);\n"
+	"  v = p.h * bp.invMass * force + p.h * gravityScale * gravity + linearDamping * v;\n"
+	"  float3x3 invIW = float3x3(\n"
+	"    float3(bp.invInertiaWorld[0], bp.invInertiaWorld[1], bp.invInertiaWorld[2]),\n"
+	"    float3(bp.invInertiaWorld[3], bp.invInertiaWorld[4], bp.invInertiaWorld[5]),\n"
+	"    float3(bp.invInertiaWorld[6], bp.invInertiaWorld[7], bp.invInertiaWorld[8]));\n"
+	"  float3 torque = float3(bp.torqueX, bp.torqueY, bp.torqueZ);\n"
+	"  w = p.h * (invIW * torque) + angularDamping * w;\n"
+	"  float4 q0 = float4(bp.qx, bp.qy, bp.qz, bp.qw);\n"
+	"  float4 dq = float4(s.qx, s.qy, s.qz, s.qw);\n"
+	"  float4 q = quat_mul(dq, q0);\n"
+	"  float3x3 invIL = float3x3(\n"
+	"    float3(bp.invInertiaLocal[0], bp.invInertiaLocal[1], bp.invInertiaLocal[2]),\n"
+	"    float3(bp.invInertiaLocal[3], bp.invInertiaLocal[4], bp.invInertiaLocal[5]),\n"
+	"    float3(bp.invInertiaLocal[6], bp.invInertiaLocal[7], bp.invInertiaLocal[8]));\n"
+	"  float3x3 inertia = invert_matrix(invIL);\n"
+	"  float3 omega1 = inv_rotate(q, w);\n"
+	"  float3 omega2 = omega1;\n"
+	"  float i00 = inertia[0].x, i01 = inertia[1].x, i02 = inertia[2].x;\n"
+	"  float i11 = inertia[1].y, i12 = inertia[2].y, i22 = inertia[2].z;\n"
+	"  float w1 = omega2.x, w2 = omega2.y, w3 = omega2.z;\n"
+	"  float Iw1 = i00*w1 + i01*w2 + i02*w3;\n"
+	"  float Iw2 = i01*w1 + i11*w2 + i12*w3;\n"
+	"  float Iw3 = i02*w1 + i12*w2 + i22*w3;\n"
+	"  float3 residual = float3(\n"
+	"    p.h * (w2*Iw3 - w3*Iw2),\n"
+	"    p.h * (w3*Iw1 - w1*Iw3),\n"
+	"    p.h * (w1*Iw2 - w2*Iw1));\n"
+	"  float3x3 J = float3x3(\n"
+	"    float3(i00 + p.h*(w2*i02 - w3*i01),\n"
+	"           i01 + p.h*(w3*i00 - w1*i02 - Iw3),\n"
+	"           i02 + p.h*(w1*i01 - w2*i00 + Iw2)),\n"
+	"    float3(i01 + p.h*(w2*i12 - w3*i11 + Iw3),\n"
+	"           i11 + p.h*(w3*i01 - w1*i12),\n"
+	"           i12 + p.h*(w1*i11 - w2*i01 - Iw1)),\n"
+	"    float3(i02 + p.h*(w2*i22 - w3*i12 - Iw2),\n"
+	"           i12 + p.h*(w3*i02 - w1*i22 + Iw1),\n"
+	"           i22 + p.h*(w1*i12 - w2*i02)));\n"
+	"  omega2 -= solve3(J, residual);\n"
+	"  w = rotate(q, omega2);\n"
+	"  if (s.flags & 0x00000001u) v.x = 0.0f;\n"
+	"  if (s.flags & 0x00000002u) v.y = 0.0f;\n"
+	"  if (s.flags & 0x00000004u) v.z = 0.0f;\n"
+	"  if (s.flags & 0x00000008u) w.x = 0.0f;\n"
+	"  if (s.flags & 0x00000010u) w.y = 0.0f;\n"
+	"  if (s.flags & 0x00000020u) w.z = 0.0f;\n"
+	"  float v2 = dot(v, v), maxV2 = p.maxLinearSpeed * p.maxLinearSpeed;\n"
+	"  if (v2 > maxV2) { v *= p.maxLinearSpeed / sqrt(v2); s.flags |= 0x00000100u; }\n"
+	"  float w2n = dot(w, w), maxW2 = p.maxAngularSpeed * p.maxAngularSpeed;\n"
+	"  if (w2n > maxW2 && (s.flags & 0x00000400u) == 0u) {\n"
+	"    w *= p.maxAngularSpeed / sqrt(w2n); s.flags |= 0x00000100u;\n"
+	"  }\n"
+	"  s.lvx = v.x; s.lvy = v.y; s.lvz = v.z;\n"
+	"  s.avx = w.x; s.avy = w.y; s.avz = w.z;\n"
+	"  if (p.integratePosition != 0u) {\n"
+	"    float3 dp = float3(s.dpx, s.dpy, s.dpz) + p.h * v;\n"
+	"    float3 qdv = 0.5f * p.h * w;\n"
+	"    float3 qv = dq.xyz + cross(qdv, dq.xyz) + dq.w * qdv;\n"
+	"    float qw = dq.w - dot(qdv, dq.xyz);\n"
+	"    float q2 = dot(qv, qv) + qw * qw;\n"
+	"    if (q2 > 1.17549435e-35f) { float invQ = 1.0f / sqrt(q2); qv *= invQ; qw *= invQ; }\n"
+	"    else { qv = float3(0.0f); qw = 1.0f; }\n"
+	"    s.dpx = dp.x; s.dpy = dp.y; s.dpz = dp.z;\n"
+	"    s.qx = qv.x; s.qy = qv.y; s.qz = qv.z; s.qw = qw;\n"
+	"  }\n"
+	"  states[i] = s;\n"
+	"}\n"
+	"kernel void b3_integrate_positions(device BodyState* states [[buffer(0)]],\n"
+	"                                   constant Params& p [[buffer(1)]],\n"
+	"                                   uint i [[thread_position_in_grid]]) {\n"
+	"  if (i >= p.bodyCount) return;\n"
+	"  BodyState s = states[i];\n"
+	"  float3 v = float3(s.lvx, s.lvy, s.lvz);\n"
+	"  float3 w = float3(s.avx, s.avy, s.avz);\n"
+	"  if (s.flags & 0x00000001u) v.x = 0.0f;\n"
+	"  if (s.flags & 0x00000002u) v.y = 0.0f;\n"
+	"  if (s.flags & 0x00000004u) v.z = 0.0f;\n"
+	"  if (s.flags & 0x00000008u) w.x = 0.0f;\n"
+	"  if (s.flags & 0x00000010u) w.y = 0.0f;\n"
+	"  if (s.flags & 0x00000020u) w.z = 0.0f;\n"
+	"  float v2 = dot(v, v);\n"
+	"  float maxV2 = p.maxLinearSpeed * p.maxLinearSpeed;\n"
+	"  if (v2 > maxV2) { v *= p.maxLinearSpeed / sqrt(v2); s.flags |= 0x00000100u; }\n"
+	"  float w2 = dot(w, w);\n"
+	"  float maxW2 = p.maxAngularSpeed * p.maxAngularSpeed;\n"
+	"  if (w2 > maxW2 && (s.flags & 0x00000400u) == 0u) {\n"
+	"    w *= p.maxAngularSpeed / sqrt(w2); s.flags |= 0x00000100u;\n"
+	"  }\n"
+	"  float3 dp = float3(s.dpx, s.dpy, s.dpz) + p.h * v;\n"
+	"  float4 q = float4(s.qx, s.qy, s.qz, s.qw);\n"
+	"  float3 qdv = 0.5f * p.h * w;\n"
+	"  float3 qv = q.xyz + cross(qdv, q.xyz) + q.w * qdv;\n"
+	"  float qw = q.w - dot(qdv, q.xyz);\n"
+	"  float q2 = dot(qv, qv) + qw * qw;\n"
+	"  if (q2 > 1.17549435e-35f) { float invQ = 1.0f / sqrt(q2); qv *= invQ; qw *= invQ; }\n"
+	"  else { qv = float3(0.0f); qw = 1.0f; }\n"
+	"  s.lvx = v.x; s.lvy = v.y; s.lvz = v.z;\n"
+	"  s.avx = w.x; s.avy = w.y; s.avz = w.z;\n"
+	"  s.dpx = dp.x; s.dpy = dp.y; s.dpz = dp.z;\n"
+	"  s.qx = qv.x; s.qy = qv.y; s.qz = qv.z; s.qw = qw;\n"
+	"  states[i] = s;\n"
+	"}\n"
+	"kernel void b3_finalize_bodies(const device BodyState* states [[buffer(0)]],\n"
+	"                               const device BodyProperties* props [[buffer(1)]],\n"
+	"                               const device FinalizeProperties* finalizeProps [[buffer(2)]],\n"
+	"                               device FinalizeResult* results [[buffer(3)]],\n"
+	"                               constant FinalizeParams& p [[buffer(4)]],\n"
+	"                               uint i [[thread_position_in_grid]]) {\n"
+	"  if (i >= p.bodyCount) return;\n"
+	"  BodyState s = states[i]; BodyProperties bp = props[i]; FinalizeProperties fp = finalizeProps[i];\n"
+	"  float4 baseQ = float4(bp.qx, bp.qy, bp.qz, bp.qw);\n"
+	"  float4 dq = float4(s.qx, s.qy, s.qz, s.qw);\n"
+	"  float4 q = quat_mul(dq, baseQ);\n"
+	"  float q2 = dot(q, q);\n"
+	"  q = q2 > 1.17549435e-35f ? q * rsqrt(q2) : float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
+	"  float3 v = float3(s.lvx, s.lvy, s.lvz);\n"
+	"  float3 w = float3(s.avx, s.avy, s.avz);\n"
+	"  float3 localOmega = abs(inv_rotate(baseQ, w));\n"
+	"  float3 localDelta = abs(inv_rotate(baseQ, dq.xyz));\n"
+	"  float3 extent = float3(fp.maxExtentX, fp.maxExtentY, fp.maxExtentZ);\n"
+	"  float3 velocityArc = float3(localOmega.y*extent.z + localOmega.z*extent.y,\n"
+	"                              localOmega.z*extent.x + localOmega.x*extent.z,\n"
+	"                              localOmega.x*extent.y + localOmega.y*extent.x);\n"
+	"  float3 rotationArc = float3(localDelta.y*extent.z + localDelta.z*extent.y,\n"
+	"                              localDelta.z*extent.x + localDelta.x*extent.z,\n"
+	"                              localDelta.x*extent.y + localDelta.y*extent.x);\n"
+	"  float maxVelocity = length(v) + length(velocityArc);\n"
+	"  float3 dp = float3(s.dpx, s.dpy, s.dpz);\n"
+	"  float maxDelta = length(dp) + 2.0f * length(rotationArc);\n"
+	"  float sleepVelocity = max(maxVelocity, 0.5f * p.invTimeStep * maxDelta);\n"
+	"  float3 localCenter = float3(fp.localCenterX, fp.localCenterY, fp.localCenterZ);\n"
+	"  float3 origin = -rotate(q, localCenter);\n"
+	"  float3x3 R = float3x3(rotate(q, float3(1.0f,0.0f,0.0f)),\n"
+	"                          rotate(q, float3(0.0f,1.0f,0.0f)),\n"
+	"                          rotate(q, float3(0.0f,0.0f,1.0f)));\n"
+	"  float3x3 invIL = float3x3(\n"
+	"    float3(bp.invInertiaLocal[0],bp.invInertiaLocal[1],bp.invInertiaLocal[2]),\n"
+	"    float3(bp.invInertiaLocal[3],bp.invInertiaLocal[4],bp.invInertiaLocal[5]),\n"
+	"    float3(bp.invInertiaLocal[6],bp.invInertiaLocal[7],bp.invInertiaLocal[8]));\n"
+	"  float3x3 invIW = R * invIL * transpose(R);\n"
+	"  FinalizeResult out; out.dpx=dp.x; out.dpy=dp.y; out.dpz=dp.z;\n"
+	"  out.qx=q.x; out.qy=q.y; out.qz=q.z; out.qw=q.w;\n"
+	"  out.originX=origin.x; out.originY=origin.y; out.originZ=origin.z;\n"
+	"  out.sleepVelocity=sleepVelocity; out.maxVelocity=maxVelocity; out.maxDeltaPosition=maxDelta;\n"
+	"  out.invInertiaWorld[0]=invIW[0].x; out.invInertiaWorld[1]=invIW[0].y; out.invInertiaWorld[2]=invIW[0].z;\n"
+	"  out.invInertiaWorld[3]=invIW[1].x; out.invInertiaWorld[4]=invIW[1].y; out.invInertiaWorld[5]=invIW[1].z;\n"
+	"  out.invInertiaWorld[6]=invIW[2].x; out.invInertiaWorld[7]=invIW[2].y; out.invInertiaWorld[8]=invIW[2].z;\n"
+	"  results[i] = out;\n"
+	"}\n";
+#pragma clang diagnostic pop
+
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Woverlength-strings"
+static const char* b3_contactSource =
+	"#include <metal_stdlib>\n"
+	"using namespace metal;\n"
+	"struct BodyState {\n"
+	"  float lvx, lvy, lvz; float avx, avy, avz; float dpx, dpy, dpz;\n"
+	"  float qx, qy, qz, qw; uint flags;\n"
+	"};\n"
+	"struct V2W { float4 x, y; };\n"
+	"struct V3W { float4 X, Y, Z; };\n"
+	"struct QW { V3W V; float4 S; };\n"
+	"struct Sym2W { float4 cxx, cxy, cyy; };\n"
+	"struct Sym3W { float4 cxx, cxy, cxz, cyy, cyz, czz; };\n"
+	"struct PointWide {\n"
+	"  V3W anchorAs, anchorBs; float4 baseSeparations; float4 normalImpulses;\n"
+	"  float4 totalNormalImpulses; float4 normalMasses; float4 leverArms; float4 relativeVelocities;\n"
+	"};\n"
+	"struct ContactWide {\n"
+	"  int indexA[4]; int indexB[4]; int pointCounts[4];\n"
+	"  float4 invMassA, invMassB; Sym3W invIA, invIB; V3W normal; V3W tangent1; V3W tangent2;\n"
+	"  V3W centerA, centerB; float4 twistMass; float4 twistImpulse; Sym2W tangentMass;\n"
+	"  V2W frictionImpulse; Sym3W rollingMass; V3W rollingImpulse; float4 friction;\n"
+	"  float4 rollingResistance; float4 tangentVelocity1; float4 tangentVelocity2;\n"
+	"  float4 biasRate; float4 massScale; float4 impulseScale; float4 restitution;\n"
+	"  ulong manifolds[4]; PointWide points[4];\n"
+	"};\n"
+	"struct BodyW { V3W v; V3W w; V3W dp; QW dq; };\n"
+	"struct ContactParams { uint offset; uint count; float invH; float contactSpeed; uint useBias; float restitutionThreshold; uint p0; uint p1; };\n"
+	"struct S2 { float x, y; }; struct S3 { float x, y, z; }; struct SM2 { S2 cx, cy; }; struct SM3 { S3 cx, cy, cz; };\n"
+	"struct Softness { float biasRate, massScale, impulseScale; };\n"
+	"struct MeshPoint { S3 rA, rB; float baseSeparation, relativeVelocity, normalImpulse, totalNormalImpulse, normalMass, leverArm; };\n"
+	"struct MeshManifold { MeshPoint points[4]; int pointCount; S3 normal, tangent1, tangent2, centerA, centerB;\n"
+	"  float twistMass, twistImpulse; SM2 tangentMass; S2 frictionImpulse; S3 rollingImpulse; float tangentVelocity1, tangentVelocity2; };\n"
+	"struct MeshContact { ulong constraints, contact; int indexA, indexB; float invMassA, invMassB; SM3 invIA, invIB;\n"
+	"  Softness softness; SM3 rollingMass; float friction, restitution, rollingResistance; int manifoldCount, manifoldStart; };\n"
+	"struct BodyS { S3 v, w, dp, dqv; float dqs; };\n"
+	"V3W add3(V3W a, V3W b) { return V3W{a.X+b.X,a.Y+b.Y,a.Z+b.Z}; }\n"
+	"V3W sub3(V3W a, V3W b) { return V3W{a.X-b.X,a.Y-b.Y,a.Z-b.Z}; }\n"
+	"V3W mul3(float4 s, V3W a) { return V3W{s*a.X,s*a.Y,s*a.Z}; }\n"
+	"V3W cross3(V3W a, V3W b) {\n"
+	"  return V3W{a.Y*b.Z-a.Z*b.Y,a.Z*b.X-a.X*b.Z,a.X*b.Y-a.Y*b.X};\n"
+	"}\n"
+	"float4 dot3(V3W a, V3W b) { return a.X*b.X+a.Y*b.Y+a.Z*b.Z; }\n"
+	"V2W mul_sym2(Sym2W m, V2W a) { return V2W{m.cxx*a.x+m.cxy*a.y,m.cxy*a.x+m.cyy*a.y}; }\n"
+	"V3W mul_sym3(Sym3W m, V3W a) {\n"
+	"  return V3W{m.cxx*a.X+m.cxy*a.Y+m.cxz*a.Z,\n"
+	"             m.cxy*a.X+m.cyy*a.Y+m.cyz*a.Z,\n"
+	"             m.cxz*a.X+m.cyz*a.Y+m.czz*a.Z};\n"
+	"}\n"
+	"V3W rotate3(QW q, V3W a) {\n"
+	"  V3W t1=cross3(q.V,a); V3W t2=add3(t1,mul3(q.S,a));\n"
+	"  return add3(a,mul3(float4(2.0f),cross3(q.V,t2)));\n"
+	"}\n"
+	"BodyW gather_bodies(device BodyState* states, const device int* indices) {\n"
+	"  BodyW b; b.v=V3W{float4(0.0f),float4(0.0f),float4(0.0f)};\n"
+	"  b.w=V3W{float4(0.0f),float4(0.0f),float4(0.0f)};\n"
+	"  b.dp=V3W{float4(0.0f),float4(0.0f),float4(0.0f)};\n"
+	"  b.dq.V=V3W{float4(0.0f),float4(0.0f),float4(0.0f)}; b.dq.S=float4(1.0f);\n"
+	"  for (uint lane=0; lane<4; ++lane) { int index=indices[lane]-1; if (index < 0) continue;\n"
+	"    BodyState s=states[index]; b.v.X[lane]=s.lvx; b.v.Y[lane]=s.lvy; b.v.Z[lane]=s.lvz;\n"
+	"    b.w.X[lane]=s.avx; b.w.Y[lane]=s.avy; b.w.Z[lane]=s.avz;\n"
+	"    b.dp.X[lane]=s.dpx; b.dp.Y[lane]=s.dpy; b.dp.Z[lane]=s.dpz;\n"
+	"    b.dq.V.X[lane]=s.qx; b.dq.V.Y[lane]=s.qy; b.dq.V.Z[lane]=s.qz; b.dq.S[lane]=s.qw;\n"
+	"  } return b;\n"
+	"}\n"
+	"void scatter_bodies(device BodyState* states, const device int* indices, BodyW b) {\n"
+	"  for (uint lane=0; lane<4; ++lane) { int index=indices[lane]-1; if (index < 0) continue;\n"
+	"    BodyState s=states[index]; if ((s.flags & 0x00001000u)==0u) continue;\n"
+	"    float3 v=float3(b.v.X[lane],b.v.Y[lane],b.v.Z[lane]);\n"
+	"    float3 w=float3(b.w.X[lane],b.w.Y[lane],b.w.Z[lane]);\n"
+	"    if (s.flags & 0x1u) v.x=0.0f; if (s.flags & 0x2u) v.y=0.0f; if (s.flags & 0x4u) v.z=0.0f;\n"
+	"    if (s.flags & 0x8u) w.x=0.0f; if (s.flags & 0x10u) w.y=0.0f; if (s.flags & 0x20u) w.z=0.0f;\n"
+	"    s.lvx=v.x; s.lvy=v.y; s.lvz=v.z; s.avx=w.x; s.avy=w.y; s.avz=w.z; states[index]=s;\n"
+	"  }\n"
+	"}\n"
+	"S3 sadd(S3 a,S3 b){return S3{a.x+b.x,a.y+b.y,a.z+b.z};} S3 ssub(S3 a,S3 b){return S3{a.x-b.x,a.y-b.y,a.z-b.z};}\n"
+	"S3 smul(float s,S3 a){return S3{s*a.x,s*a.y,s*a.z};} float sdot(S3 a,S3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}\n"
+	"S3 scross(S3 a,S3 b){return S3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x};}\n"
+	"S3 smulm(SM3 m,S3 a){return S3{m.cx.x*a.x+m.cy.x*a.y+m.cz.x*a.z,m.cx.y*a.x+m.cy.y*a.y+m.cz.y*a.z,m.cx.z*a.x+m.cy.z*a.y+m.cz.z*a.z};}\n"
+	"S3 srotate(S3 qv,float qs,S3 a){S3 t1=scross(qv,a);S3 t2=sadd(t1,smul(qs,a));return sadd(a,smul(2.0f,scross(qv,t2)));}\n"
+	"BodyS load_body(device BodyState* states,int index){BodyS b; b.v=S3{0,0,0};b.w=S3{0,0,0};b.dp=S3{0,0,0};b.dqv=S3{0,0,0};b.dqs=1;\n"
+	"  if(index>=0){BodyState s=states[index];b.v=S3{s.lvx,s.lvy,s.lvz};b.w=S3{s.avx,s.avy,s.avz};b.dp=S3{s.dpx,s.dpy,s.dpz};b.dqv=S3{s.qx,s.qy,s.qz};b.dqs=s.qw;}return b;}\n"
+	"void store_body(device BodyState* states,int index,BodyS b){if(index<0)return;BodyState s=states[index];if((s.flags&0x1000u)==0u)return;\n"
+	"  if(s.flags&1u)b.v.x=0;if(s.flags&2u)b.v.y=0;if(s.flags&4u)b.v.z=0;if(s.flags&8u)b.w.x=0;if(s.flags&16u)b.w.y=0;if(s.flags&32u)b.w.z=0;\n"
+	"  s.lvx=b.v.x;s.lvy=b.v.y;s.lvz=b.v.z;s.avx=b.w.x;s.avy=b.w.y;s.avz=b.w.z;states[index]=s;}\n"
+	"kernel void b3_warm_start_contacts(device BodyState* states [[buffer(0)]],\n"
+	"                                 device ContactWide* constraints [[buffer(1)]],\n"
+	"                                 constant ContactParams& p [[buffer(2)]],\n"
+	"                                 uint tid [[thread_position_in_grid]]) {\n"
+	"  if (tid >= p.count) return; device ContactWide& c=constraints[p.offset+tid];\n"
+	"  BodyW a=gather_bodies(states,c.indexA); BodyW b=gather_bodies(states,c.indexB);\n"
+	"  int pointCount=max(max(c.pointCounts[0],c.pointCounts[1]),max(c.pointCounts[2],c.pointCounts[3]));\n"
+	"  for (int j=0; j<pointCount; ++j) { device PointWide& cp=c.points[j];\n"
+	"    V3W impulse=mul3(cp.normalImpulses,c.normal);\n"
+	"    a.w=sub3(a.w,mul_sym3(c.invIA,cross3(cp.anchorAs,impulse))); a.v=sub3(a.v,mul3(c.invMassA,impulse));\n"
+	"    b.w=add3(b.w,mul_sym3(c.invIB,cross3(cp.anchorBs,impulse))); b.v=add3(b.v,mul3(c.invMassB,impulse));\n"
+	"  }\n"
+	"  V3W frictionImpulse=add3(mul3(c.frictionImpulse.x,c.tangent1),mul3(c.frictionImpulse.y,c.tangent2));\n"
+	"  a.w=sub3(a.w,mul_sym3(c.invIA,cross3(c.centerA,frictionImpulse))); a.v=sub3(a.v,mul3(c.invMassA,frictionImpulse));\n"
+	"  b.w=add3(b.w,mul_sym3(c.invIB,cross3(c.centerB,frictionImpulse))); b.v=add3(b.v,mul3(c.invMassB,frictionImpulse));\n"
+	"  V3W twist=mul3(c.twistImpulse,c.normal); a.w=sub3(a.w,mul_sym3(c.invIA,twist)); b.w=add3(b.w,mul_sym3(c.invIB,twist));\n"
+	"  a.w=sub3(a.w,mul_sym3(c.invIA,c.rollingImpulse)); b.w=add3(b.w,mul_sym3(c.invIB,c.rollingImpulse));\n"
+	"  scatter_bodies(states,c.indexA,a); scatter_bodies(states,c.indexB,b);\n"
+	"}\n"
+	"kernel void b3_solve_contacts(device BodyState* states [[buffer(0)]],\n"
+	"                            device ContactWide* constraints [[buffer(1)]],\n"
+	"                            constant ContactParams& p [[buffer(2)]],\n"
+	"                            uint tid [[thread_position_in_grid]]) {\n"
+	"  if (tid >= p.count) return; device ContactWide& c=constraints[p.offset+tid];\n"
+	"  BodyW a=gather_bodies(states,c.indexA); BodyW b=gather_bodies(states,c.indexB);\n"
+	"  int pointCount=max(max(c.pointCounts[0],c.pointCounts[1]),max(c.pointCounts[2],c.pointCounts[3]));\n"
+	"  float4 biasRate=p.useBias!=0u ? c.massScale*c.biasRate : float4(0.0f);\n"
+	"  float4 massScale=p.useBias!=0u ? c.massScale : float4(1.0f);\n"
+	"  float4 impulseScale=p.useBias!=0u ? c.impulseScale : float4(0.0f);\n"
+	"  V3W dp=sub3(b.dp,a.dp); float4 totalNormal=float4(0.0f); float4 totalTwist=float4(0.0f);\n"
+	"  for (int j=0; j<pointCount; ++j) { device PointWide& cp=c.points[j];\n"
+	"    V3W rsA=rotate3(a.dq,cp.anchorAs); V3W rsB=rotate3(b.dq,cp.anchorBs);\n"
+	"    float4 separation=dot3(c.normal,add3(dp,sub3(rsB,rsA)))+cp.baseSeparations;\n"
+	"    bool4 speculative=separation>float4(0.0f);\n"
+	"    float4 bias=select(max(biasRate*separation,float4(p.contactSpeed)),separation*float4(p.invH),speculative);\n"
+	"    float4 pointMassScale=select(massScale,float4(1.0f),speculative);\n"
+	"    float4 pointImpulseScale=select(impulseScale,float4(0.0f),speculative);\n"
+	"    V3W vrA=add3(a.v,cross3(a.w,cp.anchorAs)); V3W vrB=add3(b.v,cross3(b.w,cp.anchorBs));\n"
+	"    float4 vn=dot3(sub3(vrB,vrA),c.normal);\n"
+	"    float4 neg=cp.normalMasses*(pointMassScale*vn+bias)+pointImpulseScale*cp.normalImpulses;\n"
+	"    float4 next=max(cp.normalImpulses-neg,float4(0.0f)); float4 delta=next-cp.normalImpulses;\n"
+	"    cp.normalImpulses=next; cp.totalNormalImpulses+=next; totalNormal+=next; totalTwist+=cp.leverArms*next; V3W impulse=mul3(delta,c.normal);\n"
+	"    a.w=sub3(a.w,mul_sym3(c.invIA,cross3(cp.anchorAs,impulse))); a.v=sub3(a.v,mul3(c.invMassA,impulse));\n"
+	"    b.w=add3(b.w,mul_sym3(c.invIB,cross3(cp.anchorBs,impulse))); b.v=add3(b.v,mul3(c.invMassB,impulse));\n"
+	"  }\n"
+	"  if (p.useBias==0u) {\n"
+	"    if (any(c.rollingResistance!=float4(0.0f))) {\n"
+	"      V3W rollingDelta=mul_sym3(c.rollingMass,sub3(a.w,b.w)); V3W oldRolling=c.rollingImpulse;\n"
+	"      c.rollingImpulse=add3(oldRolling,rollingDelta); float4 maxRolling=c.rollingResistance*totalNormal;\n"
+	"      float4 rollingLength2=dot3(c.rollingImpulse,c.rollingImpulse); bool4 clampRolling=rollingLength2>maxRolling*maxRolling+float4(1.1920929e-7f);\n"
+	"      float4 rollingScale=select(float4(1.0f),maxRolling/(sqrt(rollingLength2)+float4(1.1920929e-7f)),clampRolling);\n"
+	"      rollingScale=select(float4(0.0f),rollingScale,c.rollingResistance>float4(0.0f)); c.rollingImpulse=mul3(rollingScale,c.rollingImpulse);\n"
+	"      rollingDelta=sub3(c.rollingImpulse,oldRolling); a.w=sub3(a.w,mul_sym3(c.invIA,rollingDelta)); b.w=add3(b.w,mul_sym3(c.invIB,rollingDelta));\n"
+	"    }\n"
+	"    float4 twistSpeed=dot3(c.normal,sub3(b.w,a.w)); float4 maxTwist=c.friction*totalTwist; float4 oldTwist=c.twistImpulse;\n"
+	"    c.twistImpulse=clamp(oldTwist-c.twistMass*twistSpeed,-maxTwist,maxTwist); float4 twistDelta=c.twistImpulse-oldTwist;\n"
+	"    V3W angularImpulse=mul3(twistDelta,c.normal); a.w=sub3(a.w,mul_sym3(c.invIA,angularImpulse)); b.w=add3(b.w,mul_sym3(c.invIB,angularImpulse));\n"
+	"    V3W vrA=add3(a.v,cross3(a.w,c.centerA)); V3W vrB=add3(b.v,cross3(b.w,c.centerB)); V3W vr=sub3(vrB,vrA);\n"
+	"    V2W vt=V2W{dot3(vr,c.tangent1)-c.tangentVelocity1,dot3(vr,c.tangent2)-c.tangentVelocity2};\n"
+	"    V2W frictionDelta=mul_sym2(c.tangentMass,vt); frictionDelta.x=-frictionDelta.x; frictionDelta.y=-frictionDelta.y;\n"
+	"    V2W oldFriction=c.frictionImpulse; V2W nextFriction=V2W{oldFriction.x+frictionDelta.x,oldFriction.y+frictionDelta.y};\n"
+	"    float4 maxFriction=c.friction*totalNormal; float4 frictionLength2=nextFriction.x*nextFriction.x+nextFriction.y*nextFriction.y;\n"
+	"    bool4 clampFriction=frictionLength2>maxFriction*maxFriction; float4 frictionScale=select(float4(1.0f),maxFriction/(sqrt(frictionLength2)+float4(1.1920929e-7f)),clampFriction);\n"
+	"    nextFriction.x*=frictionScale; nextFriction.y*=frictionScale; frictionDelta=V2W{nextFriction.x-oldFriction.x,nextFriction.y-oldFriction.y}; c.frictionImpulse=nextFriction;\n"
+	"    V3W tangentImpulse=add3(mul3(frictionDelta.x,c.tangent1),mul3(frictionDelta.y,c.tangent2));\n"
+	"    a.w=sub3(a.w,mul_sym3(c.invIA,cross3(c.centerA,tangentImpulse))); a.v=sub3(a.v,mul3(c.invMassA,tangentImpulse));\n"
+	"    b.w=add3(b.w,mul_sym3(c.invIB,cross3(c.centerB,tangentImpulse))); b.v=add3(b.v,mul3(c.invMassB,tangentImpulse));\n"
+	"  } scatter_bodies(states,c.indexA,a); scatter_bodies(states,c.indexB,b);\n"
+	"}\n"
+	"kernel void b3_restitution_contacts(device BodyState* states [[buffer(0)]], device ContactWide* constraints [[buffer(1)]],\n"
+	"                                    constant ContactParams& p [[buffer(2)]], uint tid [[thread_position_in_grid]]) {\n"
+	"  if (tid>=p.count) return; device ContactWide& c=constraints[p.offset+tid]; BodyW a=gather_bodies(states,c.indexA); BodyW b=gather_bodies(states,c.indexB);\n"
+	"  int pointCount=max(max(c.pointCounts[0],c.pointCounts[1]),max(c.pointCounts[2],c.pointCounts[3]));\n"
+	"  for (int j=0;j<pointCount;++j) { device PointWide& cp=c.points[j];\n"
+	"    bool4 apply=(c.restitution!=float4(0.0f))&&((cp.relativeVelocities+float4(p.restitutionThreshold))<=float4(0.0f))&&(cp.totalNormalImpulses!=float4(0.0f));\n"
+	"    float4 mass=select(float4(0.0f),cp.normalMasses,apply); V3W vrA=add3(a.v,cross3(a.w,cp.anchorAs)); V3W vrB=add3(b.v,cross3(b.w,cp.anchorBs));\n"
+	"    float4 vn=dot3(sub3(vrB,vrA),c.normal); float4 neg=mass*(vn+c.restitution*cp.relativeVelocities);\n"
+	"    float4 next=max(cp.normalImpulses-neg,float4(0.0f)); float4 delta=next-cp.normalImpulses; cp.normalImpulses=next; cp.totalNormalImpulses+=delta;\n"
+	"    V3W impulse=mul3(delta,c.normal); a.w=sub3(a.w,mul_sym3(c.invIA,cross3(cp.anchorAs,impulse))); a.v=sub3(a.v,mul3(c.invMassA,impulse));\n"
+	"    b.w=add3(b.w,mul_sym3(c.invIB,cross3(cp.anchorBs,impulse))); b.v=add3(b.v,mul3(c.invMassB,impulse));\n"
+	"  } scatter_bodies(states,c.indexA,a); scatter_bodies(states,c.indexB,b);\n"
+	"}\n"
+	"void warm_mesh_one(device BodyState* states,device MeshContact* contacts,device MeshManifold* manifolds,uint index){\n"
+	"  device MeshContact& c=contacts[index];BodyS a=load_body(states,c.indexA);BodyS b=load_body(states,c.indexB);\n"
+	"  for(int mi=0;mi<c.manifoldCount;++mi){device MeshManifold& m=manifolds[c.manifoldStart+mi];\n"
+	"    for(int j=0;j<m.pointCount;++j){device MeshPoint& cp=m.points[j];S3 impulse=smul(cp.normalImpulse,m.normal);a.w=ssub(a.w,smulm(c.invIA,scross(cp.rA,impulse)));a.v=ssub(a.v,smul(c.invMassA,impulse));b.w=sadd(b.w,smulm(c.invIB,scross(cp.rB,impulse)));b.v=sadd(b.v,smul(c.invMassB,impulse));}\n"
+	"    S3 f=sadd(smul(m.frictionImpulse.x,m.tangent1),smul(m.frictionImpulse.y,m.tangent2));a.w=ssub(a.w,smulm(c.invIA,scross(m.centerA,f)));a.v=ssub(a.v,smul(c.invMassA,f));b.w=sadd(b.w,smulm(c.invIB,scross(m.centerB,f)));b.v=sadd(b.v,smul(c.invMassB,f));\n"
+	"    S3 twist=smul(m.twistImpulse,m.normal);a.w=ssub(a.w,smulm(c.invIA,twist));b.w=sadd(b.w,smulm(c.invIB,twist));a.w=ssub(a.w,smulm(c.invIA,m.rollingImpulse));b.w=sadd(b.w,smulm(c.invIB,m.rollingImpulse));\n"
+	"  }store_body(states,c.indexA,a);store_body(states,c.indexB,b);}\n"
+	"kernel void b3_warm_start_mesh(device BodyState* s [[buffer(0)]],device MeshContact* c [[buffer(1)]],device MeshManifold* m [[buffer(2)]],constant ContactParams& p [[buffer(3)]],uint tid [[thread_position_in_grid]]){if(tid<p.count)warm_mesh_one(s,c,m,p.offset+tid);}\n"
+	"kernel void b3_warm_start_mesh_overflow(device BodyState* s [[buffer(0)]],device MeshContact* c [[buffer(1)]],device MeshManifold* m [[buffer(2)]],constant ContactParams& p [[buffer(3)]]){for(uint i=0;i<p.count;++i)warm_mesh_one(s,c,m,p.offset+i);}\n"
+	"void solve_mesh_one(device BodyState* states,device MeshContact* contacts,device MeshManifold* manifolds,constant ContactParams& p,uint index){\n"
+	"  device MeshContact& c=contacts[index];BodyS a=load_body(states,c.indexA);BodyS b=load_body(states,c.indexB);S3 dp=ssub(b.dp,a.dp);\n"
+	"  for(int mi=0;mi<c.manifoldCount;++mi){device MeshManifold& m=manifolds[c.manifoldStart+mi];float totalNormal=0,totalTwist=0;\n"
+	"    for(int j=0;j<m.pointCount;++j){device MeshPoint& cp=m.points[j];S3 ds=sadd(dp,ssub(srotate(b.dqv,b.dqs,cp.rB),srotate(a.dqv,a.dqs,cp.rA)));float s=sdot(ds,m.normal);s+=cp.baseSeparation;\n"
+	"      float bias=0,massScale=1,impulseScale=0;if(s>0)bias=s*p.invH;else if(p.useBias!=0u){bias=max(c.softness.massScale*c.softness.biasRate*s,p.contactSpeed);massScale=c.softness.massScale;impulseScale=c.softness.impulseScale;}\n"
+	"      S3 vrA=sadd(a.v,scross(a.w,cp.rA));S3 vrB=sadd(b.v,scross(b.w,cp.rB));float vn=sdot(ssub(vrB,vrA),m.normal);float delta=-cp.normalMass*(massScale*vn+bias)-impulseScale*cp.normalImpulse;\n"
+	"      float next=max(cp.normalImpulse+delta,0.0f);delta=next-cp.normalImpulse;cp.normalImpulse=next;cp.totalNormalImpulse+=next;totalNormal+=next;totalTwist+=cp.leverArm*next;\n"
+	"      S3 impulse=smul(delta,m.normal);a.v=ssub(a.v,smul(c.invMassA,impulse));a.w=ssub(a.w,smulm(c.invIA,scross(cp.rA,impulse)));b.v=sadd(b.v,smul(c.invMassB,impulse));b.w=sadd(b.w,smulm(c.invIB,scross(cp.rB,impulse)));}\n"
+	"    if(p.useBias!=0u)continue;float twistSpeed=sdot(m.normal,ssub(b.w,a.w));float maxTwist=c.friction*totalTwist;float oldTwist=m.twistImpulse;m.twistImpulse=clamp(oldTwist-m.twistMass*twistSpeed,-maxTwist,maxTwist);\n"
+	"    S3 twist=smul(m.twistImpulse-oldTwist,m.normal);a.w=ssub(a.w,smulm(c.invIA,twist));b.w=sadd(b.w,smulm(c.invIB,twist));\n"
+	"    if(c.rollingResistance>0){S3 rd=smulm(c.rollingMass,ssub(a.w,b.w));S3 old=m.rollingImpulse;m.rollingImpulse=sadd(old,rd);float limit=c.rollingResistance*totalNormal;float mag2=sdot(m.rollingImpulse,m.rollingImpulse);if(mag2>limit*limit+1.1920929e-7f)m.rollingImpulse=smul(limit/sqrt(mag2),m.rollingImpulse);rd=ssub(m.rollingImpulse,old);a.w=ssub(a.w,smulm(c.invIA,rd));b.w=sadd(b.w,smulm(c.invIB,rd));}\n"
+	"    S3 vrA=sadd(a.v,scross(a.w,m.centerA));S3 vrB=sadd(b.v,scross(b.w,m.centerB));S3 vr=ssub(vrB,vrA);float vx=sdot(vr,m.tangent1)-m.tangentVelocity1;float vy=sdot(vr,m.tangent2)-m.tangentVelocity2;\n"
+	"    float dx=-(m.tangentMass.cx.x*vx+m.tangentMass.cy.x*vy);float dy=-(m.tangentMass.cx.y*vx+m.tangentMass.cy.y*vy);float oldX=m.frictionImpulse.x,oldY=m.frictionImpulse.y;float nx=oldX+dx,ny=oldY+dy;float limit=c.friction*totalNormal;float len2=nx*nx+ny*ny;if(len2>limit*limit){float scale=limit/sqrt(len2);nx*=scale;ny*=scale;}dx=nx-oldX;dy=ny-oldY;m.frictionImpulse=S2{nx,ny};\n"
+	"    S3 impulse=sadd(smul(dx,m.tangent1),smul(dy,m.tangent2));a.v=ssub(a.v,smul(c.invMassA,impulse));a.w=ssub(a.w,smulm(c.invIA,scross(m.centerA,impulse)));b.v=sadd(b.v,smul(c.invMassB,impulse));b.w=sadd(b.w,smulm(c.invIB,scross(m.centerB,impulse)));\n"
+	"  }store_body(states,c.indexA,a);store_body(states,c.indexB,b);}\n"
+	"kernel void b3_solve_mesh(device BodyState* s [[buffer(0)]],device MeshContact* c [[buffer(1)]],device MeshManifold* m [[buffer(2)]],constant ContactParams& p [[buffer(3)]],uint tid [[thread_position_in_grid]]){if(tid<p.count)solve_mesh_one(s,c,m,p,p.offset+tid);}\n"
+	"kernel void b3_solve_mesh_overflow(device BodyState* s [[buffer(0)]],device MeshContact* c [[buffer(1)]],device MeshManifold* m [[buffer(2)]],constant ContactParams& p [[buffer(3)]]){for(uint i=0;i<p.count;++i)solve_mesh_one(s,c,m,p,p.offset+i);}\n"
+	"void restitution_mesh_one(device BodyState* states,device MeshContact* contacts,device MeshManifold* manifolds,constant ContactParams& p,uint index){\n"
+	"  device MeshContact& c=contacts[index];if(c.restitution==0)return;BodyS a=load_body(states,c.indexA);BodyS b=load_body(states,c.indexB);\n"
+	"  for(int mi=0;mi<c.manifoldCount;++mi){device MeshManifold& m=manifolds[c.manifoldStart+mi];for(int j=0;j<m.pointCount;++j){device MeshPoint& cp=m.points[j];if(cp.relativeVelocity>-p.restitutionThreshold||cp.totalNormalImpulse==0)continue;\n"
+	"    S3 vrA=sadd(a.v,scross(a.w,cp.rA));S3 vrB=sadd(b.v,scross(b.w,cp.rB));float vn=sdot(ssub(vrB,vrA),m.normal);float impulse=-cp.normalMass*(vn+c.restitution*cp.relativeVelocity);float next=max(cp.normalImpulse+impulse,0.0f);impulse=next-cp.normalImpulse;cp.normalImpulse=next;cp.totalNormalImpulse+=impulse;\n"
+	"    S3 P=smul(impulse,m.normal);a.v=ssub(a.v,smul(c.invMassA,P));a.w=ssub(a.w,smulm(c.invIA,scross(cp.rA,P)));b.v=sadd(b.v,smul(c.invMassB,P));b.w=sadd(b.w,smulm(c.invIB,scross(cp.rB,P)));}\n"
+	"  }store_body(states,c.indexA,a);store_body(states,c.indexB,b);\n"
+	"}\n"
+	"kernel void b3_restitution_mesh(device BodyState* s [[buffer(0)]],device MeshContact* c [[buffer(1)]],device MeshManifold* m [[buffer(2)]],constant ContactParams& p [[buffer(3)]],uint tid [[thread_position_in_grid]]){if(tid<p.count)restitution_mesh_one(s,c,m,p,p.offset+tid);}\n"
+	"kernel void b3_restitution_mesh_overflow(device BodyState* s [[buffer(0)]],device MeshContact* c [[buffer(1)]],device MeshManifold* m [[buffer(2)]],constant ContactParams& p [[buffer(3)]]){for(uint i=0;i<p.count;++i)restitution_mesh_one(s,c,m,p,p.offset+i);}\n"
+	"struct DistanceJoint { int indexA,indexB; float invMassA,invMassB; SM3 invIA,invIB; Softness constraintSoftness;\n"
+	"  S3 anchorA,anchorB,deltaCenter; Softness distanceSoftness; float length,hertz,lowerSpringForce,upperSpringForce;\n"
+	"  float minLength,maxLength,maxMotorForce,motorSpeed; float impulse,lowerImpulse,upperImpulse,motorImpulse,axialMass; uint flags; };\n"
+	"struct JointParams { uint offset,count; float h,invH; uint useBias; uint p0,p1,p2; };\n"
+	"void distance_apply(thread BodyS& a,thread BodyS& b,device DistanceJoint& j,S3 rA,S3 rB,S3 axis,float impulse){\n"
+	"  S3 P=smul(impulse,axis);a.v=ssub(a.v,smul(j.invMassA,P));a.w=ssub(a.w,smulm(j.invIA,scross(rA,P)));\n"
+	"  b.v=sadd(b.v,smul(j.invMassB,P));b.w=sadd(b.w,smulm(j.invIB,scross(rB,P)));}\n"
+	"void warm_distance_one(device BodyState* states,device DistanceJoint* joints,uint index){device DistanceJoint& j=joints[index];\n"
+	"  BodyS a=load_body(states,j.indexA),b=load_body(states,j.indexB);S3 rA=srotate(a.dqv,a.dqs,j.anchorA),rB=srotate(b.dqv,b.dqs,j.anchorB);\n"
+	"  S3 separation=sadd(j.deltaCenter,sadd(ssub(b.dp,a.dp),ssub(rB,rA)));float len=sqrt(sdot(separation,separation));S3 axis=len>0?smul(1.0f/len,separation):S3{0,0,0};\n"
+	"  distance_apply(a,b,j,rA,rB,axis,j.impulse+j.lowerImpulse-j.upperImpulse+j.motorImpulse);store_body(states,j.indexA,a);store_body(states,j.indexB,b);}\n"
+	"void solve_distance_one(device BodyState* states,device DistanceJoint* joints,constant JointParams& p,uint index){device DistanceJoint& j=joints[index];\n"
+	"  BodyS a=load_body(states,j.indexA),b=load_body(states,j.indexB);S3 rA=srotate(a.dqv,a.dqs,j.anchorA),rB=srotate(b.dqv,b.dqs,j.anchorB);\n"
+	"  S3 separation=sadd(j.deltaCenter,sadd(ssub(b.dp,a.dp),ssub(rB,rA)));float len=sqrt(sdot(separation,separation));S3 axis=len>0?smul(1.0f/len,separation):S3{0,0,0};\n"
+	"  bool soft=(j.flags&1u)!=0u&&(j.minLength<j.maxLength||(j.flags&2u)==0u);\n"
+	"  if(soft){if(j.hertz>0){S3 vr=sadd(ssub(b.v,a.v),ssub(scross(b.w,rB),scross(a.w,rA)));float cdot=sdot(axis,vr),C=len-j.length;\n"
+	"      float old=j.impulse;float impulse=-j.distanceSoftness.massScale*j.axialMass*(cdot+j.distanceSoftness.biasRate*C)-j.distanceSoftness.impulseScale*old;\n"
+	"      j.impulse=clamp(old+impulse,j.lowerSpringForce*p.h,j.upperSpringForce*p.h);distance_apply(a,b,j,rA,rB,axis,j.impulse-old);}\n"
+	"    if((j.flags&2u)!=0u){S3 vr=sadd(ssub(b.v,a.v),ssub(scross(b.w,rB),scross(a.w,rA)));float cdot=sdot(axis,vr),C=len-j.minLength,bias=0,ms=1,is=0;\n"
+	"      if(C>0)bias=C*p.invH;else if(p.useBias!=0u){bias=j.constraintSoftness.biasRate*C;ms=j.constraintSoftness.massScale;is=j.constraintSoftness.impulseScale;}\n"
+	"      float impulse=-ms*j.axialMass*(cdot+bias)-is*j.lowerImpulse;float next=max(0.0f,j.lowerImpulse+impulse);impulse=next-j.lowerImpulse;j.lowerImpulse=next;distance_apply(a,b,j,rA,rB,axis,impulse);\n"
+	"      vr=sadd(ssub(a.v,b.v),ssub(scross(a.w,rA),scross(b.w,rB)));cdot=sdot(axis,vr);C=j.maxLength-len;bias=0;ms=1;is=0;\n"
+	"      if(C>0)bias=C*p.invH;else if(p.useBias!=0u){bias=j.constraintSoftness.biasRate*C;ms=j.constraintSoftness.massScale;is=j.constraintSoftness.impulseScale;}\n"
+	"      impulse=-ms*j.axialMass*(cdot+bias)-is*j.upperImpulse;next=max(0.0f,j.upperImpulse+impulse);impulse=next-j.upperImpulse;j.upperImpulse=next;distance_apply(a,b,j,rA,rB,axis,-impulse);}\n"
+	"    if((j.flags&4u)!=0u){S3 vr=sadd(ssub(b.v,a.v),ssub(scross(b.w,rB),scross(a.w,rA)));float impulse=j.axialMass*(j.motorSpeed-sdot(axis,vr));\n"
+	"      float old=j.motorImpulse,maxImpulse=p.h*j.maxMotorForce;j.motorImpulse=clamp(old+impulse,-maxImpulse,maxImpulse);distance_apply(a,b,j,rA,rB,axis,j.motorImpulse-old);}\n"
+	"  }else{S3 vr=sadd(ssub(b.v,a.v),ssub(scross(b.w,rB),scross(a.w,rA)));float cdot=sdot(axis,vr),C=len-j.length,bias=0,ms=1,is=0;\n"
+	"    if(p.useBias!=0u){bias=j.constraintSoftness.biasRate*C;ms=j.constraintSoftness.massScale;is=j.constraintSoftness.impulseScale;}\n"
+	"    float impulse=-ms*j.axialMass*(cdot+bias)-is*j.impulse;j.impulse+=impulse;distance_apply(a,b,j,rA,rB,axis,impulse);}\n"
+	"  store_body(states,j.indexA,a);store_body(states,j.indexB,b);}\n"
+	"kernel void b3_warm_start_distance(device BodyState* s [[buffer(0)]],device DistanceJoint* j [[buffer(1)]],constant JointParams& p [[buffer(2)]],uint tid [[thread_position_in_grid]]){if(tid<p.count)warm_distance_one(s,j,p.offset+tid);}\n"
+	"kernel void b3_solve_distance(device BodyState* s [[buffer(0)]],device DistanceJoint* j [[buffer(1)]],constant JointParams& p [[buffer(2)]],uint tid [[thread_position_in_grid]]){if(tid<p.count)solve_distance_one(s,j,p,p.offset+tid);}\n"
+	"struct SQ { S3 v; float s; };\n"
+	"SQ sqmul(SQ a,SQ b){return SQ{sadd(sadd(scross(a.v,b.v),smul(a.s,b.v)),smul(b.s,a.v)),a.s*b.s-sdot(a.v,b.v)};}\n"
+	"SQ sqinvmul(SQ a,SQ b){S3 nv=smul(-1.0f,a.v);return SQ{sadd(sadd(scross(nv,b.v),smul(a.s,b.v)),smul(b.s,nv)),a.s*b.s-sdot(nv,b.v)};}\n"
+	"struct ParallelJoint { int indexA,indexB; SM3 invIA,invIB; Softness softness; S3 perpAxisX,perpAxisY; SQ quatA,quatB; float maxTorque; S2 perpImpulse; uint fixedRotation; };\n"
+	"void warm_parallel_one(device BodyState* states,device ParallelJoint* joints,uint index){device ParallelJoint& j=joints[index];BodyS a=load_body(states,j.indexA),b=load_body(states,j.indexB);\n"
+	"  S3 impulse=sadd(smul(j.perpImpulse.x,j.perpAxisX),smul(j.perpImpulse.y,j.perpAxisY));a.w=ssub(a.w,smulm(j.invIA,impulse));b.w=sadd(b.w,smulm(j.invIB,impulse));store_body(states,j.indexA,a);store_body(states,j.indexB,b);}\n"
+	"void solve_parallel_one(device BodyState* states,device ParallelJoint* joints,constant JointParams& p,uint index){device ParallelJoint& j=joints[index];BodyS a=load_body(states,j.indexA),b=load_body(states,j.indexB);\n"
+	"  SQ qa=sqmul(SQ{a.dqv,a.dqs},j.quatA),qb=sqmul(SQ{b.dqv,b.dqs},j.quatB);if(sdot(qa.v,qb.v)+qa.s*qb.s<0){qb.v=smul(-1.0f,qb.v);qb.s=-qb.s;}SQ rel=sqinvmul(qa,qb);\n"
+	"  if(j.fixedRotation==0u&&j.maxTorque>0){S3 ax=smul(0.5f,srotate(qa.v,qa.s,sadd(smul(rel.s,S3{1,0,0}),scross(rel.v,S3{1,0,0}))));S3 ay=smul(0.5f,srotate(qa.v,qa.s,sadd(smul(rel.s,S3{0,1,0}),scross(rel.v,S3{0,1,0}))));j.perpAxisX=ax;j.perpAxisY=ay;\n"
+	"    SM3 sum=SM3{sadd(j.invIA.cx,j.invIB.cx),sadd(j.invIA.cy,j.invIB.cy),sadd(j.invIA.cz,j.invIB.cz)};float kxx=sdot(ax,smulm(sum,ax)),kyy=sdot(ay,smulm(sum,ay)),kxy=sdot(ax,smulm(sum,ay));\n"
+	"    S3 wr=ssub(b.w,a.w);float bx=sdot(wr,ax)+j.softness.biasRate*rel.v.x,by=sdot(wr,ay)+j.softness.biasRate*rel.v.y;float det=kxx*kyy-kxy*kxy;float sx=0,sy=0;if(fabs(det)>1.17549435e-35f){sx=(kyy*bx-kxy*by)/det;sy=(kxx*by-kxy*bx)/det;}\n"
+	"    S2 old=j.perpImpulse;S2 next=S2{old.x-j.softness.massScale*sx-j.softness.impulseScale*old.x,old.y-j.softness.massScale*sy-j.softness.impulseScale*old.y};float maxImpulse=p.h*j.maxTorque,len2=next.x*next.x+next.y*next.y;if(len2>maxImpulse*maxImpulse){float scale=maxImpulse/sqrt(len2);next.x*=scale;next.y*=scale;}j.perpImpulse=next;\n"
+	"    S3 impulse=sadd(smul(next.x-old.x,ax),smul(next.y-old.y,ay));a.w=ssub(a.w,smulm(j.invIA,impulse));b.w=sadd(b.w,smulm(j.invIB,impulse));}\n"
+	"  store_body(states,j.indexA,a);store_body(states,j.indexB,b);}\n"
+	"kernel void b3_warm_start_parallel(device BodyState* s [[buffer(0)]],device ParallelJoint* j [[buffer(1)]],constant JointParams& p [[buffer(2)]],uint tid [[thread_position_in_grid]]){if(tid<p.count)warm_parallel_one(s,j,p.offset+tid);}\n"
+	"kernel void b3_solve_parallel(device BodyState* s [[buffer(0)]],device ParallelJoint* j [[buffer(1)]],constant JointParams& p [[buffer(2)]],uint tid [[thread_position_in_grid]]){if(tid<p.count)solve_parallel_one(s,j,p,p.offset+tid);}\n"
+	"struct JointOverflow { uint type,index; };\n"
+	"kernel void b3_warm_start_joint_overflow(device BodyState* s [[buffer(0)]],device DistanceJoint* d [[buffer(1)]],device ParallelJoint* r [[buffer(2)]],device const JointOverflow* o [[buffer(3)]],constant JointParams& p [[buffer(4)]]){for(uint i=0;i<p.count;++i){JointOverflow e=o[i];if(e.type==0u)warm_distance_one(s,d,e.index);else warm_parallel_one(s,r,e.index);}}\n"
+	"kernel void b3_solve_joint_overflow(device BodyState* s [[buffer(0)]],device DistanceJoint* d [[buffer(1)]],device ParallelJoint* r [[buffer(2)]],device const JointOverflow* o [[buffer(3)]],constant JointParams& p [[buffer(4)]]){for(uint i=0;i<p.count;++i){JointOverflow e=o[i];if(e.type==0u)solve_distance_one(s,d,p,e.index);else solve_parallel_one(s,r,p,e.index);}}\n";
+#pragma clang diagnostic pop
+
+static void b3MetalWriteError( char* buffer, int capacity, NSString* message )
+{
+	if ( buffer == NULL || capacity <= 0 )
+	{
+		return;
+	}
+
+	const char* text = message != nil ? message.UTF8String : "unknown Metal error";
+	snprintf( buffer, (size_t)capacity, "%s", text );
+}
+
+bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int errorCapacity )
+{
+	if ( contextOut == NULL )
+	{
+		b3MetalWriteError( errorBuffer, errorCapacity, @"contextOut is null" );
+		return false;
+	}
+
+	*contextOut = NULL;
+	@autoreleasepool
+	{
+		id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+		if ( device == nil )
+		{
+			b3MetalWriteError( errorBuffer, errorCapacity, @"no Metal device is available" );
+			return false;
+		}
+
+		id<MTLCommandQueue> queue = [device newCommandQueue];
+		if ( queue == nil )
+		{
+			[device release];
+			b3MetalWriteError( errorBuffer, errorCapacity, @"failed to create Metal command queue" );
+			return false;
+		}
+
+		MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
+		if ( @available( macOS 15.0, iOS 18.0, * ) )
+		{
+			options.mathMode = MTLMathModeSafe;
+		}
+		else
+		{
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+			options.fastMathEnabled = NO;
+#pragma clang diagnostic pop
+		}
+		NSError* error = nil;
+		NSString* source = [NSString stringWithUTF8String:b3_metalSource];
+		id<MTLLibrary> library = [device newLibraryWithSource:source options:options error:&error];
+		if ( library == nil )
+		{
+			[options release];
+			[queue release];
+			[device release];
+			b3MetalWriteError( errorBuffer, errorCapacity, error.localizedDescription );
+			return false;
+		}
+
+		id<MTLFunction> positionFunction = [library newFunctionWithName:@"b3_integrate_positions"];
+		id<MTLComputePipelineState> positionPipeline =
+			positionFunction != nil ? [device newComputePipelineStateWithFunction:positionFunction error:&error] : nil;
+		[positionFunction release];
+		id<MTLFunction> fusedFunction = [library newFunctionWithName:@"b3_integrate_unconstrained"];
+		id<MTLComputePipelineState> fusedPipeline =
+			fusedFunction != nil ? [device newComputePipelineStateWithFunction:fusedFunction error:&error] : nil;
+		[fusedFunction release];
+		id<MTLFunction> finalizeFunction = [library newFunctionWithName:@"b3_finalize_bodies"];
+		id<MTLComputePipelineState> finalizePipeline =
+			finalizeFunction != nil ? [device newComputePipelineStateWithFunction:finalizeFunction error:&error] : nil;
+		[finalizeFunction release];
+		[library release];
+
+		NSString* contactSource = [NSString stringWithUTF8String:b3_contactSource];
+		id<MTLLibrary> contactLibrary = [device newLibraryWithSource:contactSource options:options error:&error];
+		[options release];
+		id<MTLFunction> warmStartFunction = [contactLibrary newFunctionWithName:@"b3_warm_start_contacts"];
+		id<MTLComputePipelineState> warmStartPipeline =
+			warmStartFunction != nil ? [device newComputePipelineStateWithFunction:warmStartFunction error:&error] : nil;
+		[warmStartFunction release];
+		id<MTLFunction> solveFunction = [contactLibrary newFunctionWithName:@"b3_solve_contacts"];
+		id<MTLComputePipelineState> solvePipeline =
+			solveFunction != nil ? [device newComputePipelineStateWithFunction:solveFunction error:&error] : nil;
+		[solveFunction release];
+		id<MTLFunction> restitutionFunction = [contactLibrary newFunctionWithName:@"b3_restitution_contacts"];
+		id<MTLComputePipelineState> restitutionPipeline =
+			restitutionFunction != nil ? [device newComputePipelineStateWithFunction:restitutionFunction error:&error] : nil;
+		[restitutionFunction release];
+		id<MTLFunction> warmStartMeshFunction = [contactLibrary newFunctionWithName:@"b3_warm_start_mesh"];
+		id<MTLComputePipelineState> warmStartMeshPipeline =
+			warmStartMeshFunction != nil ? [device newComputePipelineStateWithFunction:warmStartMeshFunction error:&error] : nil;
+		[warmStartMeshFunction release];
+		id<MTLFunction> solveMeshFunction = [contactLibrary newFunctionWithName:@"b3_solve_mesh"];
+		id<MTLComputePipelineState> solveMeshPipeline =
+			solveMeshFunction != nil ? [device newComputePipelineStateWithFunction:solveMeshFunction error:&error] : nil;
+		[solveMeshFunction release];
+		id<MTLFunction> restitutionMeshFunction = [contactLibrary newFunctionWithName:@"b3_restitution_mesh"];
+		id<MTLComputePipelineState> restitutionMeshPipeline = restitutionMeshFunction != nil
+			? [device newComputePipelineStateWithFunction:restitutionMeshFunction error:&error]
+			: nil;
+		[restitutionMeshFunction release];
+		id<MTLFunction> warmStartOverflowFunction = [contactLibrary newFunctionWithName:@"b3_warm_start_mesh_overflow"];
+		id<MTLComputePipelineState> warmStartOverflowPipeline = warmStartOverflowFunction != nil
+			? [device newComputePipelineStateWithFunction:warmStartOverflowFunction error:&error]
+			: nil;
+		[warmStartOverflowFunction release];
+		id<MTLFunction> solveOverflowFunction = [contactLibrary newFunctionWithName:@"b3_solve_mesh_overflow"];
+		id<MTLComputePipelineState> solveOverflowPipeline = solveOverflowFunction != nil
+			? [device newComputePipelineStateWithFunction:solveOverflowFunction error:&error]
+			: nil;
+		[solveOverflowFunction release];
+		id<MTLFunction> restitutionOverflowFunction = [contactLibrary newFunctionWithName:@"b3_restitution_mesh_overflow"];
+		id<MTLComputePipelineState> restitutionOverflowPipeline = restitutionOverflowFunction != nil
+			? [device newComputePipelineStateWithFunction:restitutionOverflowFunction error:&error]
+			: nil;
+		[restitutionOverflowFunction release];
+		id<MTLFunction> warmStartDistanceFunction = [contactLibrary newFunctionWithName:@"b3_warm_start_distance"];
+		id<MTLComputePipelineState> warmStartDistancePipeline = warmStartDistanceFunction != nil
+			? [device newComputePipelineStateWithFunction:warmStartDistanceFunction error:&error]
+			: nil;
+		[warmStartDistanceFunction release];
+		id<MTLFunction> solveDistanceFunction = [contactLibrary newFunctionWithName:@"b3_solve_distance"];
+		id<MTLComputePipelineState> solveDistancePipeline = solveDistanceFunction != nil
+			? [device newComputePipelineStateWithFunction:solveDistanceFunction error:&error]
+			: nil;
+		[solveDistanceFunction release];
+		id<MTLFunction> warmStartParallelFunction = [contactLibrary newFunctionWithName:@"b3_warm_start_parallel"];
+		id<MTLComputePipelineState> warmStartParallelPipeline = warmStartParallelFunction != nil
+			? [device newComputePipelineStateWithFunction:warmStartParallelFunction error:&error]
+			: nil;
+		[warmStartParallelFunction release];
+		id<MTLFunction> solveParallelFunction = [contactLibrary newFunctionWithName:@"b3_solve_parallel"];
+		id<MTLComputePipelineState> solveParallelPipeline = solveParallelFunction != nil
+			? [device newComputePipelineStateWithFunction:solveParallelFunction error:&error]
+			: nil;
+		[solveParallelFunction release];
+		id<MTLFunction> warmStartJointOverflowFunction =
+			[contactLibrary newFunctionWithName:@"b3_warm_start_joint_overflow"];
+		id<MTLComputePipelineState> warmStartJointOverflowPipeline = warmStartJointOverflowFunction != nil
+			? [device newComputePipelineStateWithFunction:warmStartJointOverflowFunction error:&error]
+			: nil;
+		[warmStartJointOverflowFunction release];
+		id<MTLFunction> solveJointOverflowFunction =
+			[contactLibrary newFunctionWithName:@"b3_solve_joint_overflow"];
+		id<MTLComputePipelineState> solveJointOverflowPipeline = solveJointOverflowFunction != nil
+			? [device newComputePipelineStateWithFunction:solveJointOverflowFunction error:&error]
+			: nil;
+		[solveJointOverflowFunction release];
+		[contactLibrary release];
+		if ( positionPipeline == nil || fusedPipeline == nil || finalizePipeline == nil || warmStartPipeline == nil || solvePipeline == nil ||
+			 restitutionPipeline == nil || warmStartMeshPipeline == nil || solveMeshPipeline == nil || restitutionMeshPipeline == nil ||
+			 warmStartOverflowPipeline == nil || solveOverflowPipeline == nil || restitutionOverflowPipeline == nil ||
+			 warmStartDistancePipeline == nil || solveDistancePipeline == nil || warmStartParallelPipeline == nil ||
+			 solveParallelPipeline == nil ||
+			 warmStartJointOverflowPipeline == nil || solveJointOverflowPipeline == nil )
+		{
+			[positionPipeline release];
+			[fusedPipeline release];
+			[finalizePipeline release];
+			[warmStartPipeline release];
+			[solvePipeline release];
+			[restitutionPipeline release];
+			[warmStartMeshPipeline release];
+			[solveMeshPipeline release];
+			[restitutionMeshPipeline release];
+			[warmStartOverflowPipeline release];
+			[solveOverflowPipeline release];
+			[restitutionOverflowPipeline release];
+			[warmStartDistancePipeline release];
+			[solveDistancePipeline release];
+			[warmStartParallelPipeline release];
+			[solveParallelPipeline release];
+			[warmStartJointOverflowPipeline release];
+			[solveJointOverflowPipeline release];
+			[queue release];
+			[device release];
+			b3MetalWriteError( errorBuffer, errorCapacity, error.localizedDescription );
+			return false;
+		}
+
+		b3MetalContext* context = calloc( 1, sizeof( b3MetalContext ) );
+		if ( context == NULL )
+		{
+			[positionPipeline release];
+			[fusedPipeline release];
+			[finalizePipeline release];
+			[warmStartPipeline release];
+			[solvePipeline release];
+			[restitutionPipeline release];
+			[warmStartMeshPipeline release];
+			[solveMeshPipeline release];
+			[restitutionMeshPipeline release];
+			[warmStartOverflowPipeline release];
+			[solveOverflowPipeline release];
+			[restitutionOverflowPipeline release];
+			[warmStartDistancePipeline release];
+			[solveDistancePipeline release];
+			[warmStartParallelPipeline release];
+			[solveParallelPipeline release];
+			[warmStartJointOverflowPipeline release];
+			[solveJointOverflowPipeline release];
+			[queue release];
+			[device release];
+			b3MetalWriteError( errorBuffer, errorCapacity, @"failed to allocate Metal context" );
+			return false;
+		}
+
+		context->device = device;
+		context->queue = queue;
+		context->integratePositionsPipeline = positionPipeline;
+		context->integrateUnconstrainedPipeline = fusedPipeline;
+		context->finalizeBodiesPipeline = finalizePipeline;
+		context->warmStartContactsPipeline = warmStartPipeline;
+		context->solveContactsPipeline = solvePipeline;
+		context->restitutionContactsPipeline = restitutionPipeline;
+		context->warmStartMeshPipeline = warmStartMeshPipeline;
+		context->solveMeshPipeline = solveMeshPipeline;
+		context->restitutionMeshPipeline = restitutionMeshPipeline;
+		context->warmStartOverflowPipeline = warmStartOverflowPipeline;
+		context->solveOverflowPipeline = solveOverflowPipeline;
+		context->restitutionOverflowPipeline = restitutionOverflowPipeline;
+		context->warmStartDistancePipeline = warmStartDistancePipeline;
+		context->solveDistancePipeline = solveDistancePipeline;
+		context->warmStartParallelPipeline = warmStartParallelPipeline;
+		context->solveParallelPipeline = solveParallelPipeline;
+		context->warmStartJointOverflowPipeline = warmStartJointOverflowPipeline;
+		context->solveJointOverflowPipeline = solveJointOverflowPipeline;
+		*contextOut = context;
+		return true;
+	}
+}
+
+void b3MetalDestroyContext( b3MetalContext* context )
+{
+	if ( context == NULL )
+	{
+		return;
+	}
+
+	[context->bodyStateBuffer release];
+	[context->bodyPropertiesBuffer release];
+	[context->finalizeResultBuffer release];
+	[context->finalizePropertiesBuffer release];
+	[context->contactConstraintBuffer release];
+	[context->meshContactBuffer release];
+	[context->meshManifoldBuffer release];
+	[context->distanceJointBuffer release];
+	[context->parallelJointBuffer release];
+	[context->jointOverflowBuffer release];
+	[context->integratePositionsPipeline release];
+	[context->integrateUnconstrainedPipeline release];
+	[context->finalizeBodiesPipeline release];
+	[context->warmStartContactsPipeline release];
+	[context->solveContactsPipeline release];
+	[context->restitutionContactsPipeline release];
+	[context->warmStartMeshPipeline release];
+	[context->solveMeshPipeline release];
+	[context->restitutionMeshPipeline release];
+	[context->warmStartOverflowPipeline release];
+	[context->solveOverflowPipeline release];
+	[context->restitutionOverflowPipeline release];
+	[context->warmStartDistancePipeline release];
+	[context->solveDistancePipeline release];
+	[context->warmStartParallelPipeline release];
+	[context->solveParallelPipeline release];
+	[context->warmStartJointOverflowPipeline release];
+	[context->solveJointOverflowPipeline release];
+	[context->queue release];
+	[context->device release];
+	free( context );
+}
+
+void b3MetalGetDeviceName( const b3MetalContext* context, char* nameBuffer, int nameCapacity )
+{
+	if ( nameBuffer == NULL || nameCapacity <= 0 )
+	{
+		return;
+	}
+
+	NSString* name = context != NULL ? context->device.name : @"unavailable";
+	snprintf( nameBuffer, (size_t)nameCapacity, "%s", name.UTF8String );
+}
+
+static bool b3MetalEnsureBodyCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	if ( context->bodyStateCapacity >= requiredBytes )
+	{
+		return true;
+	}
+
+	NSUInteger capacity = context->bodyStateCapacity > 0 ? context->bodyStateCapacity : 4096;
+	while ( capacity < requiredBytes )
+	{
+		capacity *= 2;
+	}
+
+	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+	if ( buffer == nil )
+	{
+		return false;
+	}
+
+	[context->bodyStateBuffer release];
+	context->bodyStateBuffer = buffer;
+	context->bodyStateCapacity = capacity;
+	return true;
+}
+
+static bool b3MetalEnsurePropertiesCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	if ( context->bodyPropertiesCapacity >= requiredBytes )
+	{
+		return true;
+	}
+
+	NSUInteger capacity = context->bodyPropertiesCapacity > 0 ? context->bodyPropertiesCapacity : 4096;
+	while ( capacity < requiredBytes )
+	{
+		capacity *= 2;
+	}
+
+	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+	if ( buffer == nil )
+	{
+		return false;
+	}
+
+	[context->bodyPropertiesBuffer release];
+	context->bodyPropertiesBuffer = buffer;
+	context->bodyPropertiesCapacity = capacity;
+	return true;
+}
+
+static bool b3MetalEnsureFinalizeResultCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	if ( context->finalizeResultCapacity >= requiredBytes )
+	{
+		return true;
+	}
+
+	NSUInteger capacity = context->finalizeResultCapacity > 0 ? context->finalizeResultCapacity : 4096;
+	while ( capacity < requiredBytes )
+	{
+		capacity *= 2;
+	}
+
+	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+	if ( buffer == nil )
+	{
+		return false;
+	}
+
+	[context->finalizeResultBuffer release];
+	context->finalizeResultBuffer = buffer;
+	context->finalizeResultCapacity = capacity;
+	return true;
+}
+
+static bool b3MetalEnsureFinalizePropertiesCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	if ( context->finalizePropertiesCapacity >= requiredBytes )
+	{
+		return true;
+	}
+	NSUInteger capacity = context->finalizePropertiesCapacity > 0 ? context->finalizePropertiesCapacity : 4096;
+	while ( capacity < requiredBytes )
+	{
+		capacity *= 2;
+	}
+	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+	if ( buffer == nil )
+	{
+		return false;
+	}
+	[context->finalizePropertiesBuffer release];
+	context->finalizePropertiesBuffer = buffer;
+	context->finalizePropertiesCapacity = capacity;
+	return true;
+}
+
+static bool b3MetalEnsureContactCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	if ( context->contactConstraintCapacity >= requiredBytes )
+	{
+		return true;
+	}
+
+	NSUInteger capacity = context->contactConstraintCapacity > 0 ? context->contactConstraintCapacity : 4096;
+	while ( capacity < requiredBytes )
+	{
+		capacity *= 2;
+	}
+
+	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+	if ( buffer == nil )
+	{
+		return false;
+	}
+
+	[context->contactConstraintBuffer release];
+	context->contactConstraintBuffer = buffer;
+	context->contactConstraintCapacity = capacity;
+	return true;
+}
+
+b3ContactConstraintWide* b3MetalGetContactConstraintStorage( b3MetalContext* context, int constraintCount )
+{
+	if ( context == NULL || constraintCount < 0 )
+	{
+		return NULL;
+	}
+	if ( constraintCount == 0 )
+	{
+		return NULL;
+	}
+	NSUInteger requiredBytes = (NSUInteger)constraintCount * sizeof( b3ContactConstraintWide );
+	if ( b3MetalEnsureContactCapacity( context, requiredBytes ) == false )
+	{
+		return NULL;
+	}
+	return context->contactConstraintBuffer.contents;
+}
+
+static bool b3MetalEnsureMeshContactCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	if ( context->meshContactCapacity >= requiredBytes ) return true;
+	NSUInteger capacity = context->meshContactCapacity > 0 ? context->meshContactCapacity : 4096;
+	while ( capacity < requiredBytes ) capacity *= 2;
+	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+	if ( buffer == nil ) return false;
+	[context->meshContactBuffer release];
+	context->meshContactBuffer = buffer;
+	context->meshContactCapacity = capacity;
+	return true;
+}
+
+static bool b3MetalEnsureMeshManifoldCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	if ( context->meshManifoldCapacity >= requiredBytes ) return true;
+	NSUInteger capacity = context->meshManifoldCapacity > 0 ? context->meshManifoldCapacity : 4096;
+	while ( capacity < requiredBytes ) capacity *= 2;
+	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+	if ( buffer == nil ) return false;
+	[context->meshManifoldBuffer release];
+	context->meshManifoldBuffer = buffer;
+	context->meshManifoldCapacity = capacity;
+	return true;
+}
+
+b3ContactConstraint* b3MetalGetMeshContactStorage( b3MetalContext* context, int constraintCount )
+{
+	if ( context == NULL || constraintCount <= 0 ) return NULL;
+	NSUInteger bytes = (NSUInteger)constraintCount * sizeof( b3ContactConstraint );
+	return b3MetalEnsureMeshContactCapacity( context, bytes ) ? context->meshContactBuffer.contents : NULL;
+}
+
+b3ManifoldConstraint* b3MetalGetMeshManifoldStorage( b3MetalContext* context, int manifoldCount )
+{
+	if ( context == NULL || manifoldCount <= 0 ) return NULL;
+	NSUInteger bytes = (NSUInteger)manifoldCount * sizeof( b3ManifoldConstraint );
+	return b3MetalEnsureMeshManifoldCapacity( context, bytes ) ? context->meshManifoldBuffer.contents : NULL;
+}
+
+static bool b3MetalEnsureDistanceJointCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	if ( context->distanceJointCapacity >= requiredBytes ) return true;
+	NSUInteger capacity = context->distanceJointCapacity > 0 ? context->distanceJointCapacity : 4096;
+	while ( capacity < requiredBytes ) capacity *= 2;
+	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+	if ( buffer == nil ) return false;
+	[context->distanceJointBuffer release];
+	context->distanceJointBuffer = buffer;
+	context->distanceJointCapacity = capacity;
+	return true;
+}
+
+static void b3MetalPackDistanceJoint( b3MetalDistanceJoint* output, const b3JointSim* base )
+{
+	const b3DistanceJoint* joint = &base->distanceJoint;
+	*output = (b3MetalDistanceJoint){
+		.indexA = joint->indexA,
+		.indexB = joint->indexB,
+		.invMassA = base->invMassA,
+		.invMassB = base->invMassB,
+		.invIA = base->invIA,
+		.invIB = base->invIB,
+		.constraintSoftness = base->constraintSoftness,
+		.anchorA = joint->anchorA,
+		.anchorB = joint->anchorB,
+		.deltaCenter = joint->deltaCenter,
+		.distanceSoftness = joint->distanceSoftness,
+		.length = joint->length,
+		.hertz = joint->hertz,
+		.lowerSpringForce = joint->lowerSpringForce,
+		.upperSpringForce = joint->upperSpringForce,
+		.minLength = joint->minLength,
+		.maxLength = joint->maxLength,
+		.maxMotorForce = joint->maxMotorForce,
+		.motorSpeed = joint->motorSpeed,
+		.impulse = joint->impulse,
+		.lowerImpulse = joint->lowerImpulse,
+		.upperImpulse = joint->upperImpulse,
+		.motorImpulse = joint->motorImpulse,
+		.axialMass = joint->axialMass,
+		.flags = ( joint->enableSpring ? 1u : 0u ) | ( joint->enableLimit ? 2u : 0u ) |
+			( joint->enableMotor ? 4u : 0u ),
+	};
+}
+
+static void b3MetalUnpackDistanceJoint( b3JointSim* base, const b3MetalDistanceJoint* input )
+{
+	b3DistanceJoint* joint = &base->distanceJoint;
+	joint->impulse = input->impulse;
+	joint->lowerImpulse = input->lowerImpulse;
+	joint->upperImpulse = input->upperImpulse;
+	joint->motorImpulse = input->motorImpulse;
+}
+
+static bool b3MetalEnsureParallelJointCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	if ( context->parallelJointCapacity >= requiredBytes ) return true;
+	NSUInteger capacity = context->parallelJointCapacity > 0 ? context->parallelJointCapacity : 4096;
+	while ( capacity < requiredBytes ) capacity *= 2;
+	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+	if ( buffer == nil ) return false;
+	[context->parallelJointBuffer release];
+	context->parallelJointBuffer = buffer;
+	context->parallelJointCapacity = capacity;
+	return true;
+}
+
+static bool b3MetalEnsureJointOverflowCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	if ( context->jointOverflowCapacity >= requiredBytes ) return true;
+	NSUInteger capacity = context->jointOverflowCapacity > 0 ? context->jointOverflowCapacity : 4096;
+	while ( capacity < requiredBytes ) capacity *= 2;
+	id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+	if ( buffer == nil ) return false;
+	[context->jointOverflowBuffer release];
+	context->jointOverflowBuffer = buffer;
+	context->jointOverflowCapacity = capacity;
+	return true;
+}
+
+static void b3MetalPackParallelJoint( b3MetalParallelJoint* output, const b3JointSim* base )
+{
+	const b3ParallelJoint* joint = &base->parallelJoint;
+	*output = (b3MetalParallelJoint){
+		.indexA = joint->indexA,
+		.indexB = joint->indexB,
+		.invIA = base->invIA,
+		.invIB = base->invIB,
+		.softness = joint->softness,
+		.perpAxisX = joint->perpAxisX,
+		.perpAxisY = joint->perpAxisY,
+		.quatA = joint->quatA,
+		.quatB = joint->quatB,
+		.maxTorque = joint->maxTorque,
+		.perpImpulse = joint->perpImpulse,
+		.fixedRotation = base->fixedRotation ? 1u : 0u,
+	};
+}
+
+static void b3MetalUnpackParallelJoint( b3JointSim* base, const b3MetalParallelJoint* input )
+{
+	b3ParallelJoint* joint = &base->parallelJoint;
+	joint->perpAxisX = input->perpAxisX;
+	joint->perpAxisY = input->perpAxisY;
+	joint->perpImpulse = input->perpImpulse;
+}
+
+static NSUInteger b3MetalThreadgroupWidth( id<MTLComputePipelineState> pipeline )
+{
+	NSUInteger width = pipeline.threadExecutionWidth;
+	NSUInteger groupWidth = b3MinInt( (int)pipeline.maxTotalThreadsPerThreadgroup, 256 );
+	groupWidth -= groupWidth % width;
+	return groupWidth > 0 ? groupWidth : width;
+}
+
+// Overflow contacts deliberately share bodies, so one GPU thread walks the
+// array in deterministic upstream order. This is one dispatch per solver phase,
+// rather than one dispatch per contact, and remains in the graph command buffer.
+static void b3MetalDispatchOverflowMesh( id<MTLComputeCommandEncoder> encoder, id<MTLComputePipelineState> pipeline,
+	id<MTLBuffer> states, id<MTLBuffer> contacts, id<MTLBuffer> manifolds, uint32_t offset, uint32_t count,
+	b3MetalContactParams common )
+{
+	if ( count == 0 )
+	{
+		return;
+	}
+
+	[encoder setComputePipelineState:pipeline];
+	[encoder setBuffer:states offset:0 atIndex:0];
+	[encoder setBuffer:contacts offset:0 atIndex:1];
+	[encoder setBuffer:manifolds offset:0 atIndex:2];
+	common.offset = offset;
+	common.count = count;
+	[encoder setBytes:&common length:sizeof( common ) atIndex:3];
+	[encoder dispatchThreads:MTLSizeMake( 1, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( 1, 1, 1 )];
+	[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+}
+
+static void b3MetalDispatchDistanceJoints( id<MTLComputeCommandEncoder> encoder, id<MTLComputePipelineState> pipeline,
+	id<MTLBuffer> states, id<MTLBuffer> joints, uint32_t offset, uint32_t count, b3MetalJointParams common, bool serial )
+{
+	if ( count == 0 ) return;
+	common.offset = offset;
+	common.count = count;
+	[encoder setComputePipelineState:pipeline];
+	[encoder setBuffer:states offset:0 atIndex:0];
+	[encoder setBuffer:joints offset:0 atIndex:1];
+	[encoder setBytes:&common length:sizeof( common ) atIndex:2];
+	NSUInteger threadCount = serial ? 1 : count;
+	NSUInteger groupWidth = serial ? 1 : b3MetalThreadgroupWidth( pipeline );
+	[encoder dispatchThreads:MTLSizeMake( threadCount, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( groupWidth, 1, 1 )];
+	[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+}
+
+static void b3MetalDispatchJointOverflow( id<MTLComputeCommandEncoder> encoder, id<MTLComputePipelineState> pipeline,
+	b3MetalContext* context, uint32_t count, b3MetalJointParams params )
+{
+	if ( count == 0 ) return;
+	params.offset = 0;
+	params.count = count;
+	[encoder setComputePipelineState:pipeline];
+	[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+	[encoder setBuffer:context->distanceJointBuffer offset:0 atIndex:1];
+	[encoder setBuffer:context->parallelJointBuffer offset:0 atIndex:2];
+	[encoder setBuffer:context->jointOverflowBuffer offset:0 atIndex:3];
+	[encoder setBytes:&params length:sizeof( params ) atIndex:4];
+	[encoder dispatchThreads:MTLSizeMake( 1, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( 1, 1, 1 )];
+	[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+}
+
+static void b3MetalPackBodyProperties( b3MetalBodyProperties* properties, const b3BodySim* sims, int bodyCount )
+{
+	for ( int i = 0; i < bodyCount; ++i )
+	{
+		const b3BodySim* sim = sims + i;
+		b3MetalBodyProperties* p = properties + i;
+		p->qx = sim->transform.q.v.x;
+		p->qy = sim->transform.q.v.y;
+		p->qz = sim->transform.q.v.z;
+		p->qw = sim->transform.q.s;
+		p->forceX = sim->force.x;
+		p->forceY = sim->force.y;
+		p->forceZ = sim->force.z;
+		p->torqueX = sim->torque.x;
+		p->torqueY = sim->torque.y;
+		p->torqueZ = sim->torque.z;
+		p->invMass = sim->invMass;
+		memcpy( p->invInertiaLocal, &sim->invInertiaLocal, sizeof( p->invInertiaLocal ) );
+		memcpy( p->invInertiaWorld, &sim->invInertiaWorld, sizeof( p->invInertiaWorld ) );
+		p->linearDamping = sim->linearDamping;
+		p->angularDamping = sim->angularDamping;
+		p->gravityScale = sim->gravityScale;
+	}
+}
+
+static void b3MetalPackFinalizeProperties( b3MetalFinalizeProperties* properties, const b3BodySim* sims, int bodyCount )
+{
+	for ( int i = 0; i < bodyCount; ++i )
+	{
+		properties[i] = (b3MetalFinalizeProperties){
+			.localCenterX = sims[i].localCenter.x,
+			.localCenterY = sims[i].localCenter.y,
+			.localCenterZ = sims[i].localCenter.z,
+			.maxExtentX = sims[i].maxExtent.x,
+			.maxExtentY = sims[i].maxExtent.y,
+			.maxExtentZ = sims[i].maxExtent.z,
+		};
+	}
+}
+
+static bool b3MetalHasRestitution( const b3ContactConstraintWide* constraints, int count )
+{
+	for ( int i = 0; i < count; ++i )
+	{
+		float lanes[B3_SIMD_WIDTH];
+		b3StoreW( lanes, constraints[i].restitution );
+		if ( lanes[0] != 0.0f || lanes[1] != 0.0f || lanes[2] != 0.0f || lanes[3] != 0.0f )
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool b3MetalHasMeshRestitution( const b3ContactConstraint* constraints, int count )
+{
+	for ( int i = 0; i < count; ++i )
+	{
+		if ( constraints[i].restitution != 0.0f ) return true;
+	}
+	return false;
+}
+
+bool b3MetalIntegratePositions( b3MetalContext* context, b3BodyState* states, int bodyCount, float h,
+								float maxLinearSpeed, float maxAngularSpeed, b3MetalDispatchStats* stats )
+{
+	if ( stats != NULL )
+	{
+		*stats = (b3MetalDispatchStats){ .bodyCount = bodyCount };
+	}
+
+	if ( context == NULL || states == NULL || bodyCount < 0 )
+	{
+		return false;
+	}
+	if ( bodyCount == 0 )
+	{
+		return true;
+	}
+
+	@autoreleasepool
+	{
+		NSUInteger byteCount = (NSUInteger)bodyCount * sizeof( b3BodyState );
+		if ( b3MetalEnsureBodyCapacity( context, byteCount ) == false )
+		{
+			return false;
+		}
+		memcpy( context->bodyStateBuffer.contents, states, byteCount );
+
+		b3MetalIntegrateParams params = {
+			.bodyCount = (uint32_t)bodyCount,
+			.h = h,
+			.maxLinearSpeed = maxLinearSpeed,
+			.maxAngularSpeed = maxAngularSpeed,
+		};
+
+		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
+		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+		if ( commandBuffer == nil || encoder == nil )
+		{
+			return false;
+		}
+
+		[encoder setComputePipelineState:context->integratePositionsPipeline];
+		[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+		[encoder setBytes:&params length:sizeof( params ) atIndex:1];
+
+		NSUInteger width = context->integratePositionsPipeline.threadExecutionWidth;
+		NSUInteger maxWidth = context->integratePositionsPipeline.maxTotalThreadsPerThreadgroup;
+		NSUInteger groupWidth = maxWidth < 256 ? maxWidth : 256;
+		groupWidth -= groupWidth % width;
+		if ( groupWidth == 0 )
+		{
+			groupWidth = width;
+		}
+		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
+			threadsPerThreadgroup:MTLSizeMake( groupWidth, 1, 1 )];
+		[encoder endEncoding];
+		[commandBuffer commit];
+		[commandBuffer waitUntilCompleted];
+		if ( commandBuffer.status != MTLCommandBufferStatusCompleted )
+		{
+			return false;
+		}
+
+		memcpy( states, context->bodyStateBuffer.contents, byteCount );
+		if ( stats != NULL && commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime )
+		{
+			stats->gpuMilliseconds = 1000.0 * ( commandBuffer.GPUEndTime - commandBuffer.GPUStartTime );
+		}
+		return true;
+	}
+}
+
+bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState* states, const b3BodySim* sims,
+	int bodyCount, int subStepCount, float h, b3Vec3 gravity, float maxLinearSpeed, float maxAngularSpeed,
+	float invTimeStep, const b3MetalFinalizeResult** finalizeResults, b3MetalDispatchStats* stats )
+{
+	if ( finalizeResults != NULL )
+	{
+		*finalizeResults = NULL;
+	}
+	if ( stats != NULL )
+	{
+		*stats = (b3MetalDispatchStats){ .bodyCount = bodyCount };
+	}
+	if ( context == NULL || states == NULL || sims == NULL || bodyCount < 0 || subStepCount < 1 )
+	{
+		return false;
+	}
+	if ( bodyCount == 0 )
+	{
+		return true;
+	}
+
+	@autoreleasepool
+	{
+		NSUInteger stateByteCount = (NSUInteger)bodyCount * sizeof( b3BodyState );
+		NSUInteger propertiesByteCount = (NSUInteger)bodyCount * sizeof( b3MetalBodyProperties );
+		NSUInteger finalizationByteCount = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeResult );
+		NSUInteger finalizePropertyByteCount = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeProperties );
+		if ( b3MetalEnsureBodyCapacity( context, stateByteCount ) == false ||
+			 b3MetalEnsurePropertiesCapacity( context, propertiesByteCount ) == false ||
+			 ( finalizeResults != NULL && ( b3MetalEnsureFinalizeResultCapacity( context, finalizationByteCount ) == false ||
+			   b3MetalEnsureFinalizePropertiesCapacity( context, finalizePropertyByteCount ) == false ) ) )
+		{
+			return false;
+		}
+
+		memcpy( context->bodyStateBuffer.contents, states, stateByteCount );
+		b3MetalBodyProperties* properties = context->bodyPropertiesBuffer.contents;
+		b3MetalPackBodyProperties( properties, sims, bodyCount );
+		if ( finalizeResults != NULL )
+		{
+			b3MetalPackFinalizeProperties( context->finalizePropertiesBuffer.contents, sims, bodyCount );
+		}
+
+		b3MetalFusedParams params = {
+			.bodyCount = (uint32_t)bodyCount,
+			.h = h,
+			.maxLinearSpeed = maxLinearSpeed,
+			.maxAngularSpeed = maxAngularSpeed,
+			.gravityX = gravity.x,
+			.gravityY = gravity.y,
+			.gravityZ = gravity.z,
+			.integratePosition = 1,
+		};
+
+		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
+		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+		if ( commandBuffer == nil || encoder == nil )
+		{
+			return false;
+		}
+
+		id<MTLComputePipelineState> pipeline = context->integrateUnconstrainedPipeline;
+		[encoder setComputePipelineState:pipeline];
+		[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+		[encoder setBuffer:context->bodyPropertiesBuffer offset:0 atIndex:1];
+		[encoder setBytes:&params length:sizeof( params ) atIndex:2];
+
+		NSUInteger width = pipeline.threadExecutionWidth;
+		NSUInteger maxWidth = pipeline.maxTotalThreadsPerThreadgroup;
+		NSUInteger groupWidth = maxWidth < 256 ? maxWidth : 256;
+		groupWidth -= groupWidth % width;
+		groupWidth = groupWidth > 0 ? groupWidth : width;
+		for ( int subStepIndex = 0; subStepIndex < subStepCount; ++subStepIndex )
+		{
+			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
+				threadsPerThreadgroup:MTLSizeMake( groupWidth, 1, 1 )];
+			if ( subStepIndex + 1 < subStepCount )
+			{
+				[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+			}
+		}
+		if ( finalizeResults != NULL )
+		{
+			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+			struct { uint32_t bodyCount; float invTimeStep; uint32_t padding[2]; } finalizeParams =
+				{ (uint32_t)bodyCount, invTimeStep, { 0, 0 } };
+			id<MTLComputePipelineState> finalizePipeline = context->finalizeBodiesPipeline;
+			[encoder setComputePipelineState:finalizePipeline];
+			[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+			[encoder setBuffer:context->bodyPropertiesBuffer offset:0 atIndex:1];
+			[encoder setBuffer:context->finalizePropertiesBuffer offset:0 atIndex:2];
+			[encoder setBuffer:context->finalizeResultBuffer offset:0 atIndex:3];
+			[encoder setBytes:&finalizeParams length:sizeof( finalizeParams ) atIndex:4];
+			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
+				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
+		}
+		[encoder endEncoding];
+		[commandBuffer commit];
+		[commandBuffer waitUntilCompleted];
+		if ( commandBuffer.status != MTLCommandBufferStatusCompleted )
+		{
+			return false;
+		}
+
+		memcpy( states, context->bodyStateBuffer.contents, stateByteCount );
+		if ( finalizeResults != NULL )
+		{
+			*finalizeResults = context->finalizeResultBuffer.contents;
+		}
+		if ( stats != NULL && commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime )
+		{
+			stats->gpuMilliseconds = 1000.0 * ( commandBuffer.GPUEndTime - commandBuffer.GPUStartTime );
+		}
+		return true;
+	}
+}
+
+bool b3MetalIntegrateUnconstrained( b3MetalContext* context, b3BodyState* states, const b3BodySim* sims, int bodyCount,
+									float h, b3Vec3 gravity, float maxLinearSpeed, float maxAngularSpeed,
+									b3MetalDispatchStats* stats )
+{
+	return b3MetalIntegrateUnconstrainedSubsteps( context, states, sims, bodyCount, 1, h, gravity, maxLinearSpeed,
+		maxAngularSpeed, 0.0f, NULL, stats );
+}
+
+bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, const b3BodySim* sims,
+	int bodyCount, float invTimeStep, bool statesAreResident, const b3MetalFinalizeResult** results,
+	b3MetalDispatchStats* stats )
+{
+	if ( results != NULL )
+	{
+		*results = NULL;
+	}
+	if ( stats != NULL )
+	{
+		*stats = (b3MetalDispatchStats){ .bodyCount = bodyCount };
+	}
+	if ( context == NULL || states == NULL || sims == NULL || results == NULL || bodyCount < 0 )
+	{
+		return false;
+	}
+	if ( bodyCount == 0 )
+	{
+		return true;
+	}
+
+	@autoreleasepool
+	{
+		NSUInteger stateBytes = (NSUInteger)bodyCount * sizeof( b3BodyState );
+		NSUInteger propertyBytes = (NSUInteger)bodyCount * sizeof( b3MetalBodyProperties );
+		NSUInteger resultBytes = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeResult );
+		NSUInteger finalizePropertyBytes = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeProperties );
+		if ( b3MetalEnsureBodyCapacity( context, stateBytes ) == false ||
+			 b3MetalEnsurePropertiesCapacity( context, propertyBytes ) == false ||
+			 b3MetalEnsureFinalizeResultCapacity( context, resultBytes ) == false ||
+			 b3MetalEnsureFinalizePropertiesCapacity( context, finalizePropertyBytes ) == false )
+		{
+			return false;
+		}
+		if ( statesAreResident == false )
+		{
+			memcpy( context->bodyStateBuffer.contents, states, stateBytes );
+		}
+		b3MetalPackBodyProperties( context->bodyPropertiesBuffer.contents, sims, bodyCount );
+		b3MetalPackFinalizeProperties( context->finalizePropertiesBuffer.contents, sims, bodyCount );
+
+		struct
+		{
+			uint32_t bodyCount;
+			float invTimeStep;
+			uint32_t padding[2];
+		} params = { (uint32_t)bodyCount, invTimeStep, { 0, 0 } };
+
+		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
+		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+		if ( commandBuffer == nil || encoder == nil )
+		{
+			return false;
+		}
+
+		id<MTLComputePipelineState> pipeline = context->finalizeBodiesPipeline;
+		[encoder setComputePipelineState:pipeline];
+		[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+		[encoder setBuffer:context->bodyPropertiesBuffer offset:0 atIndex:1];
+		[encoder setBuffer:context->finalizePropertiesBuffer offset:0 atIndex:2];
+		[encoder setBuffer:context->finalizeResultBuffer offset:0 atIndex:3];
+		[encoder setBytes:&params length:sizeof( params ) atIndex:4];
+		NSUInteger groupWidth = b3MetalThreadgroupWidth( pipeline );
+		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
+			threadsPerThreadgroup:MTLSizeMake( groupWidth, 1, 1 )];
+		[encoder endEncoding];
+		[commandBuffer commit];
+		[commandBuffer waitUntilCompleted];
+		if ( commandBuffer.status != MTLCommandBufferStatusCompleted )
+		{
+			return false;
+		}
+
+		*results = context->finalizeResultBuffer.contents;
+		if ( stats != NULL && commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime )
+		{
+			stats->gpuMilliseconds = 1000.0 * ( commandBuffer.GPUEndTime - commandBuffer.GPUStartTime );
+		}
+		return true;
+	}
+}
+
+bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepContext,
+	int velocityIterations, int relaxIterations, int restitutionIterations, b3MetalDispatchStats* stats )
+{
+	int bodyCount = stepContext != NULL ? stepContext->world->solverSets.data[b3_awakeSet].bodyStates.count : 0;
+	if ( stats != NULL )
+	{
+		*stats = (b3MetalDispatchStats){ .bodyCount = bodyCount };
+	}
+	if ( context == NULL || stepContext == NULL || bodyCount < 0 ||
+		( stepContext->wideContactCount <= 0 && stepContext->contactConstraintCount <= 0 &&
+		  stepContext->overflowContactConstraintCount <= 0 && stepContext->jointConstraintCount <= 0 &&
+		  stepContext->overflowJointConstraintCount <= 0 ) ||
+		velocityIterations < 1 || relaxIterations < 0 || restitutionIterations < 0 )
+	{
+		return false;
+	}
+
+	@autoreleasepool
+	{
+		NSUInteger stateBytes = (NSUInteger)bodyCount * sizeof( b3BodyState );
+		NSUInteger propertyBytes = (NSUInteger)bodyCount * sizeof( b3MetalBodyProperties );
+		NSUInteger contactBytes = (NSUInteger)stepContext->wideContactCount * sizeof( b3ContactConstraintWide );
+		NSUInteger coloredMeshContactBytes =
+			(NSUInteger)stepContext->contactConstraintCount * sizeof( b3ContactConstraint );
+		NSUInteger overflowMeshContactBytes =
+			(NSUInteger)stepContext->overflowContactConstraintCount * sizeof( b3ContactConstraint );
+		NSUInteger coloredMeshManifoldBytes =
+			(NSUInteger)stepContext->manifoldConstraintCount * sizeof( b3ManifoldConstraint );
+		NSUInteger overflowMeshManifoldBytes =
+			(NSUInteger)stepContext->overflowManifoldConstraintCount * sizeof( b3ManifoldConstraint );
+		NSUInteger meshContactBytes = coloredMeshContactBytes + overflowMeshContactBytes;
+		NSUInteger meshManifoldBytes = coloredMeshManifoldBytes + overflowMeshManifoldBytes;
+		int distanceOffsets[B3_GRAPH_COLOR_COUNT] = { 0 };
+		int distanceCounts[B3_GRAPH_COLOR_COUNT] = { 0 };
+		int parallelOffsets[B3_GRAPH_COLOR_COUNT] = { 0 };
+		int parallelCounts[B3_GRAPH_COLOR_COUNT] = { 0 };
+		int coloredDistanceCount = 0;
+		int coloredParallelCount = 0;
+		b3GraphColor* overflow = stepContext->graph->colors + B3_OVERFLOW_INDEX;
+		for ( int colorIndex = 0; colorIndex < stepContext->activeColorCount; ++colorIndex )
+		{
+			distanceOffsets[colorIndex] = coloredDistanceCount;
+			parallelOffsets[colorIndex] = coloredParallelCount;
+			int count = stepContext->jointPrepareSpans[colorIndex + 1].start -
+				stepContext->jointPrepareSpans[colorIndex].start;
+			b3JointSim* joints = stepContext->jointPrepareSpans[colorIndex].joints;
+			for ( int i = 0; i < count; ++i )
+			{
+				if ( joints[i].type == b3_distanceJoint ) distanceCounts[colorIndex] += 1;
+				if ( joints[i].type == b3_parallelJoint ) parallelCounts[colorIndex] += 1;
+			}
+			coloredDistanceCount += distanceCounts[colorIndex];
+			coloredParallelCount += parallelCounts[colorIndex];
+		}
+		int overflowDistanceCount = 0;
+		int overflowParallelCount = 0;
+		for ( int i = 0; i < stepContext->overflowJointConstraintCount; ++i )
+		{
+			if ( overflow->jointSims.data[i].type == b3_distanceJoint ) overflowDistanceCount += 1;
+			if ( overflow->jointSims.data[i].type == b3_parallelJoint ) overflowParallelCount += 1;
+		}
+		int distanceCount = coloredDistanceCount + overflowDistanceCount;
+		int parallelCount = coloredParallelCount + overflowParallelCount;
+		NSUInteger distanceJointBytes = (NSUInteger)distanceCount * sizeof( b3MetalDistanceJoint );
+		NSUInteger parallelJointBytes = (NSUInteger)parallelCount * sizeof( b3MetalParallelJoint );
+		NSUInteger jointOverflowBytes =
+			(NSUInteger)stepContext->overflowJointConstraintCount * sizeof( b3MetalJointOverflow );
+		bool finalizeBodies = stepContext->world->metalFinalizationEnabled;
+		NSUInteger finalizationBytes = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeResult );
+		NSUInteger finalizePropertyBytes = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeProperties );
+		if ( b3MetalEnsureBodyCapacity( context, stateBytes ) == false ||
+			 b3MetalEnsurePropertiesCapacity( context, propertyBytes ) == false ||
+			 ( finalizeBodies && ( b3MetalEnsureFinalizeResultCapacity( context, finalizationBytes ) == false ||
+			   b3MetalEnsureFinalizePropertiesCapacity( context, finalizePropertyBytes ) == false ) ) ||
+			 ( contactBytes > 0 && b3MetalEnsureContactCapacity( context, contactBytes ) == false ) ||
+			 ( meshContactBytes > 0 && b3MetalEnsureMeshContactCapacity( context, meshContactBytes ) == false ) ||
+			 ( meshManifoldBytes > 0 && b3MetalEnsureMeshManifoldCapacity( context, meshManifoldBytes ) == false ) ||
+			 ( distanceJointBytes > 0 && b3MetalEnsureDistanceJointCapacity( context, distanceJointBytes ) == false ) ||
+			 ( parallelJointBytes > 0 && b3MetalEnsureParallelJointCapacity( context, parallelJointBytes ) == false ) ||
+			 ( jointOverflowBytes > 0 && b3MetalEnsureJointOverflowCapacity( context, jointOverflowBytes ) == false ) )
+		{
+			return false;
+		}
+
+		memcpy( context->bodyStateBuffer.contents, stepContext->states, stateBytes );
+		b3MetalPackBodyProperties( context->bodyPropertiesBuffer.contents, stepContext->sims, bodyCount );
+		if ( finalizeBodies )
+		{
+			b3MetalPackFinalizeProperties( context->finalizePropertiesBuffer.contents, stepContext->sims, bodyCount );
+		}
+		bool constraintsAlreadyShared = contactBytes == 0 || stepContext->wideConstraints == context->contactConstraintBuffer.contents;
+		if ( contactBytes > 0 && constraintsAlreadyShared == false )
+		{
+			memcpy( context->contactConstraintBuffer.contents, stepContext->wideConstraints, contactBytes );
+		}
+		uint8_t* meshContactBase = context->meshContactBuffer.contents;
+		uint8_t* meshManifoldBase = context->meshManifoldBuffer.contents;
+		bool coloredMeshContactsShared = coloredMeshContactBytes == 0 ||
+			stepContext->contactConstraints == (b3ContactConstraint*)meshContactBase;
+		bool overflowMeshContactsShared = overflowMeshContactBytes == 0 ||
+			overflow->contactConstraints == (b3ContactConstraint*)( meshContactBase + coloredMeshContactBytes );
+		bool coloredMeshManifoldsShared = coloredMeshManifoldBytes == 0 ||
+			stepContext->manifoldConstraints == (b3ManifoldConstraint*)meshManifoldBase;
+		bool overflowMeshManifoldsShared = overflowMeshManifoldBytes == 0 ||
+			overflow->manifoldConstraints == (b3ManifoldConstraint*)( meshManifoldBase + coloredMeshManifoldBytes );
+		if ( coloredMeshContactBytes > 0 && coloredMeshContactsShared == false )
+		{
+			memcpy( meshContactBase, stepContext->contactConstraints, coloredMeshContactBytes );
+		}
+		if ( overflowMeshContactBytes > 0 && overflowMeshContactsShared == false )
+		{
+			memcpy( meshContactBase + coloredMeshContactBytes, overflow->contactConstraints, overflowMeshContactBytes );
+		}
+		if ( coloredMeshManifoldBytes > 0 && coloredMeshManifoldsShared == false )
+		{
+			memcpy( meshManifoldBase, stepContext->manifoldConstraints, coloredMeshManifoldBytes );
+		}
+		if ( overflowMeshManifoldBytes > 0 && overflowMeshManifoldsShared == false )
+		{
+			memcpy( meshManifoldBase + coloredMeshManifoldBytes, overflow->manifoldConstraints,
+				overflowMeshManifoldBytes );
+		}
+
+		b3MetalDistanceJoint* packedDistanceJoints = context->distanceJointBuffer.contents;
+		b3MetalParallelJoint* packedParallelJoints = context->parallelJointBuffer.contents;
+		for ( int colorIndex = 0; colorIndex < stepContext->activeColorCount; ++colorIndex )
+		{
+			int count = stepContext->jointPrepareSpans[colorIndex + 1].start -
+				stepContext->jointPrepareSpans[colorIndex].start;
+			b3JointSim* joints = stepContext->jointPrepareSpans[colorIndex].joints;
+			int distanceIndex = distanceOffsets[colorIndex];
+			int parallelIndex = parallelOffsets[colorIndex];
+			for ( int i = 0; i < count; ++i )
+			{
+				if ( joints[i].type == b3_distanceJoint )
+				{
+					b3MetalPackDistanceJoint( packedDistanceJoints + distanceIndex++, joints + i );
+				}
+				else if ( joints[i].type == b3_parallelJoint )
+				{
+					b3MetalPackParallelJoint( packedParallelJoints + parallelIndex++, joints + i );
+				}
+			}
+		}
+		b3MetalJointOverflow* packedOverflow = context->jointOverflowBuffer.contents;
+		int overflowDistanceIndex = coloredDistanceCount;
+		int overflowParallelIndex = coloredParallelCount;
+		for ( int i = 0; i < stepContext->overflowJointConstraintCount; ++i )
+		{
+			b3JointSim* joint = overflow->jointSims.data + i;
+			if ( joint->type == b3_distanceJoint )
+			{
+				b3MetalPackDistanceJoint( packedDistanceJoints + overflowDistanceIndex, joint );
+				packedOverflow[i] = (b3MetalJointOverflow){ 0, (uint32_t)overflowDistanceIndex++ };
+			}
+			else
+			{
+				b3MetalPackParallelJoint( packedParallelJoints + overflowParallelIndex, joint );
+				packedOverflow[i] = (b3MetalJointOverflow){ 1, (uint32_t)overflowParallelIndex++ };
+			}
+		}
+
+		b3MetalFusedParams velocityParams = {
+			.bodyCount = (uint32_t)bodyCount,
+			.h = stepContext->h,
+			.maxLinearSpeed = stepContext->maxLinearVelocity,
+			.maxAngularSpeed = B3_MAX_ROTATION * stepContext->inv_dt,
+			.gravityX = stepContext->world->gravity.x,
+			.gravityY = stepContext->world->gravity.y,
+			.gravityZ = stepContext->world->gravity.z,
+			.integratePosition = 0,
+		};
+		b3MetalIntegrateParams positionParams = {
+			.bodyCount = (uint32_t)bodyCount,
+			.h = stepContext->h,
+			.maxLinearSpeed = stepContext->maxLinearVelocity,
+			.maxAngularSpeed = B3_MAX_ROTATION * stepContext->inv_dt,
+		};
+
+		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
+		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+		if ( commandBuffer == nil || encoder == nil )
+		{
+			return false;
+		}
+
+		NSUInteger velocityWidth = b3MetalThreadgroupWidth( context->integrateUnconstrainedPipeline );
+		NSUInteger positionWidth = b3MetalThreadgroupWidth( context->integratePositionsPipeline );
+		NSUInteger warmWidth = b3MetalThreadgroupWidth( context->warmStartContactsPipeline );
+		NSUInteger solveWidth = b3MetalThreadgroupWidth( context->solveContactsPipeline );
+		NSUInteger restitutionWidth = b3MetalThreadgroupWidth( context->restitutionContactsPipeline );
+		NSUInteger warmMeshWidth = b3MetalThreadgroupWidth( context->warmStartMeshPipeline );
+		NSUInteger solveMeshWidth = b3MetalThreadgroupWidth( context->solveMeshPipeline );
+		NSUInteger restitutionMeshWidth = b3MetalThreadgroupWidth( context->restitutionMeshPipeline );
+		for ( int subStep = 0; subStep < stepContext->subStepCount; ++subStep )
+		{
+			[encoder setComputePipelineState:context->integrateUnconstrainedPipeline];
+			[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+			[encoder setBuffer:context->bodyPropertiesBuffer offset:0 atIndex:1];
+			[encoder setBytes:&velocityParams length:sizeof( velocityParams ) atIndex:2];
+			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
+				threadsPerThreadgroup:MTLSizeMake( velocityWidth, 1, 1 )];
+			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+
+			if ( stepContext->enableWarmStarting )
+			{
+				b3MetalJointParams jointParams = { .h = stepContext->h, .invH = stepContext->inv_h };
+				b3MetalDispatchJointOverflow( encoder, context->warmStartJointOverflowPipeline, context,
+					(uint32_t)stepContext->overflowJointConstraintCount, jointParams );
+				b3MetalDispatchOverflowMesh( encoder, context->warmStartOverflowPipeline, context->bodyStateBuffer,
+					context->meshContactBuffer, context->meshManifoldBuffer, (uint32_t)stepContext->contactConstraintCount,
+					(uint32_t)stepContext->overflowContactConstraintCount, (b3MetalContactParams){ 0 } );
+				for ( int colorIndex = 0; colorIndex < stepContext->activeColorCount; ++colorIndex )
+				{
+					bool dispatched = false;
+					if ( distanceCounts[colorIndex] > 0 )
+					{
+						b3MetalDispatchDistanceJoints( encoder, context->warmStartDistancePipeline,
+							context->bodyStateBuffer, context->distanceJointBuffer, (uint32_t)distanceOffsets[colorIndex],
+							(uint32_t)distanceCounts[colorIndex], jointParams, false );
+						dispatched = true;
+					}
+					if ( parallelCounts[colorIndex] > 0 )
+					{
+						b3MetalDispatchDistanceJoints( encoder, context->warmStartParallelPipeline,
+							context->bodyStateBuffer, context->parallelJointBuffer, (uint32_t)parallelOffsets[colorIndex],
+							(uint32_t)parallelCounts[colorIndex], jointParams, false );
+						dispatched = true;
+					}
+					int wideOffset = stepContext->widePrepareSpans[colorIndex].start;
+					int wideCount = stepContext->widePrepareSpans[colorIndex + 1].start - wideOffset;
+					if ( wideCount > 0 )
+					{
+						b3MetalContactParams params = { .offset = (uint32_t)wideOffset, .count = (uint32_t)wideCount };
+						[encoder setComputePipelineState:context->warmStartContactsPipeline];
+						[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+						[encoder setBuffer:context->contactConstraintBuffer offset:0 atIndex:1];
+						[encoder setBytes:&params length:sizeof( params ) atIndex:2];
+						[encoder dispatchThreads:MTLSizeMake( (NSUInteger)wideCount, 1, 1 )
+							threadsPerThreadgroup:MTLSizeMake( warmWidth, 1, 1 )];
+						dispatched = true;
+					}
+					int meshOffset = stepContext->contactPrepareSpans[colorIndex].start;
+					int meshCount = stepContext->contactPrepareSpans[colorIndex + 1].start - meshOffset;
+					if ( meshCount > 0 )
+					{
+						b3MetalContactParams params = { .offset = (uint32_t)meshOffset, .count = (uint32_t)meshCount };
+						[encoder setComputePipelineState:context->warmStartMeshPipeline];
+						[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+						[encoder setBuffer:context->meshContactBuffer offset:0 atIndex:1];
+						[encoder setBuffer:context->meshManifoldBuffer offset:0 atIndex:2];
+						[encoder setBytes:&params length:sizeof( params ) atIndex:3];
+						[encoder dispatchThreads:MTLSizeMake( (NSUInteger)meshCount, 1, 1 )
+							threadsPerThreadgroup:MTLSizeMake( warmMeshWidth, 1, 1 )];
+						dispatched = true;
+					}
+					if ( dispatched ) [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+				}
+			}
+
+			for ( int iteration = 0; iteration < velocityIterations; ++iteration )
+			{
+				b3MetalJointParams jointParams = { .h = stepContext->h, .invH = stepContext->inv_h, .useBias = 1 };
+				b3MetalDispatchJointOverflow( encoder, context->solveJointOverflowPipeline, context,
+					(uint32_t)stepContext->overflowJointConstraintCount, jointParams );
+				b3MetalContactParams overflowParams = { .invH = stepContext->inv_h,
+					.contactSpeed = -stepContext->world->contactSpeed, .useBias = 1 };
+				b3MetalDispatchOverflowMesh( encoder, context->solveOverflowPipeline, context->bodyStateBuffer,
+					context->meshContactBuffer, context->meshManifoldBuffer, (uint32_t)stepContext->contactConstraintCount,
+					(uint32_t)stepContext->overflowContactConstraintCount, overflowParams );
+				for ( int colorIndex = 0; colorIndex < stepContext->activeColorCount; ++colorIndex )
+				{
+					bool dispatched = false;
+					if ( distanceCounts[colorIndex] > 0 )
+					{
+						b3MetalDispatchDistanceJoints( encoder, context->solveDistancePipeline,
+							context->bodyStateBuffer, context->distanceJointBuffer, (uint32_t)distanceOffsets[colorIndex],
+							(uint32_t)distanceCounts[colorIndex], jointParams, false );
+						dispatched = true;
+					}
+					if ( parallelCounts[colorIndex] > 0 )
+					{
+						b3MetalDispatchDistanceJoints( encoder, context->solveParallelPipeline,
+							context->bodyStateBuffer, context->parallelJointBuffer, (uint32_t)parallelOffsets[colorIndex],
+							(uint32_t)parallelCounts[colorIndex], jointParams, false );
+						dispatched = true;
+					}
+					int wideOffset = stepContext->widePrepareSpans[colorIndex].start;
+					int wideCount = stepContext->widePrepareSpans[colorIndex + 1].start - wideOffset;
+					b3MetalContactParams common = { .invH = stepContext->inv_h,
+						.contactSpeed = -stepContext->world->contactSpeed, .useBias = 1 };
+					if ( wideCount > 0 )
+					{
+						b3MetalContactParams params = common; params.offset = (uint32_t)wideOffset; params.count = (uint32_t)wideCount;
+						[encoder setComputePipelineState:context->solveContactsPipeline];
+						[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+						[encoder setBuffer:context->contactConstraintBuffer offset:0 atIndex:1];
+						[encoder setBytes:&params length:sizeof( params ) atIndex:2];
+						[encoder dispatchThreads:MTLSizeMake( (NSUInteger)wideCount, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( solveWidth, 1, 1 )];
+						dispatched = true;
+					}
+					int meshOffset = stepContext->contactPrepareSpans[colorIndex].start;
+					int meshCount = stepContext->contactPrepareSpans[colorIndex + 1].start - meshOffset;
+					if ( meshCount > 0 )
+					{
+						b3MetalContactParams params = common; params.offset = (uint32_t)meshOffset; params.count = (uint32_t)meshCount;
+						[encoder setComputePipelineState:context->solveMeshPipeline];
+						[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+						[encoder setBuffer:context->meshContactBuffer offset:0 atIndex:1];
+						[encoder setBuffer:context->meshManifoldBuffer offset:0 atIndex:2];
+						[encoder setBytes:&params length:sizeof( params ) atIndex:3];
+						[encoder dispatchThreads:MTLSizeMake( (NSUInteger)meshCount, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( solveMeshWidth, 1, 1 )];
+						dispatched = true;
+					}
+					if ( dispatched ) [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+				}
+			}
+
+			[encoder setComputePipelineState:context->integratePositionsPipeline];
+			[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+			[encoder setBytes:&positionParams length:sizeof( positionParams ) atIndex:1];
+			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
+				threadsPerThreadgroup:MTLSizeMake( positionWidth, 1, 1 )];
+			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+
+			for ( int iteration = 0; iteration < relaxIterations; ++iteration )
+			{
+				b3MetalJointParams jointParams = { .h = stepContext->h, .invH = stepContext->inv_h, .useBias = 0 };
+				b3MetalDispatchJointOverflow( encoder, context->solveJointOverflowPipeline, context,
+					(uint32_t)stepContext->overflowJointConstraintCount, jointParams );
+				b3MetalContactParams overflowParams = { .invH = stepContext->inv_h,
+					.contactSpeed = -stepContext->world->contactSpeed, .useBias = 0 };
+				b3MetalDispatchOverflowMesh( encoder, context->solveOverflowPipeline, context->bodyStateBuffer,
+					context->meshContactBuffer, context->meshManifoldBuffer, (uint32_t)stepContext->contactConstraintCount,
+					(uint32_t)stepContext->overflowContactConstraintCount, overflowParams );
+				for ( int colorIndex = 0; colorIndex < stepContext->activeColorCount; ++colorIndex )
+				{
+					bool dispatched = false;
+					if ( distanceCounts[colorIndex] > 0 )
+					{
+						b3MetalDispatchDistanceJoints( encoder, context->solveDistancePipeline,
+							context->bodyStateBuffer, context->distanceJointBuffer, (uint32_t)distanceOffsets[colorIndex],
+							(uint32_t)distanceCounts[colorIndex], jointParams, false );
+						dispatched = true;
+					}
+					if ( parallelCounts[colorIndex] > 0 )
+					{
+						b3MetalDispatchDistanceJoints( encoder, context->solveParallelPipeline,
+							context->bodyStateBuffer, context->parallelJointBuffer, (uint32_t)parallelOffsets[colorIndex],
+							(uint32_t)parallelCounts[colorIndex], jointParams, false );
+						dispatched = true;
+					}
+					int wideOffset = stepContext->widePrepareSpans[colorIndex].start;
+					int wideCount = stepContext->widePrepareSpans[colorIndex + 1].start - wideOffset;
+					b3MetalContactParams common = { .invH = stepContext->inv_h,
+						.contactSpeed = -stepContext->world->contactSpeed, .useBias = 0 };
+					if ( wideCount > 0 )
+					{
+						b3MetalContactParams params = common; params.offset = (uint32_t)wideOffset; params.count = (uint32_t)wideCount;
+						[encoder setComputePipelineState:context->solveContactsPipeline];
+						[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+						[encoder setBuffer:context->contactConstraintBuffer offset:0 atIndex:1];
+						[encoder setBytes:&params length:sizeof( params ) atIndex:2];
+						[encoder dispatchThreads:MTLSizeMake( (NSUInteger)wideCount, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( solveWidth, 1, 1 )];
+						dispatched = true;
+					}
+					int meshOffset = stepContext->contactPrepareSpans[colorIndex].start;
+					int meshCount = stepContext->contactPrepareSpans[colorIndex + 1].start - meshOffset;
+					if ( meshCount > 0 )
+					{
+						b3MetalContactParams params = common; params.offset = (uint32_t)meshOffset; params.count = (uint32_t)meshCount;
+						[encoder setComputePipelineState:context->solveMeshPipeline];
+						[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+						[encoder setBuffer:context->meshContactBuffer offset:0 atIndex:1];
+						[encoder setBuffer:context->meshManifoldBuffer offset:0 atIndex:2];
+						[encoder setBytes:&params length:sizeof( params ) atIndex:3];
+						[encoder dispatchThreads:MTLSizeMake( (NSUInteger)meshCount, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( solveMeshWidth, 1, 1 )];
+						dispatched = true;
+					}
+					if ( dispatched ) [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+				}
+			}
+		}
+
+		bool hasRestitution = b3MetalHasRestitution( stepContext->wideConstraints, stepContext->wideContactCount );
+		bool hasMeshRestitution =
+			b3MetalHasMeshRestitution( stepContext->contactConstraints, stepContext->contactConstraintCount );
+		bool hasOverflowRestitution =
+			b3MetalHasMeshRestitution( overflow->contactConstraints, stepContext->overflowContactConstraintCount );
+		for ( int iteration = 0; ( hasRestitution || hasMeshRestitution || hasOverflowRestitution ) && iteration < restitutionIterations;
+			  ++iteration )
+		{
+			if ( hasOverflowRestitution )
+			{
+				b3MetalContactParams overflowParams = { .restitutionThreshold = stepContext->world->restitutionThreshold };
+				b3MetalDispatchOverflowMesh( encoder, context->restitutionOverflowPipeline, context->bodyStateBuffer,
+					context->meshContactBuffer, context->meshManifoldBuffer, (uint32_t)stepContext->contactConstraintCount,
+					(uint32_t)stepContext->overflowContactConstraintCount, overflowParams );
+			}
+			for ( int colorIndex = 0; colorIndex < stepContext->activeColorCount; ++colorIndex )
+			{
+				bool dispatched = false;
+				int wideOffset = stepContext->widePrepareSpans[colorIndex].start;
+				int wideCount = stepContext->widePrepareSpans[colorIndex + 1].start - wideOffset;
+				b3MetalContactParams common = { .restitutionThreshold = stepContext->world->restitutionThreshold };
+				if ( hasRestitution && wideCount > 0 )
+				{
+					b3MetalContactParams params = common; params.offset = (uint32_t)wideOffset; params.count = (uint32_t)wideCount;
+					[encoder setComputePipelineState:context->restitutionContactsPipeline];
+					[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+					[encoder setBuffer:context->contactConstraintBuffer offset:0 atIndex:1];
+					[encoder setBytes:&params length:sizeof( params ) atIndex:2];
+					[encoder dispatchThreads:MTLSizeMake( (NSUInteger)wideCount, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( restitutionWidth, 1, 1 )];
+					dispatched = true;
+				}
+				int meshOffset = stepContext->contactPrepareSpans[colorIndex].start;
+				int meshCount = stepContext->contactPrepareSpans[colorIndex + 1].start - meshOffset;
+				if ( hasMeshRestitution && meshCount > 0 )
+				{
+					b3MetalContactParams params = common; params.offset = (uint32_t)meshOffset; params.count = (uint32_t)meshCount;
+					[encoder setComputePipelineState:context->restitutionMeshPipeline];
+					[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+					[encoder setBuffer:context->meshContactBuffer offset:0 atIndex:1];
+					[encoder setBuffer:context->meshManifoldBuffer offset:0 atIndex:2];
+					[encoder setBytes:&params length:sizeof( params ) atIndex:3];
+					[encoder dispatchThreads:MTLSizeMake( (NSUInteger)meshCount, 1, 1 ) threadsPerThreadgroup:MTLSizeMake( restitutionMeshWidth, 1, 1 )];
+					dispatched = true;
+				}
+				if ( dispatched ) [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+			}
+		}
+
+		if ( finalizeBodies )
+		{
+			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+			struct { uint32_t bodyCount; float invTimeStep; uint32_t padding[2]; } finalizeParams =
+				{ (uint32_t)bodyCount, stepContext->inv_dt, { 0, 0 } };
+			id<MTLComputePipelineState> finalizePipeline = context->finalizeBodiesPipeline;
+			[encoder setComputePipelineState:finalizePipeline];
+			[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
+			[encoder setBuffer:context->bodyPropertiesBuffer offset:0 atIndex:1];
+			[encoder setBuffer:context->finalizePropertiesBuffer offset:0 atIndex:2];
+			[encoder setBuffer:context->finalizeResultBuffer offset:0 atIndex:3];
+			[encoder setBytes:&finalizeParams length:sizeof( finalizeParams ) atIndex:4];
+			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
+				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
+		}
+
+		[encoder endEncoding];
+		[commandBuffer commit];
+		[commandBuffer waitUntilCompleted];
+		if ( commandBuffer.status != MTLCommandBufferStatusCompleted )
+		{
+			return false;
+		}
+
+		memcpy( stepContext->states, context->bodyStateBuffer.contents, stateBytes );
+		stepContext->metalFinalizeResults = finalizeBodies ? context->finalizeResultBuffer.contents : NULL;
+		if ( contactBytes > 0 && constraintsAlreadyShared == false )
+		{
+			memcpy( stepContext->wideConstraints, context->contactConstraintBuffer.contents, contactBytes );
+		}
+		if ( coloredMeshContactBytes > 0 && coloredMeshContactsShared == false )
+		{
+			memcpy( stepContext->contactConstraints, meshContactBase, coloredMeshContactBytes );
+		}
+		if ( overflowMeshContactBytes > 0 && overflowMeshContactsShared == false )
+		{
+			memcpy( overflow->contactConstraints, meshContactBase + coloredMeshContactBytes, overflowMeshContactBytes );
+		}
+		if ( coloredMeshManifoldBytes > 0 && coloredMeshManifoldsShared == false )
+		{
+			memcpy( stepContext->manifoldConstraints, meshManifoldBase, coloredMeshManifoldBytes );
+		}
+		if ( overflowMeshManifoldBytes > 0 && overflowMeshManifoldsShared == false )
+		{
+			memcpy( overflow->manifoldConstraints, meshManifoldBase + coloredMeshManifoldBytes,
+				overflowMeshManifoldBytes );
+		}
+		for ( int colorIndex = 0; colorIndex < stepContext->activeColorCount; ++colorIndex )
+		{
+			int count = stepContext->jointPrepareSpans[colorIndex + 1].start -
+				stepContext->jointPrepareSpans[colorIndex].start;
+			b3JointSim* joints = stepContext->jointPrepareSpans[colorIndex].joints;
+			int distanceIndex = distanceOffsets[colorIndex];
+			int parallelIndex = parallelOffsets[colorIndex];
+			for ( int i = 0; i < count; ++i )
+			{
+				if ( joints[i].type == b3_distanceJoint )
+				{
+					b3MetalUnpackDistanceJoint( joints + i, packedDistanceJoints + distanceIndex++ );
+				}
+				else if ( joints[i].type == b3_parallelJoint )
+				{
+					b3MetalUnpackParallelJoint( joints + i, packedParallelJoints + parallelIndex++ );
+				}
+			}
+		}
+		for ( int i = 0; i < stepContext->overflowJointConstraintCount; ++i )
+		{
+			b3JointSim* joint = overflow->jointSims.data + i;
+			b3MetalJointOverflow entry = packedOverflow[i];
+			if ( joint->type == b3_distanceJoint )
+			{
+				b3MetalUnpackDistanceJoint( joint, packedDistanceJoints + entry.index );
+			}
+			else
+			{
+				b3MetalUnpackParallelJoint( joint, packedParallelJoints + entry.index );
+			}
+		}
+		if ( stats != NULL && commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime )
+		{
+			stats->gpuMilliseconds = 1000.0 * ( commandBuffer.GPUEndTime - commandBuffer.GPUStartTime );
+		}
+		return true;
+	}
+}

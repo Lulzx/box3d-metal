@@ -137,6 +137,19 @@ typedef struct b3SolverStage
 	b3AtomicInt completionCount;
 } b3SolverStage;
 
+// Arithmetic portion of body finalization that can be produced by an optional
+// accelerator while the pointer-rich engine bookkeeping remains portable C.
+typedef struct b3MetalFinalizeResult
+{
+	b3Vec3 deltaPosition;
+	b3Quat rotation;
+	b3Vec3 originOffset;
+	float sleepVelocity;
+	float maxVelocity;
+	float maxDeltaPosition;
+	b3Matrix3 invInertiaWorld;
+} b3MetalFinalizeResult;
+
 // Constraint softness
 typedef struct b3Softness
 {
@@ -201,6 +214,11 @@ typedef struct b3StepContext
 	// shortcut to body sims from awake set
 	b3BodySim* sims;
 
+	// Optional arithmetic results produced by the Metal finalization kernel.
+	// Pointer lifetime is owned by the world's Metal context.
+	const b3MetalFinalizeResult* metalFinalizeResults;
+	bool metalStatesResident;
+
 	// array of all shape ids for shapes that have enlarged AABBs
 	int* enlargedShapes;
 	int enlargedShapeCount;
@@ -224,9 +242,15 @@ typedef struct b3StepContext
 	// Similar for mesh/overflow contact constraints
 	struct b3ManifoldConstraint* manifoldConstraints;
 	struct b3ContactConstraint* contactConstraints;
+	int manifoldConstraintCount;
+	int contactConstraintCount;
+	int overflowManifoldConstraintCount;
+	int overflowContactConstraintCount;
 	b3ContactPrepareSpan* contactPrepareSpans;
 	b3ContactPrepareSpan* overflowSpans;
 	b3JointPrepareSpan* jointPrepareSpans;
+	int jointConstraintCount;
+	int overflowJointConstraintCount;
 
 	int activeColorCount;
 	int workerCount;

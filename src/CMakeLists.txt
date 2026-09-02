@@ -101,8 +101,16 @@ set(BOX3D_INCLUDE_FILES
 	../include/box3d/constants.h
 	../include/box3d/id.h
 	../include/box3d/math_functions.h
+	../include/box3d/metal.h
 	../include/box3d/types.h
 )
+
+if(APPLE AND BOX3D_METAL)
+	list(APPEND BOX3D_SOURCE_FILES
+		metal_backend.h
+		metal_backend.m
+	)
+endif()
 
 # Hide internal functions
 # https://gcc.gnu.org/wiki/Visibility
@@ -201,6 +209,11 @@ elseif (MINGW)
 elseif (APPLE)
 	message(STATUS "Box3D on Apple")
 	target_compile_options(box3d PRIVATE -Wmissing-prototypes -Wall -Wextra -pedantic)
+	if(BOX3D_METAL)
+		message(STATUS "Box3D Metal compute backend ON")
+		target_compile_definitions(box3d PUBLIC BOX3D_METAL)
+		target_link_libraries(box3d PRIVATE "-framework Foundation" "-framework Metal")
+	endif()
 elseif (EMSCRIPTEN)
 	message(STATUS "Box3D on Emscripten")
 	# SSE2/wasm SIMD flags are set directory-wide in the top-level CMakeLists so the

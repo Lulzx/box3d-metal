@@ -30,6 +30,10 @@ set(BOX3D_TEST_FILES
     test_world.c
 )
 
+if(APPLE AND BOX3D_METAL)
+	list(APPEND BOX3D_TEST_FILES test_metal.c)
+endif()
+
 add_executable(test ${BOX3D_TEST_FILES})
 
 set_target_properties(test PROPERTIES

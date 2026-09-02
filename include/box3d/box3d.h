@@ -7,6 +7,9 @@
 #include "collision.h"
 #include "id.h"
 #include "math_functions.h"
+#if defined( BOX3D_METAL )
+#include "metal.h"
+#endif
 #include "types.h"
 
 #include <stdbool.h>

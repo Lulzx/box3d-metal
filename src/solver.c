@@ -19,6 +19,9 @@
 #include "sensor.h"
 #include "shape.h"
 #include "solver_set.h"
+#if defined( BOX3D_METAL )
+#include "metal_backend.h"
+#endif
 
 #include <limits.h>
 #include <stddef.h>
@@ -692,8 +695,6 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 
 		b3Vec3 v = state->linearVelocity;
 		b3Vec3 w = state->angularVelocity;
-		b3Vec3 localOmega = b3InvRotateVector( sim->transform.q, w );
-		b3Vec3 localDeltaRotation = b3InvRotateVector( sim->transform.q, state->deltaRotation.v );
 
 		if ( b3IsValidVec3( v ) == false || b3IsValidVec3( w ) == false )
 		{
@@ -704,28 +705,46 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 		B3_ASSERT( b3IsValidVec3( v ) );
 		B3_ASSERT( b3IsValidVec3( w ) );
 
-		sim->center = b3OffsetPos( sim->center, state->deltaPosition );
-		sim->transform.q = b3NormalizeQuat( b3MulQuat( state->deltaRotation, sim->transform.q ) );
+		float maxVelocity;
+		float maxDeltaPosition;
+		float sleepVelocity;
+		const b3MetalFinalizeResult* metalResult = stepContext->metalFinalizeResults != NULL ?
+			stepContext->metalFinalizeResults + simIndex : NULL;
+		if ( metalResult != NULL )
+		{
+			sim->center = b3OffsetPos( sim->center, metalResult->deltaPosition );
+			sim->transform.q = metalResult->rotation;
+			sim->transform.p = b3OffsetPos( sim->center, metalResult->originOffset );
+			maxVelocity = metalResult->maxVelocity;
+			maxDeltaPosition = metalResult->maxDeltaPosition;
+			sleepVelocity = metalResult->sleepVelocity;
+			sim->invInertiaWorld = metalResult->invInertiaWorld;
+		}
+		else
+		{
+			b3Vec3 localOmega = b3InvRotateVector( sim->transform.q, w );
+			b3Vec3 localDeltaRotation = b3InvRotateVector( sim->transform.q, state->deltaRotation.v );
+			sim->center = b3OffsetPos( sim->center, state->deltaPosition );
+			sim->transform.q = b3NormalizeQuat( b3MulQuat( state->deltaRotation, sim->transform.q ) );
 
-		// Use the velocity of the farthest point on the body to account for rotation.
-		b3Vec3 velocityArc = b3ModifiedCross( b3Abs( localOmega ), sim->maxExtent );
-		float maxVelocity = b3Length( v ) + b3Length( velocityArc );
+			// Use the velocity of the farthest point on the body to account for rotation.
+			b3Vec3 velocityArc = b3ModifiedCross( b3Abs( localOmega ), sim->maxExtent );
+			maxVelocity = b3Length( v ) + b3Length( velocityArc );
 
-		// Sleep needs to observe position correction as well as true velocity.
-		// q = [sin(theta/2) * v, cos(theta/2)]
-		// for small angles abs(theta) ~= 2 * length(sin(theta/2) * v)
-		b3Vec3 rotationArc = b3ModifiedCross( b3Abs( localDeltaRotation ), sim->maxExtent );
-		float maxDeltaPosition = b3Length( state->deltaPosition ) + 2.0f * b3Length( rotationArc );
-
-		// Position correction is not as important for sleep as true velocity.
-		float positionSleepFactor = 0.5f;
-		float sleepVelocity = b3MaxFloat( maxVelocity, positionSleepFactor * invTimeStep * maxDeltaPosition );
+			// Sleep needs to observe position correction as well as true velocity.
+			b3Vec3 rotationArc = b3ModifiedCross( b3Abs( localDeltaRotation ), sim->maxExtent );
+			maxDeltaPosition = b3Length( state->deltaPosition ) + 2.0f * b3Length( rotationArc );
+			sleepVelocity = b3MaxFloat( maxVelocity, 0.5f * invTimeStep * maxDeltaPosition );
+		}
 
 		// reset state deltas
 		state->deltaPosition = b3Vec3_zero;
 		state->deltaRotation = b3Quat_identity;
 
-		sim->transform.p = b3OffsetPos( sim->center, b3Neg( b3RotateVector( sim->transform.q, sim->localCenter ) ) );
+		if ( metalResult == NULL )
+		{
+			sim->transform.p = b3OffsetPos( sim->center, b3Neg( b3RotateVector( sim->transform.q, sim->localCenter ) ) );
+		}
 
 		// cache miss here, however I need the shape list below
 		b3Body* body = bodies + sim->bodyId;
@@ -790,9 +809,12 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 			body->sleepTime += timeStep;
 		}
 
-		// Update world space inverse inertia tensor.
-		b3Matrix3 rotationMatrix = b3MakeMatrixFromQuat( sim->transform.q );
-		sim->invInertiaWorld = b3MulMM( b3MulMM( rotationMatrix, sim->invInertiaLocal ), b3Transpose( rotationMatrix ) );
+		if ( metalResult == NULL )
+		{
+			// Update world space inverse inertia tensor.
+			b3Matrix3 rotationMatrix = b3MakeMatrixFromQuat( sim->transform.q );
+			sim->invInertiaWorld = b3MulMM( b3MulMM( rotationMatrix, sim->invInertiaLocal ), b3Transpose( rotationMatrix ) );
+		}
 
 		// Any single body in an island can keep it awake
 		b3Island* island = b3Array_Get( world->islands, body->islandId );
@@ -1148,6 +1170,199 @@ static void b3ExecuteMainStage( b3SolverStage* stage, b3StepContext* context, ui
 	}
 }
 
+#if defined( BOX3D_METAL )
+static void b3AdvanceMetalStageSync( b3SolverStage* stage, int syncIndex )
+{
+	for ( int i = 0; i < stage->blockCount; ++i )
+	{
+		b3AtomicStoreInt( &stage->blocks[i].syncIndex, syncIndex );
+	}
+}
+
+// Run a whole-array Metal position dispatch. On success, advance the body
+// blocks' monotonic sync index exactly as the CPU stage would have. Workers are
+// parked between published stages here, and the previous stage completion
+// barrier proves none still owns a body block.
+static bool b3ExecuteMetalPositionStage( b3SolverStage* stage, b3StepContext* context, int syncIndex )
+{
+	b3World* world = context->world;
+	int bodyCount = world->solverSets.data[b3_awakeSet].bodyStates.count;
+	if ( world->metalContext == NULL || bodyCount < world->metalMinimumBodyCount )
+	{
+		if ( world->metalContext != NULL )
+		{
+			world->metalPositionFallbackCount += 1;
+		}
+		return false;
+	}
+
+	b3MetalDispatchStats stats = { 0 };
+	float maxAngularSpeed = B3_MAX_ROTATION * context->inv_dt;
+	bool success = b3MetalIntegratePositions( world->metalContext, context->states, bodyCount, context->h,
+											  context->maxLinearVelocity, maxAngularSpeed, &stats );
+	if ( success == false )
+	{
+		world->metalPositionFallbackCount += 1;
+		return false;
+	}
+
+	b3AdvanceMetalStageSync( stage, syncIndex );
+	world->metalPositionDispatchCount += 1;
+	world->metalLastPositionGpuMilliseconds = stats.gpuMilliseconds;
+	return true;
+}
+
+// Fuse velocity and position integration when no constraint stage can modify
+// body velocities between them. This is the first path that removes a solver
+// stage boundary instead of merely replacing CPU arithmetic with a dispatch.
+static bool b3ExecuteMetalUnconstrainedSubsteps( b3StepContext* context, int subStepCount )
+{
+	b3World* world = context->world;
+	int bodyCount = world->solverSets.data[b3_awakeSet].bodyStates.count;
+	b3GraphColor* overflow = context->graph->colors + B3_OVERFLOW_INDEX;
+	bool hasConstraints = context->activeColorCount > 0 || overflow->jointSims.count > 0 || overflow->convexContacts.count > 0 ||
+						  overflow->contacts.count > 0;
+	if ( world->metalContext == NULL || hasConstraints || bodyCount < world->metalMinimumBodyCount )
+	{
+		if ( world->metalContext != NULL )
+		{
+			world->metalUnconstrainedFallbackCount += (uint64_t)subStepCount;
+		}
+		return false;
+	}
+
+	b3MetalDispatchStats stats = { 0 };
+	float maxAngularSpeed = B3_MAX_ROTATION * context->inv_dt;
+	const b3MetalFinalizeResult** finalizeResults =
+		world->metalFinalizationEnabled ? &context->metalFinalizeResults : NULL;
+	bool success = b3MetalIntegrateUnconstrainedSubsteps( world->metalContext, context->states, context->sims, bodyCount,
+		subStepCount, context->h, world->gravity, context->maxLinearVelocity, maxAngularSpeed, context->inv_dt,
+		finalizeResults, &stats );
+	if ( success == false )
+	{
+		world->metalUnconstrainedFallbackCount += (uint64_t)subStepCount;
+		return false;
+	}
+
+	world->metalUnconstrainedDispatchCount += (uint64_t)subStepCount;
+	world->metalLastUnconstrainedGpuMilliseconds = stats.gpuMilliseconds;
+	context->metalStatesResident = true;
+	world->metalFinalizationDispatchCount += context->metalFinalizeResults != NULL ? 1 : 0;
+	return true;
+}
+
+static bool b3MetalSupportsJoint( const b3JointSim* joint )
+{
+	// Reaction-threshold events are still evaluated by the CPU joint solver.
+	bool supportedType = joint->type == b3_distanceJoint || joint->type == b3_parallelJoint;
+	return supportedType && joint->forceThreshold == FLT_MAX && joint->torqueThreshold == FLT_MAX;
+}
+
+// The GPU path admits colored convex/mesh contacts, distance/parallel joints,
+// and serial overflow constraints. Other joint types retain the CPU path.
+static bool b3ExecuteMetalConstraintSubsteps( b3StepContext* context )
+{
+	b3World* world = context->world;
+	int bodyCount = world->solverSets.data[b3_awakeSet].bodyStates.count;
+	if ( world->metalContext == NULL || bodyCount < world->metalMinimumBodyCount ||
+		( context->wideContactCount == 0 && context->contactConstraintCount == 0 &&
+		  context->overflowContactConstraintCount == 0 && context->jointConstraintCount == 0 &&
+		  context->overflowJointConstraintCount == 0 ) )
+	{
+		return false;
+	}
+
+	b3GraphColor* overflow = context->graph->colors + B3_OVERFLOW_INDEX;
+	bool hasContacts = context->wideContactCount > 0 || context->contactConstraintCount > 0 ||
+		context->overflowContactConstraintCount > 0;
+	bool hasJoints = context->jointConstraintCount > 0 || context->overflowJointConstraintCount > 0;
+	if ( overflow->convexContacts.count != 0 )
+	{
+		if ( hasContacts ) world->metalContactFallbackCount += (uint64_t)context->subStepCount;
+		return false;
+	}
+	for ( int i = 0; i < overflow->jointSims.count; ++i )
+	{
+		if ( b3MetalSupportsJoint( overflow->jointSims.data + i ) == false )
+		{
+			world->metalJointFallbackCount += (uint64_t)context->subStepCount;
+			if ( hasContacts ) world->metalContactFallbackCount += (uint64_t)context->subStepCount;
+			return false;
+		}
+	}
+	for ( int colorIndex = 0; colorIndex < B3_GRAPH_COLOR_COUNT - 1; ++colorIndex )
+	{
+		b3GraphColor* color = context->graph->colors + colorIndex;
+		for ( int i = 0; i < color->jointSims.count; ++i )
+		{
+			if ( b3MetalSupportsJoint( color->jointSims.data + i ) == false )
+			{
+				world->metalJointFallbackCount += (uint64_t)context->subStepCount;
+				if ( hasContacts ) world->metalContactFallbackCount += (uint64_t)context->subStepCount;
+				return false;
+			}
+		}
+	}
+
+	b3MetalDispatchStats stats = { 0 };
+	if ( b3MetalSolveContactSubsteps( world->metalContext, context, ITERATIONS, RELAX_ITERATIONS,
+		B3_RESTITUTION_ITERATIONS, &stats ) == false )
+	{
+		if ( hasContacts ) world->metalContactFallbackCount += (uint64_t)context->subStepCount;
+		if ( hasJoints ) world->metalJointFallbackCount += (uint64_t)context->subStepCount;
+		return false;
+	}
+	if ( hasContacts )
+	{
+		world->metalContactDispatchCount += (uint64_t)context->subStepCount;
+		world->metalLastContactGpuMilliseconds = stats.gpuMilliseconds;
+	}
+	if ( hasJoints )
+	{
+		world->metalJointDispatchCount += (uint64_t)context->subStepCount;
+		world->metalLastJointGpuMilliseconds = stats.gpuMilliseconds;
+	}
+	context->metalStatesResident = true;
+	world->metalFinalizationDispatchCount += context->metalFinalizeResults != NULL ? 1 : 0;
+	return true;
+}
+
+static void b3ExecuteMetalFinalization( b3StepContext* context, int bodyCount )
+{
+	b3World* world = context->world;
+	if ( world->metalFinalizationEnabled == false )
+	{
+		context->metalFinalizeResults = NULL;
+		return;
+	}
+	if ( context->metalFinalizeResults != NULL )
+	{
+		return;
+	}
+	if ( world->metalContext == NULL || bodyCount < world->metalMinimumBodyCount )
+	{
+		if ( world->metalContext != NULL )
+		{
+			world->metalFinalizationFallbackCount += 1;
+		}
+		return;
+	}
+
+	b3MetalDispatchStats stats = { 0 };
+	const b3MetalFinalizeResult* results = NULL;
+	if ( b3MetalFinalizeBodies( world->metalContext, context->states, context->sims, bodyCount, context->inv_dt,
+		context->metalStatesResident, &results, &stats ) == false )
+	{
+		world->metalFinalizationFallbackCount += 1;
+		return;
+	}
+
+	context->metalFinalizeResults = results;
+	world->metalFinalizationDispatchCount += 1;
+	world->metalLastFinalizationGpuMilliseconds = stats.gpuMilliseconds;
+}
+#endif
+
 // Parallel solver task
 static void b3SolverTask( void* taskContext )
 {
@@ -1231,6 +1446,15 @@ static void b3SolverTask( void* taskContext )
 
 		int graphSyncIndex = 1;
 		int subStepCount = context->subStepCount;
+		bool integratedAllUnconstrainedOnMetal = false;
+		bool solvedAllConstraintsOnMetal = false;
+#if defined( BOX3D_METAL )
+		solvedAllConstraintsOnMetal = b3ExecuteMetalConstraintSubsteps( context );
+		if ( solvedAllConstraintsOnMetal == false )
+		{
+			integratedAllUnconstrainedOnMetal = b3ExecuteMetalUnconstrainedSubsteps( context, subStepCount );
+		}
+#endif
 		for ( int subStepIndex = 0; subStepIndex < subStepCount; ++subStepIndex )
 		{
 			// stageIndex restarted each iteration
@@ -1240,21 +1464,42 @@ static void b3SolverTask( void* taskContext )
 			// Integrate velocities
 			syncBits = ( bodySyncIndex << 16 ) | iterationStageIndex;
 			B3_ASSERT( stages[iterationStageIndex].type == b3_stageIntegrateVelocities );
-			b3ExecuteMainStage( stages + iterationStageIndex, context, syncBits );
+			if ( integratedAllUnconstrainedOnMetal || solvedAllConstraintsOnMetal )
+			{
+#if defined( BOX3D_METAL )
+				b3AdvanceMetalStageSync( stages + iterationStageIndex, bodySyncIndex );
+#endif
+			}
+			else
+			{
+				b3ExecuteMainStage( stages + iterationStageIndex, context, syncBits );
+			}
 			iterationStageIndex += 1;
 			bodySyncIndex += 1;
 
 			profile->integrateVelocities += b3GetMillisecondsAndReset( &ticks );
 
 			// Warm start constraints
-			b3WarmStartJoints_Overflow( context );
-			b3WarmStartContacts_Overflow( context );
+			if ( solvedAllConstraintsOnMetal == false )
+			{
+				b3WarmStartJoints_Overflow( context );
+				b3WarmStartContacts_Overflow( context );
+			}
 
 			for ( int colorIndex = 0; colorIndex < activeColorCount; ++colorIndex )
 			{
 				syncBits = ( graphSyncIndex << 16 ) | iterationStageIndex;
 				B3_ASSERT( stages[iterationStageIndex].type == b3_stageWarmStart );
-				b3ExecuteMainStage( stages + iterationStageIndex, context, syncBits );
+				if ( solvedAllConstraintsOnMetal )
+				{
+#if defined( BOX3D_METAL )
+					b3AdvanceMetalStageSync( stages + iterationStageIndex, graphSyncIndex );
+#endif
+				}
+				else
+				{
+					b3ExecuteMainStage( stages + iterationStageIndex, context, syncBits );
+				}
 				iterationStageIndex += 1;
 			}
 			graphSyncIndex += 1;
@@ -1266,14 +1511,26 @@ static void b3SolverTask( void* taskContext )
 			for ( int j = 0; j < ITERATIONS; ++j )
 			{
 				// Overflow constraints have lower priority. Typically these are dynamic-vs-dynamic.
-				b3SolveJoints_Overflow( context, useBias );
-				b3SolveContacts_Overflow( context, useBias );
+				if ( solvedAllConstraintsOnMetal == false )
+				{
+					b3SolveJoints_Overflow( context, useBias );
+					b3SolveContacts_Overflow( context, useBias );
+				}
 
 				for ( int colorIndex = 0; colorIndex < activeColorCount; ++colorIndex )
 				{
 					syncBits = ( graphSyncIndex << 16 ) | iterationStageIndex;
 					B3_ASSERT( stages[iterationStageIndex].type == b3_stageSolve );
-					b3ExecuteMainStage( stages + iterationStageIndex, context, syncBits );
+					if ( solvedAllConstraintsOnMetal )
+					{
+#if defined( BOX3D_METAL )
+						b3AdvanceMetalStageSync( stages + iterationStageIndex, graphSyncIndex );
+#endif
+					}
+					else
+					{
+						b3ExecuteMainStage( stages + iterationStageIndex, context, syncBits );
+					}
 					iterationStageIndex += 1;
 				}
 				graphSyncIndex += 1;
@@ -1284,7 +1541,22 @@ static void b3SolverTask( void* taskContext )
 			// Integrate positions
 			B3_ASSERT( stages[iterationStageIndex].type == b3_stageIntegratePositions );
 			syncBits = ( bodySyncIndex << 16 ) | iterationStageIndex;
-			b3ExecuteMainStage( stages + iterationStageIndex, context, syncBits );
+			bool integratedOnMetal = false;
+#if defined( BOX3D_METAL )
+			if ( integratedAllUnconstrainedOnMetal || solvedAllConstraintsOnMetal )
+			{
+				b3AdvanceMetalStageSync( stages + iterationStageIndex, bodySyncIndex );
+				integratedOnMetal = true;
+			}
+			else
+			{
+				integratedOnMetal = b3ExecuteMetalPositionStage( stages + iterationStageIndex, context, bodySyncIndex );
+			}
+#endif
+			if ( integratedOnMetal == false )
+			{
+				b3ExecuteMainStage( stages + iterationStageIndex, context, syncBits );
+			}
 			iterationStageIndex += 1;
 			bodySyncIndex += 1;
 
@@ -1294,14 +1566,26 @@ static void b3SolverTask( void* taskContext )
 			useBias = false;
 			for ( int j = 0; j < RELAX_ITERATIONS; ++j )
 			{
-				b3SolveJoints_Overflow( context, useBias );
-				b3SolveContacts_Overflow( context, useBias );
+				if ( solvedAllConstraintsOnMetal == false )
+				{
+					b3SolveJoints_Overflow( context, useBias );
+					b3SolveContacts_Overflow( context, useBias );
+				}
 
 				for ( int colorIndex = 0; colorIndex < activeColorCount; ++colorIndex )
 				{
 					syncBits = ( graphSyncIndex << 16 ) | iterationStageIndex;
 					B3_ASSERT( stages[iterationStageIndex].type == b3_stageRelax );
-					b3ExecuteMainStage( stages + iterationStageIndex, context, syncBits );
+					if ( solvedAllConstraintsOnMetal )
+					{
+#if defined( BOX3D_METAL )
+						b3AdvanceMetalStageSync( stages + iterationStageIndex, graphSyncIndex );
+#endif
+					}
+					else
+					{
+						b3ExecuteMainStage( stages + iterationStageIndex, context, syncBits );
+					}
 					iterationStageIndex += 1;
 				}
 				graphSyncIndex += 1;
@@ -1317,14 +1601,26 @@ static void b3SolverTask( void* taskContext )
 		// Restitution
 		for ( int iteration = 0; iteration < B3_RESTITUTION_ITERATIONS; ++iteration )
 		{
-			b3ApplyRestitution_Overflow( context );
+			if ( solvedAllConstraintsOnMetal == false )
+			{
+				b3ApplyRestitution_Overflow( context );
+			}
 
 			int iterStageIndex = stageIndex;
 			for ( int colorIndex = 0; colorIndex < activeColorCount; ++colorIndex )
 			{
 				syncBits = ( graphSyncIndex << 16 ) | iterStageIndex;
 				B3_ASSERT( stages[iterStageIndex].type == b3_stageRestitution );
-				b3ExecuteMainStage( stages + iterStageIndex, context, syncBits );
+				if ( solvedAllConstraintsOnMetal )
+				{
+#if defined( BOX3D_METAL )
+					b3AdvanceMetalStageSync( stages + iterStageIndex, graphSyncIndex );
+#endif
+				}
+				else
+				{
+					b3ExecuteMainStage( stages + iterStageIndex, context, syncBits );
+				}
 				iterStageIndex += 1;
 			}
 			graphSyncIndex += 1;
@@ -1462,6 +1758,8 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 
 		stepContext->sims = awakeSet->bodySims.data;
 		stepContext->states = awakeSet->bodyStates.data;
+		stepContext->metalFinalizeResults = NULL;
+		stepContext->metalStatesResident = false;
 
 		// count contacts, joints, and colors
 		int activeColorCount = 0;
@@ -1557,13 +1855,20 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		b3BlockDim jointPrepareDim = b3ComputeBlockCount( jointCount, minJointsPerBlock, maxBlockCount );
 
 		int wideContactByteCount = b3GetWideContactConstraintByteCount();
-		b3ContactConstraintWide* wideConstraints =
-			(b3ContactConstraintWide*)b3StackAlloc( &world->stack, wideContactCount * wideContactByteCount, "wide contacts" );
-		b3ContactConstraint* contactConstraints =
-			(b3ContactConstraint*)b3StackAlloc( &world->stack, contactCount * sizeof( b3ContactConstraint ), "contacts" );
-		b3ManifoldConstraint* manifoldConstraints = (b3ManifoldConstraint*)b3StackAlloc(
-			&world->stack, manifoldCount * sizeof( b3ManifoldConstraint ), "manifold constraints" );
-
+		bool wideConstraintsOnMetal = false;
+		b3ContactConstraintWide* wideConstraints = NULL;
+#if defined( BOX3D_METAL )
+		if ( world->metalContext != NULL && wideContactCount > 0 )
+		{
+			wideConstraints = b3MetalGetContactConstraintStorage( world->metalContext, wideContactCount );
+			wideConstraintsOnMetal = wideConstraints != NULL;
+		}
+#endif
+		if ( wideConstraintsOnMetal == false )
+		{
+			wideConstraints =
+				(b3ContactConstraintWide*)b3StackAlloc( &world->stack, wideContactCount * wideContactByteCount, "wide contacts" );
+		}
 		b3GraphColor* overflow = colors + B3_OVERFLOW_INDEX;
 		int overflowCount = overflow->contacts.count;
 		int overflowManifoldCount = 0;
@@ -1573,10 +1878,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 			overflowManifoldCount += overflow->contacts.data[i].manifoldCount;
 		}
 
-		overflow->contactConstraints = (b3ContactConstraint*)b3StackAlloc(
-			&world->stack, overflowCount * sizeof( b3ContactConstraint ), "overflow contacts" );
-		overflow->manifoldConstraints = (b3ManifoldConstraint*)b3StackAlloc(
-			&world->stack, overflowManifoldCount * sizeof( b3ManifoldConstraint ), "overflow manifolds" );
+		// Colored mesh contacts and graph-overflow contacts use adjacent slices of
+		// the same shared buffers. This lets the GPU preserve the upstream order
+		// without an upload or a second allocation.
+		bool meshConstraintsOnMetal = false;
+		b3ContactConstraint* contactConstraints = NULL;
+		b3ManifoldConstraint* manifoldConstraints = NULL;
+#if defined( BOX3D_METAL )
+		int totalScalarContactCount = contactCount + overflowCount;
+		int totalScalarManifoldCount = manifoldCount + overflowManifoldCount;
+		if ( world->metalContext != NULL && totalScalarContactCount > 0 && totalScalarManifoldCount > 0 )
+		{
+			contactConstraints = b3MetalGetMeshContactStorage( world->metalContext, totalScalarContactCount );
+			manifoldConstraints = b3MetalGetMeshManifoldStorage( world->metalContext, totalScalarManifoldCount );
+			meshConstraintsOnMetal = contactConstraints != NULL && manifoldConstraints != NULL;
+		}
+#endif
+		if ( meshConstraintsOnMetal )
+		{
+			overflow->contactConstraints = contactConstraints + contactCount;
+			overflow->manifoldConstraints = manifoldConstraints + manifoldCount;
+		}
+		else
+		{
+			contactConstraints =
+				(b3ContactConstraint*)b3StackAlloc( &world->stack, contactCount * sizeof( b3ContactConstraint ), "contacts" );
+			manifoldConstraints = (b3ManifoldConstraint*)b3StackAlloc(
+				&world->stack, manifoldCount * sizeof( b3ManifoldConstraint ), "manifold constraints" );
+			overflow->contactConstraints = (b3ContactConstraint*)b3StackAlloc(
+				&world->stack, overflowCount * sizeof( b3ContactConstraint ), "overflow contacts" );
+			overflow->manifoldConstraints = (b3ManifoldConstraint*)b3StackAlloc(
+				&world->stack, overflowManifoldCount * sizeof( b3ManifoldConstraint ), "overflow manifolds" );
+		}
 
 		// Build the span table for the flat prepare/store parallel-for while I slice the
 		// wide constraint buffer across colors. One entry per active color plus a sentinel
@@ -1798,9 +2131,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		stepContext->wideContactCount = wideContactCount;
 		stepContext->manifoldConstraints = manifoldConstraints;
 		stepContext->contactConstraints = contactConstraints;
+		stepContext->manifoldConstraintCount = manifoldCount;
+		stepContext->contactConstraintCount = contactCount;
+		stepContext->overflowManifoldConstraintCount = overflowManifoldCount;
+		stepContext->overflowContactConstraintCount = overflowCount;
 		stepContext->contactPrepareSpans = contactPrepareSpans;
 		stepContext->overflowSpans = overflowSpans;
 		stepContext->jointPrepareSpans = jointPrepareSpans;
+		stepContext->jointConstraintCount = jointCount;
+		stepContext->overflowJointConstraintCount = overflow->jointSims.count;
 		b3AtomicStoreU32( &stepContext->atomicSyncBits, 0 );
 		b3AtomicStoreInt( &stepContext->mainClaimed, 0 );
 
@@ -1884,6 +2223,9 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		}
 
 		// Finalize bodies. Must happen after the constraint solver and after island splitting.
+#if defined( BOX3D_METAL )
+		b3ExecuteMetalFinalization( stepContext, awakeBodyCount );
+#endif
 		b3ParallelFor( world, &b3FinalizeBodiesTask, awakeBodyCount, 16, stepContext, "ccd" );
 
 		// Free in reverse order
@@ -1893,11 +2235,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		b3StackFree( &world->stack, convexBlocks );
 		b3StackFree( &world->stack, bodyBlocks );
 		b3StackFree( &world->stack, stages );
-		b3StackFree( &world->stack, overflow->manifoldConstraints );
-		b3StackFree( &world->stack, overflow->contactConstraints );
-		b3StackFree( &world->stack, manifoldConstraints );
-		b3StackFree( &world->stack, contactConstraints );
-		b3StackFree( &world->stack, wideConstraints );
+		if ( meshConstraintsOnMetal == false )
+		{
+			b3StackFree( &world->stack, overflow->manifoldConstraints );
+			b3StackFree( &world->stack, overflow->contactConstraints );
+			b3StackFree( &world->stack, manifoldConstraints );
+			b3StackFree( &world->stack, contactConstraints );
+		}
+		if ( wideConstraintsOnMetal == false )
+		{
+			b3StackFree( &world->stack, wideConstraints );
+		}
 
 		world->profile.transforms = b3GetMilliseconds( transformTicks );
 		b3TracyCZoneEnd( update_transforms );

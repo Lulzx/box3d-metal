@@ -22,6 +22,9 @@
 #include "shape.h"
 #include "solver.h"
 #include "solver_set.h"
+#if defined( BOX3D_METAL )
+#include "metal_backend.h"
+#endif
 
 #include "box3d/box3d.h"
 #include "box3d/constants.h"
@@ -411,6 +414,12 @@ void b3DestroyWorld( b3WorldId worldId )
 
 	world->locked = true;
 
+#if defined( BOX3D_METAL )
+	b3MetalDestroyContext( world->metalContext );
+	world->metalContext = NULL;
+	world->metalFinalizationEnabled = false;
+#endif
+
 	// Detach any recording before teardown. The user owns and frees the recording buffer.
 	b3StopRecordingInternal( world );
 
@@ -537,6 +546,88 @@ int b3GetWorldCount( void )
 {
 	return b3AtomicLoadInt( &b3_worldCount );
 }
+
+#if defined( BOX3D_METAL )
+bool b3World_EnableMetal( b3WorldId worldId, int minimumBodyCount )
+{
+	b3World* world = b3GetUnlockedWorldFromId( worldId );
+	if ( world == NULL )
+	{
+		return false;
+	}
+
+	if ( world->metalContext == NULL )
+	{
+		char error[1024] = { 0 };
+		if ( b3MetalCreateContext( &world->metalContext, error, sizeof( error ) ) == false )
+		{
+			b3Log( "Box3D Metal initialization failed: %s\n", error );
+			return false;
+		}
+	}
+
+	world->metalMinimumBodyCount = b3MaxInt( 1, minimumBodyCount );
+	return true;
+}
+
+bool b3World_SetMetalFinalization( b3WorldId worldId, bool enabled )
+{
+	b3World* world = b3GetWorldFromId( worldId );
+	if ( world == NULL || world->locked || ( enabled && world->metalContext == NULL ) )
+	{
+		return false;
+	}
+
+	world->metalFinalizationEnabled = enabled;
+	return true;
+}
+
+void b3World_DisableMetal( b3WorldId worldId )
+{
+	b3World* world = b3GetUnlockedWorldFromId( worldId );
+	if ( world == NULL )
+	{
+		return;
+	}
+
+	b3MetalDestroyContext( world->metalContext );
+	world->metalContext = NULL;
+}
+
+b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
+{
+	b3MetalProfile profile = { 0 };
+	b3World* world = b3GetWorldFromId( worldId );
+	if ( world == NULL )
+	{
+		return profile;
+	}
+
+	profile.enabled = world->metalContext != NULL;
+	profile.finalizationEnabled = world->metalFinalizationEnabled;
+	profile.minimumBodyCount = world->metalMinimumBodyCount;
+	profile.positionDispatchCount = world->metalPositionDispatchCount;
+	profile.positionFallbackCount = world->metalPositionFallbackCount;
+	profile.unconstrainedDispatchCount = world->metalUnconstrainedDispatchCount;
+	profile.unconstrainedFallbackCount = world->metalUnconstrainedFallbackCount;
+	profile.contactDispatchCount = world->metalContactDispatchCount;
+	profile.contactFallbackCount = world->metalContactFallbackCount;
+	profile.jointDispatchCount = world->metalJointDispatchCount;
+	profile.jointFallbackCount = world->metalJointFallbackCount;
+	profile.finalizationDispatchCount = world->metalFinalizationDispatchCount;
+	profile.finalizationFallbackCount = world->metalFinalizationFallbackCount;
+	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
+	profile.lastUnconstrainedGpuMilliseconds = world->metalLastUnconstrainedGpuMilliseconds;
+	profile.lastContactGpuMilliseconds = world->metalLastContactGpuMilliseconds;
+	profile.lastJointGpuMilliseconds = world->metalLastJointGpuMilliseconds;
+	profile.lastFinalizationGpuMilliseconds = world->metalLastFinalizationGpuMilliseconds;
+	if ( world->metalContext != NULL )
+	{
+		b3MetalGetDeviceName( world->metalContext, profile.deviceName, sizeof( profile.deviceName ) );
+	}
+	return profile;
+}
+#endif
 
 int b3GetMaxWorldCount( void )
 {

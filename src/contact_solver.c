@@ -162,6 +162,14 @@ void b3PrepareContacts_Mesh( b3SolverBlock block, b3StepContext* context )
 			contactConstraint->friction = contact->friction;
 			contactConstraint->restitution = contact->restitution;
 			contactConstraint->rollingResistance = contact->rollingResistance;
+			// Colored and overflow scalar constraints share one Metal buffer. The CPU
+			// solver follows the native pointer below, while Metal indexes from the
+			// combined manifold-buffer base.
+			contactConstraint->manifoldStart = specs[localIndex].manifoldStart;
+			if ( block.blockType == b3_overflowBlock )
+			{
+				contactConstraint->manifoldStart += context->manifoldConstraintCount;
+			}
 
 			b3ManifoldConstraint* manifoldConstraints = manifoldBase + specs[localIndex].manifoldStart;
 			contactConstraint->constraints = manifoldConstraints;
@@ -786,37 +794,6 @@ void b3StoreImpulses_Mesh( b3SolverBlock block, b3StepContext* context, int work
 	taskContext->hasHitEvents = hasHitEvents;
 }
 
-// Wide vec2
-typedef struct b3Vec2W
-{
-	b3FloatW x, y;
-} b3Vec2W;
-
-// Wide vec3
-typedef struct b3Vec3W
-{
-	b3FloatW X, Y, Z;
-} b3Vec3W;
-
-// Wide quaternion
-typedef struct b3QuatW
-{
-	b3Vec3W V;
-	b3FloatW S;
-} b3QuatW;
-
-// Wide symmetric matrix2
-typedef struct b3SymMatrix2W
-{
-	b3FloatW cxx, cxy, cyy;
-} b3SymMatrix2W;
-
-// Wide symmetric matrix3
-typedef struct b3SymMatrix3W
-{
-	b3FloatW cxx, cxy, cxz, cyy, cyz, czz;
-} b3SymMatrix3W;
-
 // s * a
 static inline b3Vec3W b3MulSVW( b3FloatW s, b3Vec3W a )
 {
@@ -945,63 +922,6 @@ static inline b3Vec3W b3RotateVectorW( b3QuatW q, b3Vec3W a )
 // Uses fixed anchors for Jacobians for better behavior on rolling shapes (circles & capsules)
 // http://mmacklin.com/smallsteps.pdf
 // https://box2d.org/files/ErinCatto_SoftConstraints_GDC2011.pdf
-
-typedef struct b3ContactConstraintPointWide
-{
-	b3Vec3W anchorAs, anchorBs;
-	b3FloatW baseSeparations;
-	b3FloatW normalImpulses;
-	b3FloatW totalNormalImpulses;
-	b3FloatW normalMasses;
-	b3FloatW leverArms;
-	b3FloatW relativeVelocities;
-} b3ContactConstraintPointWide;
-
-// Solves four points
-typedef struct b3ContactConstraintWide
-{
-	// These are base 1
-	int indexA[B3_SIMD_WIDTH];
-	int indexB[B3_SIMD_WIDTH];
-
-	int pointCounts[B3_SIMD_WIDTH];
-
-	b3FloatW invMassA, invMassB;
-	b3SymMatrix3W invIA, invIB;
-	b3Vec3W normal;
-
-	// todo test computing the tangents on the fly, at least tangent2
-	b3Vec3W tangent1;
-	b3Vec3W tangent2;
-
-	// Friction centers
-	b3Vec3W centerA, centerB;
-	b3FloatW twistMass;
-	b3FloatW twistImpulse;
-	b3SymMatrix2W tangentMass;
-	b3Vec2W frictionImpulse;
-	b3SymMatrix3W rollingMass;
-	b3Vec3W rollingImpulse;
-	b3FloatW friction;
-	b3FloatW rollingResistance;
-	b3FloatW tangentVelocity1;
-	b3FloatW tangentVelocity2;
-
-	b3FloatW biasRate;
-	b3FloatW massScale;
-	b3FloatW impulseScale;
-	b3FloatW restitution;
-
-	b3Manifold* manifolds[B3_SIMD_WIDTH];
-
-	// todo store the maximum point count per wide constraint
-	// to make this work I need zero initialization which is too
-	// expensive for all the wide constraint data. Instead
-	// the graph color should store the point count as a compact secondary
-	// transient array with zero initialization.
-	b3ContactConstraintPointWide points[B3_MAX_MANIFOLD_POINTS];
-
-} b3ContactConstraintWide;
 
 int b3GetWideContactConstraintByteCount( void )
 {

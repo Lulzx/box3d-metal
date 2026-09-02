@@ -4,7 +4,79 @@
 #pragma once
 
 #include "math_internal.h"
+#include "simd.h"
 #include "solver.h"
+
+typedef struct b3Vec2W
+{
+	b3FloatW x, y;
+} b3Vec2W;
+
+typedef struct b3Vec3W
+{
+	b3FloatW X, Y, Z;
+} b3Vec3W;
+
+typedef struct b3QuatW
+{
+	b3Vec3W V;
+	b3FloatW S;
+} b3QuatW;
+
+typedef struct b3SymMatrix2W
+{
+	b3FloatW cxx, cxy, cyy;
+} b3SymMatrix2W;
+
+typedef struct b3SymMatrix3W
+{
+	b3FloatW cxx, cxy, cxz, cyy, cyz, czz;
+} b3SymMatrix3W;
+
+typedef struct b3ContactConstraintPointWide
+{
+	b3Vec3W anchorAs, anchorBs;
+	b3FloatW baseSeparations;
+	b3FloatW normalImpulses;
+	b3FloatW totalNormalImpulses;
+	b3FloatW normalMasses;
+	b3FloatW leverArms;
+	b3FloatW relativeVelocities;
+} b3ContactConstraintPointWide;
+
+// Four convex contact constraints in structure-of-arrays form. This remains
+// internal, but its layout is shared with the Metal solver buffer and guarded
+// by ABI assertions in the backend.
+typedef struct b3ContactConstraintWide
+{
+	int indexA[B3_SIMD_WIDTH];
+	int indexB[B3_SIMD_WIDTH];
+	int pointCounts[B3_SIMD_WIDTH];
+
+	b3FloatW invMassA, invMassB;
+	b3SymMatrix3W invIA, invIB;
+	b3Vec3W normal;
+	b3Vec3W tangent1;
+	b3Vec3W tangent2;
+	b3Vec3W centerA, centerB;
+	b3FloatW twistMass;
+	b3FloatW twistImpulse;
+	b3SymMatrix2W tangentMass;
+	b3Vec2W frictionImpulse;
+	b3SymMatrix3W rollingMass;
+	b3Vec3W rollingImpulse;
+	b3FloatW friction;
+	b3FloatW rollingResistance;
+	b3FloatW tangentVelocity1;
+	b3FloatW tangentVelocity2;
+	b3FloatW biasRate;
+	b3FloatW massScale;
+	b3FloatW impulseScale;
+	b3FloatW restitution;
+
+	b3Manifold* manifolds[B3_SIMD_WIDTH];
+	b3ContactConstraintPointWide points[B3_MAX_MANIFOLD_POINTS];
+} b3ContactConstraintWide;
 
 typedef struct b3ManifoldConstraintPoint
 {
@@ -49,6 +121,7 @@ typedef struct b3ContactConstraint
 	float restitution;
 	float rollingResistance;
 	int manifoldCount;
+	int manifoldStart;
 } b3ContactConstraint;
 
 int b3GetWideContactConstraintByteCount( void );

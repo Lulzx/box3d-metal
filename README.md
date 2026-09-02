@@ -9,6 +9,58 @@ Box3D is a 3D physics engine for games.
 
 [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
 
+## Apple Silicon Metal backend
+
+This fork adds an opt-in Metal compute backend while retaining the upstream CPU
+implementation as its reference and fallback. It currently accelerates
+position integration in constrained worlds and fuses velocity plus position
+integration across every substep for worlds without active contacts or joints.
+It also has GPU-resident colored convex and mesh contact solvers covering normal
+impulses, friction, tangent velocity, twist friction, rolling resistance, and
+restitution. Contact and joint graph overflow is solved in deterministic scalar
+order inside dedicated Metal kernels. Distance joints (including springs,
+limits, and motors) and parallel joints share the GPU-resident command graph;
+other joint types fall back safely. An experimental, separately opt-in kernel
+also ports final rotation, origin offset, sleep-motion metrics, and world-inertia
+finalization. It remains off by default because current end-to-end measurements
+do not show a stable speedup.
+See [the architecture and compatibility contract](docs/metal_architecture.md)
+for the exact supported surface and current CPU-only stages.
+
+Build and validate on Apple Silicon:
+
+```sh
+cmake -S . -B build/metal-release -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DBOX3D_METAL=ON -DBOX3D_SAMPLES=OFF -DBOX3D_BENCHMARKS=ON
+cmake --build build/metal-release
+./build/metal-release/bin/test
+./build/metal-release/bin/metal_demo
+./build/metal-release/bin/metal_fused_benchmark
+./build/metal-release/bin/metal_world_benchmark
+./build/metal-release/bin/metal_contact_benchmark
+./build/metal-release/bin/metal_mesh_benchmark
+./build/metal-release/bin/metal_joint_benchmark
+./build/metal-release/bin/metal_parallel_joint_benchmark
+```
+
+Enable Metal per world after creation. The threshold is explicit because the
+profitable crossover depends on the Apple GPU, CPU worker count, and workload:
+
+```c
+b3WorldId world = b3CreateWorld(&worldDef);
+if (!b3World_EnableMetal(world, 32768)) {
+    /* Metal was unavailable; the world remains on the CPU path. */
+}
+
+/* Research path: correct and fused, but not yet a measured whole-world win. */
+b3World_SetMetalFinalization(world, true);
+```
+
+Inspect `b3World_GetMetalProfile(world)` to verify device selection, dispatches,
+fallbacks, and the most recent GPU time. Metal results are tolerance-equivalent,
+not bit-identical to the cross-platform CPU path. Build with
+`-DBOX3D_METAL=OFF` for the unchanged portable implementation.
+
 ## Features
 
 ### Collision

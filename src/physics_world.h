@@ -266,6 +266,27 @@ typedef struct b3World
 	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
 	struct b3Recording* recording;
 
+#if defined( BOX3D_METAL )
+	struct b3MetalContext* metalContext;
+	bool metalFinalizationEnabled;
+	uint64_t metalPositionDispatchCount;
+	uint64_t metalPositionFallbackCount;
+	uint64_t metalUnconstrainedDispatchCount;
+	uint64_t metalUnconstrainedFallbackCount;
+	uint64_t metalContactDispatchCount;
+	uint64_t metalContactFallbackCount;
+	uint64_t metalJointDispatchCount;
+	uint64_t metalJointFallbackCount;
+	uint64_t metalFinalizationDispatchCount;
+	uint64_t metalFinalizationFallbackCount;
+	double metalLastPositionGpuMilliseconds;
+	double metalLastUnconstrainedGpuMilliseconds;
+	double metalLastContactGpuMilliseconds;
+	double metalLastJointGpuMilliseconds;
+	double metalLastFinalizationGpuMilliseconds;
+	int metalMinimumBodyCount;
+#endif
+
 	// latest inverse sub-step
 	float inv_h;
 
@@ -347,4 +368,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
 	b3FreeElement( allocator, manifolds );
 	b3UnlockMutex( world->manifoldAllocatorMutex );
 }
-
