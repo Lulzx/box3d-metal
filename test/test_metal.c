@@ -69,6 +69,14 @@ static int VerifyResidentPairTraversal( b3World* world )
 		b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
 		int proxyId = B3_PROXY_ID( proxyKey );
 		b3AABB aabb = b3DynamicTree_GetAABB( broadPhase->trees + proxyType, proxyId );
+		ENSURE( records[moveIndex].queryShapeIndex ==
+			(int)b3DynamicTree_GetUserData( broadPhase->trees + proxyType, proxyId ) );
+		ENSURE( records[moveIndex].lowerX == aabb.lowerBound.x );
+		ENSURE( records[moveIndex].lowerY == aabb.lowerBound.y );
+		ENSURE( records[moveIndex].lowerZ == aabb.lowerBound.z );
+		ENSURE( records[moveIndex].upperX == aabb.upperBound.x );
+		ENSURE( records[moveIndex].upperY == aabb.upperBound.y );
+		ENSURE( records[moveIndex].upperZ == aabb.upperBound.z );
 		capture.count = 0;
 		if ( proxyType == b3_dynamicBody )
 		{
@@ -462,6 +470,14 @@ static int MetalPairTraversalTest( void )
 		b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
 		int proxyId = B3_PROXY_ID( proxyKey );
 		b3AABB fatAABB = b3DynamicTree_GetAABB( broadPhase->trees + proxyType, proxyId );
+		ENSURE( gpuRecords[moveIndex].queryShapeIndex ==
+			(int)b3DynamicTree_GetUserData( broadPhase->trees + proxyType, proxyId ) );
+		ENSURE( gpuRecords[moveIndex].lowerX == fatAABB.lowerBound.x );
+		ENSURE( gpuRecords[moveIndex].lowerY == fatAABB.lowerBound.y );
+		ENSURE( gpuRecords[moveIndex].lowerZ == fatAABB.lowerBound.z );
+		ENSURE( gpuRecords[moveIndex].upperX == fatAABB.upperBound.x );
+		ENSURE( gpuRecords[moveIndex].upperY == fatAABB.upperBound.y );
+		ENSURE( gpuRecords[moveIndex].upperZ == fatAABB.upperBound.z );
 		capture.count = 0;
 		if ( proxyType == b3_dynamicBody )
 		{

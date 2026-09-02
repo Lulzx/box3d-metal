@@ -21,7 +21,9 @@ typedef struct b3MetalPairQueryRecord
 	uint32_t count;
 	uint32_t offset;
 	uint32_t flags;
-	uint32_t padding;
+	int queryShapeIndex;
+	float lowerX, lowerY, lowerZ;
+	float upperX, upperY, upperZ;
 } b3MetalPairQueryRecord;
 
 typedef struct b3MetalPairCandidate

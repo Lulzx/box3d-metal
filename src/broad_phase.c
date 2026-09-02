@@ -430,15 +430,15 @@ static void b3FindPairsMetalTask( int startIndex, int endIndex, int workerIndex,
 		queryContext.moveResult->pairList = NULL;
 
 		int queryProxyKey = bp->moveArray.data[i];
-		b3BodyType queryType = B3_PROXY_TYPE( queryProxyKey );
-		int queryProxyId = B3_PROXY_ID( queryProxyKey );
-		const b3DynamicTree* queryTree = bp->trees + queryType;
 		queryContext.queryProxyKey = queryProxyKey;
-		queryContext.queryShapeIndex = (int)b3DynamicTree_GetUserData( queryTree, queryProxyId );
-		queryContext.aabb = b3DynamicTree_GetAABB( queryTree, queryProxyId );
+		const b3MetalPairQueryRecord* record = metalContext->records + i;
+		queryContext.queryShapeIndex = record->queryShapeIndex;
+		queryContext.aabb = (b3AABB){
+			{ record->lowerX, record->lowerY, record->lowerZ },
+			{ record->upperX, record->upperY, record->upperZ },
+		};
 		B3_VALIDATE( world->shapes.data[queryContext.queryShapeIndex].type != b3_compoundShape );
 
-		const b3MetalPairQueryRecord* record = metalContext->records + i;
 		for ( uint32_t candidateIndex = 0; candidateIndex < record->count; ++candidateIndex )
 		{
 			const b3MetalPairCandidate* candidate = metalContext->candidates + record->offset + candidateIndex;

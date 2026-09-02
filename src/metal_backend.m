@@ -172,7 +172,7 @@ _Static_assert( offsetof( b3TreeNode, categoryBits ) == 24, "Metal tree-node ABI
 _Static_assert( offsetof( b3TreeNode, children ) == 32, "Metal tree-node ABI changed" );
 _Static_assert( offsetof( b3TreeNode, parent ) == 40, "Metal tree-node ABI changed" );
 _Static_assert( offsetof( b3TreeNode, flags ) == 46, "Metal tree-node ABI changed" );
-_Static_assert( sizeof( b3MetalPairQueryRecord ) == 16, "Metal pair-record ABI changed" );
+_Static_assert( sizeof( b3MetalPairQueryRecord ) == 40, "Metal pair-record ABI changed" );
 _Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI changed" );
 _Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
 _Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
@@ -305,7 +305,7 @@ static const char* b3_metalSource =
 	"struct TreeNode {\n"
 	"  float lx,ly,lz,ux,uy,uz; ulong categoryBits; uint child1,child2; int parent; ushort height,flags;\n"
 	"};\n"
-	"struct PairQueryRecord { uint count,offset,flags,padding; };\n"
+	"struct PairQueryRecord { uint count,offset,flags; int queryShapeIndex; float lx,ly,lz,ux,uy,uz; };\n"
 	"struct PairCandidate { int proxyId,treeType,shapeIndex,padding; };\n"
 	"struct PairSummary { ulong totalCount; uint flags,writeFlags; };\n"
 	"struct PairBlock { uint sum,flags,offset,padding; };\n"
@@ -615,6 +615,8 @@ static const char* b3_metalSource =
 	"  uint queryOffset=queryType==0?p.offset0:(queryType==1?p.offset1:p.offset2);\n"
 	"  TreeNode q=nodes[queryOffset+uint(proxyId)];float3 lo=float3(q.lx,q.ly,q.lz),hi=float3(q.ux,q.uy,q.uz);\n"
 	"  PairQueryRecord record=records[i];uint count=0u,flags=0u;thread int stack[64];\n"
+	"  record.queryShapeIndex=int(q.child1);record.lx=q.lx;record.ly=q.ly;record.lz=q.lz;\n"
+	"  record.ux=q.ux;record.uy=q.uy;record.uz=q.uz;\n"
 	"  if(queryType==2) {\n"
 	"    query_pair_tree(nodes,p.root1,p.offset1,1,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
 	"    query_pair_tree(nodes,p.root0,p.offset0,0,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"

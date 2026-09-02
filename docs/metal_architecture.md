@@ -97,6 +97,12 @@ traverses leaves in upstream stack order. A deterministic 256-lane hierarchical
 scan computes stable per-move offsets: SIMD subgroups scan each block, a short
 serial kernel prefixes block totals, and a parallel add applies block offsets.
 A final traversal writes disjoint candidate ranges in the same command buffer.
+Each per-move record also carries the resident leaf's shape id and fat AABB, so
+the CPU filtering callback does not dereference the CPU dynamic tree for query
+metadata. When device leaf update and refit succeed, CPU proxy bookkeeping
+consumes enlarged flat results directly in their deterministic packed order;
+it skips the enlarged-body bit-set reduction and the second body/shape-list
+walk. The CPU tree is still enlarged for public queries and fallback safety.
 The first unexpectedly dense call may submit one write-only retry after growing
 the persistent candidate buffer; the steady path submits and waits once. CPU
 consumption then reuses the complete upstream callback for moved-proxy
@@ -121,7 +127,7 @@ paths, not yet the final performance architecture.
 | Distance joints, including spring, limit, and motor modes | GPU-resident across all substeps |
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
-| Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; CPU topology mutation, filtering, and contact creation |
+| Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
 | Narrow phase and manifolds | CPU |
 | Contact preparation and impulse storage | CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; resident bounds feed tree refit while CPU still applies flat bookkeeping results and retains CCD/topology |

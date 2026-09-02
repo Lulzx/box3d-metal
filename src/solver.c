@@ -2492,23 +2492,41 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 			b3ValidateNoEnlarged( &world->broadPhase );
 		}
 
-		// Gather bits for all sim bodies that have enlarged AABBs
-		b3BitSet* enlargedBodyBitSet = &world->taskContexts.data[0].enlargedSimBitSet;
-		for ( int i = 1; i < world->workerCount; ++i )
+		// Enlarge broad-phase proxies and build move array. A successful Metal tree refit has no
+		// fast bodies, and its flat shape results are packed in the same deterministic sim/shape
+		// order as the CPU body walk. Consume that order directly so the resident path does not
+		// merge body bit sets and traverse body shape lists a second time.
+#if defined( BOX3D_METAL )
+		if ( stepContext->metalTreeRefit )
 		{
-			b3InPlaceUnion( enlargedBodyBitSet, &world->taskContexts.data[i].enlargedSimBitSet );
+			b3BroadPhase* broadPhase = &world->broadPhase;
+			for ( int resultIndex = 0; resultIndex < stepContext->metalShapeResultCount; ++resultIndex )
+			{
+				const b3MetalShapeAABBResult* result = stepContext->metalShapeResults + resultIndex;
+				if ( result->enlarged != 0 )
+				{
+					b3Shape* shape = world->shapes.data + result->shapeId;
+					B3_ASSERT( shape->flags & b3_enlargedAABB );
+					b3BroadPhase_EnlargeProxy( broadPhase, shape->proxyKey, shape->fatAABB );
+					shape->flags &= ~b3_enlargedAABB;
+				}
+			}
 		}
-
-		// Enlarge broad-phase proxies and build move array
-		// Apply shape AABB changes to broad-phase. This also create the move array which must be
-		// in deterministic order. I'm tracking sim bodies because the number of shape ids can be huge.
-		// This has to happen before bullets are processed.
+		else
+#endif
 		{
+			// Gather bits for all sim bodies that have enlarged AABBs.
+			b3BitSet* enlargedBodyBitSet = &world->taskContexts.data[0].enlargedSimBitSet;
+			for ( int i = 1; i < world->workerCount; ++i )
+			{
+				b3InPlaceUnion( enlargedBodyBitSet, &world->taskContexts.data[i].enlargedSimBitSet );
+			}
+
+			// The fallback path tracks sim bodies because the number of shape ids can be huge.
+			// This must happen before bullets are processed.
 			b3BroadPhase* broadPhase = &world->broadPhase;
 			uint32_t wordCount = enlargedBodyBitSet->blockCount;
 			uint64_t* bits = enlargedBodyBitSet->bits;
-
-			// Fast array access is important here
 			b3Body* bodyArray = world->bodies.data;
 			b3BodySim* bodySimArray = awakeSet->bodySims.data;
 			b3Shape* shapeArray = world->shapes.data;
@@ -2520,24 +2538,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 				{
 					uint32_t ctz = b3CTZ64( word );
 					uint32_t bodySimIndex = 64 * k + ctz;
-
 					b3BodySim* bodySim = bodySimArray + bodySimIndex;
-
 					b3Body* body = bodyArray + bodySim->bodyId;
-
 					int shapeId = body->headShapeId;
 					if ( ( bodySim->flags & ( b3_isBullet | b3_isFast ) ) == ( b3_isBullet | b3_isFast ) )
 					{
-						// Fast bullet bodies don't have their final AABB yet
 						while ( shapeId != B3_NULL_INDEX )
 						{
 							b3Shape* shape = shapeArray + shapeId;
-
-							// Shape is fast. It's aabb will be enlarged in continuous collision.
-							// Update the move array here for determinism because bullets are processed
-							// below in non-deterministic order.
 							b3BufferMove( broadPhase, shape->proxyKey );
-
 							shapeId = shape->nextShapeId;
 						}
 					}
@@ -2546,21 +2555,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 						while ( shapeId != B3_NULL_INDEX )
 						{
 							b3Shape* shape = shapeArray + shapeId;
-
-							// The AABB may not have been enlarged, despite the body being flagged as enlarged.
-							// For example, a body with multiple shapes may have not have all shapes enlarged.
-							// A fast body may have been flagged as enlarged despite having no shapes enlarged.
 							if ( shape->flags & b3_enlargedAABB )
 							{
 								b3BroadPhase_EnlargeProxy( broadPhase, shape->proxyKey, shape->fatAABB );
 								shape->flags &= ~b3_enlargedAABB;
 							}
-
 							shapeId = shape->nextShapeId;
 						}
 					}
-
-					// Clear the smallest set bit
 					word = word & ( word - 1 );
 				}
 			}
