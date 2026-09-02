@@ -96,7 +96,12 @@ fallback.
 `shapeResultApplyCount` distinguishes compatibility-route full applies from
 the no-apply resident route, and `shapeBoundsSyncCount` reports how many shape
 records were explicitly materialized. This removes the shared full-result
-stream and traversal for the bounded route.
+stream and flat result traversal for the bounded route. Body finalization also
+skips each pointer-linked CPU shape list whenever Metal produced a complete
+awake-shape result set. Compatibility routes apply the flat result after body
+bookkeeping; private routes leave the CPU AABB mirror stale until a query or
+fallback explicitly synchronizes it. `finalizationShapeTraversalBypassCount`
+reports those phases. The contiguous CPU body bookkeeping walk remains.
 
 The 72-byte shape-input records are also persistent across revision-stable
 steps. The CPU checks the exact awake-body id sequence while it already walks

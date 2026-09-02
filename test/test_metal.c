@@ -2343,11 +2343,15 @@ static int MetalWorldIntegrationTest( void )
 		}
 	}
 
+	b3World* gpuWorldInternal = b3GetWorldFromId( gpuWorld );
+	b3Shape* firstGpuShape = b3Array_Get( gpuWorldInternal->shapes, gpuShapes[0].index1 - 1 );
+	b3AABB staleCpuAABB = firstGpuShape->aabb;
 	b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
-	b3World* gpuWorldInternal = b3GetWorldFromId( gpuWorld );
 	ENSURE( VerifyResidentPairTraversal( gpuWorldInternal ) == 0 );
 	ENSURE( gpuWorldInternal->metalShapeCpuBoundsStale );
+	firstGpuShape = b3Array_Get( gpuWorldInternal->shapes, gpuShapes[0].index1 - 1 );
+	ENSURE( memcmp( &firstGpuShape->aabb, &staleCpuAABB, sizeof( staleCpuAABB ) ) == 0 );
 	b3AABB firstBodyAABB = b3Body_ComputeAABB( gpuBodies[0] );
 	ENSURE( b3IsValidAABB( firstBodyAABB ) );
 
@@ -2392,11 +2396,13 @@ static int MetalWorldIntegrationTest( void )
 
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    integrated world device=%s fusedDispatches=%llu shapeDispatches=%llu compact=%d/%d finalizeBytes=%llu/%llu "
-			"fullApplies=%llu syncShapes=%llu maxPositionError=%.3g maxRotationError=%.3g maxAABBError=%.3g\n",
+			"shapeWalkBypasses=%llu fullApplies=%llu syncShapes=%llu maxPositionError=%.3g maxRotationError=%.3g "
+			"maxAABBError=%.3g\n",
 			profile.deviceName, (unsigned long long)profile.unconstrainedDispatchCount,
 			(unsigned long long)profile.shapeDispatchCount, profile.lastEnlargedShapeResultCount, profile.lastShapeResultCount,
 			(unsigned long long)profile.lastFinalizationReadbackBytes,
 			(unsigned long long)profile.finalizationReadbackBypassCount,
+			(unsigned long long)profile.finalizationShapeTraversalBypassCount,
 			(unsigned long long)profile.shapeResultApplyCount, (unsigned long long)profile.shapeBoundsSyncCount, maxPositionError,
 			maxRotationError, maxAABBError );
 	ENSURE( profile.enabled );
@@ -2406,6 +2412,7 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.finalizationDispatchCount == 1 );
 	ENSURE( profile.finalizationReadbackBypassCount == 1 );
 	ENSURE( profile.lastFinalizationReadbackBytes == 0 );
+	ENSURE( profile.finalizationShapeTraversalBypassCount == 1 );
 	ENSURE( profile.shapeDispatchCount == 1 );
 	ENSURE( profile.shapeFallbackCount == 0 );
 	ENSURE( profile.shapeCompactDispatchCount == 1 );
@@ -2634,10 +2641,11 @@ static int MetalConvexFrictionContactTest( void )
 
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    convex friction contacts dispatches=%llu treeUploads=%llu treeRefits=%llu finalizeBytes=%llu/%llu "
-			"gpu=%.3f ms transformError=%.3g velocityError=%.3g\n",
+			"shapeWalkBypasses=%llu gpu=%.3f ms transformError=%.3g velocityError=%.3g\n",
 			(unsigned long long)profile.contactDispatchCount, (unsigned long long)profile.pairTreeUploadCount,
 			(unsigned long long)profile.pairTreeRefitCount, (unsigned long long)profile.lastFinalizationReadbackBytes,
-			(unsigned long long)profile.finalizationReadbackBypassCount, profile.lastContactGpuMilliseconds,
+			(unsigned long long)profile.finalizationReadbackBypassCount,
+			(unsigned long long)profile.finalizationShapeTraversalBypassCount, profile.lastContactGpuMilliseconds,
 			maxTransformError, maxVelocityError );
 	ENSURE( profile.contactDispatchCount == 40 );
 	ENSURE( profile.pairDispatchCount >= 1 );
@@ -2645,6 +2653,7 @@ static int MetalConvexFrictionContactTest( void )
 	ENSURE( profile.finalizationDispatchCount == 10 );
 	ENSURE( profile.finalizationReadbackBypassCount == 10 );
 	ENSURE( profile.lastFinalizationReadbackBytes == 0 );
+	ENSURE( profile.finalizationShapeTraversalBypassCount == 10 );
 	ENSURE( profile.shapeDispatchCount == 10 );
 	ENSURE( profile.shapeFallbackCount == 0 );
 	ENSURE( profile.shapeInputPackCount == 1 );

@@ -845,9 +845,16 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 			}
 		}
 
-		// Update shapes AABBs. Non-fast shape results may be applied in a flat pass after body finalization.
+		// Update shapes AABBs. When Metal covered every non-fast awake shape, the
+		// private result and flat compatibility apply own this work; do not walk
+		// the pointer-linked CPU shape lists merely to discover there is nothing
+		// to do.
 		b3WorldTransform transform = sim->transform;
 		bool isFast = ( sim->flags & b3_isFast ) != 0;
+		if ( isFast == false && stepContext->metalShapeResultCount > 0 )
+		{
+			continue;
+		}
 		int shapeId = body->headShapeId;
 		while ( shapeId != B3_NULL_INDEX )
 		{
@@ -862,7 +869,7 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 				// Bit-set to keep the move array sorted
 				b3SetBit( enlargedSimBitSet, simIndex );
 			}
-			else if ( stepContext->metalShapeResults == NULL )
+			else
 			{
 				b3AABB aabb = b3ComputeFatShapeAABB( shape, transform, speculativeScalar );
 				shape->aabb = aabb;
@@ -2498,6 +2505,10 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		// Finalize bodies. Must happen after the constraint solver and after island splitting.
 #if defined( BOX3D_METAL )
 		b3ExecuteMetalFinalization( stepContext, awakeBodyCount );
+		if ( stepContext->metalShapeResultCount > 0 && world->enableContinuous == false )
+		{
+			world->metalFinalizationShapeTraversalBypassCount += 1;
+		}
 		b3ParallelFor( world, &b3FinalizeBodiesTask, awakeBodyCount, 16, stepContext, "ccd" );
 		if ( stepContext->metalShapeResultCount == 0 )
 		{

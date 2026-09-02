@@ -40,3 +40,8 @@ solver body states still return to shared memory and the CPU still walks every
 body to materialize transforms and events. The next meaningful port is
 device-authoritative body transforms plus deterministic compact move events,
 with lazy fail-closed CPU synchronization for queries and fallback.
+
+The subsequent
+[`shape traversal bypass`](m4-pro-finalization-shape-traversal-bypass-2026-09-02.md)
+removes the linked per-body shape walk while leaving this contiguous body
+bookkeeping boundary explicit.

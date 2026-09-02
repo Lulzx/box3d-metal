@@ -107,6 +107,9 @@ typedef struct b3MetalProfile
 	/// Successful private-device finalization phases that omitted the CPU result
 	/// mirror because sleeping and continuous collision were disabled.
 	uint64_t finalizationReadbackBypassCount;
+	/// Finalization phases that skipped the per-body CPU shape-list traversal
+	/// because Metal shape results covered every awake shape.
+	uint64_t finalizationShapeTraversalBypassCount;
 	uint64_t shapeDispatchCount;
 	uint64_t shapeFallbackCount;
 	uint64_t shapeCompactDispatchCount;
