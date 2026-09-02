@@ -126,8 +126,8 @@ one 32-byte record per enlarged shape. Proxy bookkeeping consumes only that
 deterministic subset, skipping the full-result rescan, enlarged-body bit-set
 merge, and second body/shape-list walk. Compatibility routes still stage and
 apply the complete result; the bounded resident route defers CPU materialization.
-Per-step shape geometry/input packing still walks awake body shape lists, so this
-is not yet a device-resident broad phase.
+Cold and invalidated shape-registry rebuilds still walk awake body shape lists,
+so those transitions are not yet device-resident.
 
 On an unchanged subsequent step, shape finalization reads the previous Metal
 fat bounds as its containment oracle. Double builds therefore retain the
@@ -137,3 +137,12 @@ buffer growth, topology changes, explicit moves, and rebuilds force a CPU-oracle
 reseed. `shapeBoundsResidentDispatchCount` reports successful resident reuse.
 `shapeResultApplyCount` and `shapeBoundsSyncCount` distinguish compatibility
 applies from selective synchronization.
+
+The 72-byte shape-input allocation is persistent too. On a revision-stable
+step, an exact comparison of cached awake body ids preserves every body index
+and reuses geometry, filter, proxy, local-bound, and resident-fat-bound records
+without counting shapes or walking body shape lists. Sleep/wake swap-removal,
+tree revisions, transforms, filter-only changes, invalid mappings, and allocation
+failure reject reuse. A rejected registry synchronizes stale CPU mirrors before
+repacking from the CPU oracle. `shapeInputPackCount` and
+`shapeInputReuseCount` expose the routes.

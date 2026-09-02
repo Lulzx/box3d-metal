@@ -14,8 +14,9 @@
   Metal fat bounds are authoritative across revision-stable steps. The full
   64-byte result is private; a bounded collision-free, non-CCD route avoids its
   blit/apply and selectively synchronizes public queries or route changes.
-- Shape geometry, ids, filters, and proxy keys are still packed by walking awake
-  body shape lists every step.
+- Revision-stable steps reuse persistent shape geometry, ids, filters, proxy
+  keys, and local bounds after an exact awake-body order check. Cold starts and
+  invalidated registries still walk awake body shape lists and repack.
 - Only distance and parallel joints stay in the GPU-resident constraint graph.
 - Constraint joint records are packed/unpacked each step.
 - Body state crosses the CPU/GPU ownership boundary once per world step.
@@ -24,8 +25,8 @@
 
 ## Evidence-led next stages
 
-1. Replace per-step `b3MetalPackShapeInputs` body/shape-list traversal with a
-   persistent shape registry updated by topology and geometry mutators.
+1. Move pair filtering and deterministic accepted-pair compaction to Metal,
+   retaining explicit CPU fallback before contact creation.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,

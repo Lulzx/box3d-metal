@@ -25,8 +25,10 @@ dispatch's containment input; tree revisions fail closed to a CPU reseed.
 The full 64-byte shape result now stays in private Metal storage. A bounded
 collision-free, non-CCD route avoids its full blit and CPU apply; public AABB
 queries stage individual records, while route changes synchronize explicitly.
-Both stages remain off by default while CPU topology and per-step shape-input
-packing are still in the path.
+Revision-stable steps also reuse persistent 72-byte shape-input records after
+an exact awake-body id check, skipping shape counting, body shape-list traversal,
+local AABB computation, and record writes. Both stages remain off by default;
+CPU topology and cold/topology registry rebuilds are still in the path.
 
 ## Quick start
 
@@ -81,6 +83,8 @@ new whole-world timing is published from the loaded development machine. The
 resident-refit and VF64 checkpoint likewise publishes correctness evidence only.
 The private-result/selective-sync checkpoint also publishes correctness evidence
 only because the development host was loaded.
+The persistent-input checkpoint likewise publishes route/correctness evidence
+only because the host remained loaded.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

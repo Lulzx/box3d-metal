@@ -22,10 +22,10 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..dc34cba 100644
+index cfe16e4..4497e21 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,74 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,78 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -56,8 +56,12 @@ index cfe16e4..dc34cba 100644
 +non-CCD worlds with contact masks disabled do not blit or apply that stream;
 +public AABB queries stage only the requested 64-byte record, while route changes
 +and Metal disable synchronize the remaining results explicitly.
++Revision-stable steps also reuse the persistent 72-byte shape-input registry:
++an exact awake-body id sequence protects each cached body index, so geometry,
++filters, proxy keys, and local bounds are not repacked or recomputed. Sleep,
++wake, topology, transform, and filter changes rebuild fail-closed.
 +The stages remain off by default;
-+per-step CPU shape-input packing is still a regression, while GPU tree traversal
++cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 +crosses over only in large measured worlds.
 +See [the architecture and compatibility contract](docs/metal_architecture.md)
 +for the exact supported surface and current CPU-only stages.
@@ -1841,12 +1845,67 @@ index 0000000..21b7859
 +BOX3D_METAL_SHAPES=1 BOX3D_METAL_FINALIZATION=1 \
 +  ./build/metal-release/bin/metal_world_benchmark
 +```
+diff --git a/docs/benchmarks/m4-pro-shape-input-registry-2026-09-02.md b/docs/benchmarks/m4-pro-shape-input-registry-2026-09-02.md
+new file mode 100644
+index 0000000..9e757a7
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-shape-input-registry-2026-09-02.md
+@@ -0,0 +1,49 @@
++# M4 Pro persistent shape-input registry - 2026-09-02
++
++## Ownership cut
++
++Revision-stable Metal finalization steps reuse the existing 72-byte shape-input
++records. The CPU still walks awake body simulations for solver properties, so
++that pass now also compares the exact cached body-id sequence. If it matches the
++current awake order and resident tree revision, Box3D skips shape counting,
++body shape-list traversal, local AABB computation, and geometry/filter/proxy
++record writes.
++
++The check uses exact ids rather than a hash. Sleep/wake reorder, topology and
++tree revision changes, public transforms, filter-only edits, allocation failure,
++or invalid result mappings reject reuse. A rejected registry first synchronizes
++stale CPU bounds and then rebuilds from the CPU oracle.
++
++## Correctness and route evidence
++
++- The sparse 1,024-shape resident world records one initial pack and one reuse
++  before a public mutation forces the second pack.
++- A dedicated 64-shape world records one pack and one reuse, then exact
++  sleep/wake swap-removals force two rebuilds. The next unchanged step reuses
++  the rebuilt registry.
++- Those two awake-order changes explicitly synchronize 64 then 63 stale shape
++  records before rebuilding.
++- A mask-only filter edit with contact invocation disabled changes no required
++  tree topology, but still invalidates the cached no-contact eligibility and
++  forces a fourth pack plus the compatibility full-result apply.
++- The ten-step convex contact world records one shape-input pack and nine
++  reuses while retaining ten compatibility result applies.
++- Float and double warning-as-error Metal tests, the full CPU-only suite, full
++  AddressSanitizer and float UndefinedBehaviorSanitizer suites, and the double
++  UndefinedBehaviorSanitizer Metal suite pass.
++- Double precision retains the VF64 far-world containment result with zero
++  inward error.
++
++## Performance status
++
++No timing from this checkpoint is accepted because the development host had
++multiple high-CPU CoreGraphics workers and other interactive load. A clean-host
++whole-world run must report `shapeInputPackCount`, `shapeInputReuseCount`, full
++applies, synchronized shapes, and complete `b3World_Step` time.
++
++## Remaining CPU boundary
++
++Cold starts and invalidated registries still count shapes, walk awake body shape
++lists, and repack records. The next broad-phase ownership step is GPU-side pair
++filtering and deterministic accepted-pair compaction, followed by incremental
++contact creation/narrow-phase residency.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..9d497a1
+index 0000000..25f6be9
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,230 @@
+@@ -0,0 +1,241 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -1944,9 +2003,18 @@ index 0000000..9d497a1
 +`shapeResultApplyCount` distinguishes compatibility-route full applies from
 +the no-apply resident route, and `shapeBoundsSyncCount` reports how many shape
 +records were explicitly materialized. This removes the shared full-result
-+stream and traversal for the bounded route, but shape geometry/input packing
-+still walks awake body shape lists every step and remains the next residency
-+target.
++stream and traversal for the bounded route.
++
++The 72-byte shape-input records are also persistent across revision-stable
++steps. The CPU checks the exact awake-body id sequence while it already walks
++body simulations; a match preserves every cached body index and dispatches the
++existing geometry, filter, proxy, local-bound, and resident-fat-bound records
++without counting shapes or walking body shape lists. Sleep/wake swap-removal,
++tree revision changes, explicit transforms, and filter-only edits invalidate
++the registry. A rebuild first materializes any stale CPU mirrors, then repacks
++from the CPU oracle. `shapeInputPackCount` and `shapeInputReuseCount` expose the
++two routes. Cold/topology rebuilds are still CPU work; maintaining the registry
++directly in every topology mutator is a later refinement.
 +
 +Enable it with:
 +
@@ -2077,6 +2145,8 @@ index 0000000..9d497a1
 +[`benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md`](benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md).
 +Private shape results and selective synchronization are recorded in
 +[`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
++Persistent shape-input reuse is recorded in
++[`benchmarks/m4-pro-shape-input-registry-2026-09-02.md`](benchmarks/m4-pro-shape-input-registry-2026-09-02.md).
 diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
 index 2e82590..cd49acf 100644
 --- a/include/box3d/box3d.h
@@ -2093,10 +2163,10 @@ index 2e82590..cd49acf 100644
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000..5aa19b4
+index 0000000..dbe8188
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,77 @@
+@@ -0,0 +1,79 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2133,6 +2203,8 @@ index 0000000..5aa19b4
 +	uint64_t shapeFallbackCount;
 +	uint64_t shapeCompactDispatchCount;
 +	uint64_t shapeBoundsResidentDispatchCount;
++	uint64_t shapeInputPackCount;
++	uint64_t shapeInputReuseCount;
 +	uint64_t shapeResultApplyCount;
 +	uint64_t shapeBoundsSyncCount;
 +	int lastShapeResultCount;
@@ -2220,7 +2292,7 @@ index 941c6fb..f4a6813 100644
  	message(STATUS "Box3D on Emscripten")
  	# SSE2/wasm SIMD flags are set directory-wide in the top-level CMakeLists so the
 diff --git a/src/body.c b/src/body.c
-index f517e7b..eac70e0 100644
+index f517e7b..32652ac 100644
 --- a/src/body.c
 +++ b/src/body.c
 @@ -14,6 +14,9 @@
@@ -2233,12 +2305,13 @@ index f517e7b..eac70e0 100644
  
  // needed for dll export
  #include "box3d/box3d.h"
-@@ -501,10 +504,26 @@ b3AABB b3Body_ComputeAABB( b3BodyId bodyId )
+@@ -501,10 +504,28 @@ b3AABB b3Body_ComputeAABB( b3BodyId bodyId )
  	}
  
  	b3Shape* shape = b3Array_Get( world->shapes, body->headShapeId );
 +#if defined( BOX3D_METAL )
 +	if ( world->metalShapeCpuBoundsStale && shape->metalResultIndex != B3_NULL_INDEX &&
++		shape->metalSyncGeneration != world->metalShapeResultGeneration &&
 +		b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
 +	{
 +		shape->aabb = b3ComputeFatShapeAABB( shape, b3GetBodyTransformQuick( world, body ), B3_SPECULATIVE_DISTANCE );
@@ -2251,6 +2324,7 @@ index f517e7b..eac70e0 100644
  		shape = b3Array_Get( world->shapes, shape->nextShapeId );
 +#if defined( BOX3D_METAL )
 +		if ( world->metalShapeCpuBoundsStale && shape->metalResultIndex != B3_NULL_INDEX &&
++			shape->metalSyncGeneration != world->metalShapeResultGeneration &&
 +			b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
 +		{
 +			shape->aabb = b3ComputeFatShapeAABB( shape, b3GetBodyTransformQuick( world, body ), B3_SPECULATIVE_DISTANCE );
@@ -2260,7 +2334,31 @@ index f517e7b..eac70e0 100644
  		aabb = b3AABB_Union( aabb, shape->aabb );
  	}
  
-@@ -1098,6 +1117,7 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
+@@ -1071,6 +1092,13 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
+ 	B3_ASSERT( b3Body_IsValid( bodyId ) );
+ 	b3World* world = b3GetWorld( bodyId.world0 );
+ 	B3_ASSERT( world->locked == false );
++#if defined( BOX3D_METAL )
++	if ( world->metalShapeCpuBoundsStale && b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
++	{
++		b3Log( "Box3D body transform skipped because Metal shape-bound readback failed\n" );
++		return;
++	}
++#endif
+ 
+ 	B3_REC( world, BodySetTransform, bodyId, position, rotation );
+ 
+@@ -1088,6 +1116,9 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
+ 	bodySim->center0 = bodySim->center;
+ 
+ 	b3BroadPhase* broadPhase = &world->broadPhase;
++#if defined( BOX3D_METAL )
++	b3MetalInvalidateShapeInputCache( world->metalContext );
++#endif
+ 
+ 	b3WorldTransform transform = bodySim->transform;
+ 	const float speculativeDistance = B3_SPECULATIVE_DISTANCE;
+@@ -1098,6 +1129,7 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
  		b3Shape* shape = b3Array_Get( world->shapes, shapeId );
  		b3AABB aabb = b3ComputeFatShapeAABB( shape, transform, speculativeDistance );
  		shape->aabb = aabb;
@@ -2701,10 +2799,10 @@ index d85f233..ffa6859 100644
  int b3GetWideContactConstraintByteCount( void );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000..e2c824a
+index 0000000..704d6c3
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,113 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2817,12 +2915,13 @@ index 0000000..e2c824a
 +// fail-closed boundary for route changes, fallback, and context destruction.
 +bool b3MetalSyncShapeBounds( b3MetalContext* context, b3World* world, int shapeId );
 +bool b3MetalSyncAllShapeBounds( b3MetalContext* context, b3World* world );
++void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..1fc1332
+index 0000000..9ac662d
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,3266 @@
+@@ -0,0 +1,3362 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2841,6 +2940,7 @@ index 0000000..1fc1332
 +
 +#include <stddef.h>
 +#include <stdio.h>
++#include <stdlib.h>
 +#include <string.h>
 +
 +#if defined( BOX3D_DOUBLE_PRECISION )
@@ -2901,6 +3001,12 @@ index 0000000..1fc1332
 +	NSUInteger finalizePropertiesCapacity;
 +	id<MTLBuffer> shapeInputBuffer;
 +	NSUInteger shapeInputCapacity;
++	int* shapeInputBodyIds;
++	int shapeInputBodyCapacity;
++	int shapeInputBodyCount;
++	int shapeInputCount;
++	bool shapeInputAllMasksDisabled;
++	bool shapeInputCacheValid;
 +	id<MTLBuffer> shapeResultBuffer;
 +	NSUInteger shapeResultCapacity;
 +	id<MTLBuffer> shapeReadbackBuffer;
@@ -4119,6 +4225,7 @@ index 0000000..1fc1332
 +	[context->finalizeResultBuffer release];
 +	[context->finalizePropertiesBuffer release];
 +	[context->shapeInputBuffer release];
++	free( context->shapeInputBodyIds );
 +	[context->shapeResultBuffer release];
 +	[context->shapeReadbackBuffer release];
 +	[context->shapeCompactBuffer release];
@@ -4709,6 +4816,24 @@ index 0000000..1fc1332
 +	}
 +}
 +
++static bool b3MetalEnsureShapeBodyCapacity( b3MetalContext* context, int bodyCount )
++{
++	if ( context->shapeInputBodyCapacity >= bodyCount ) return true;
++	int capacity = context->shapeInputBodyCapacity > 0 ? context->shapeInputBodyCapacity : 64;
++	while ( capacity < bodyCount ) capacity *= 2;
++	int* bodyIds = realloc( context->shapeInputBodyIds, (size_t)capacity * sizeof( int ) );
++	if ( bodyIds == NULL ) return false;
++	context->shapeInputBodyIds = bodyIds;
++	context->shapeInputBodyCapacity = capacity;
++	return true;
++}
++
++static void b3MetalAdvanceShapeResultGeneration( b3World* world )
++{
++	world->metalShapeResultGeneration += 1;
++	if ( world->metalShapeResultGeneration == 0 ) world->metalShapeResultGeneration = 1;
++}
++
 +static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepContext )
 +{
 +	stepContext->metalShapeResults = NULL;
@@ -4722,33 +4847,67 @@ index 0000000..1fc1332
 +	b3World* world = stepContext->world;
 +	b3BodySim* sims = stepContext->sims;
 +	int bodyCount = world->solverSets.data[b3_awakeSet].bodySims.count;
++	bool treeRefitEligible = world->metalBroadPhaseEnabled && world->userTreeTask == NULL &&
++		context->pairTreeBuffer != nil && context->pairTreeRevision == world->broadPhase.treeRevision;
++	bool bodyOrderMatches = context->shapeInputCacheValid && context->shapeInputBodyCount == bodyCount;
++	for ( int simIndex = 0; simIndex < bodyCount; ++simIndex )
++	{
++		if ( sims[simIndex].flags & b3_isFast ) treeRefitEligible = false;
++		if ( bodyOrderMatches && context->shapeInputBodyIds[simIndex] != sims[simIndex].bodyId )
++		{
++			bodyOrderMatches = false;
++		}
++	}
++
++	bool boundsResident = context->shapeBoundsRevision == world->broadPhase.treeRevision &&
++		context->shapeBoundsCount == context->shapeInputCount;
++	if ( bodyOrderMatches && boundsResident && context->shapeInputCount > 0 )
++	{
++		stepContext->metalShapeBoundsResident = true;
++		stepContext->metalDeferShapeResultApply = world->enableContinuous == false && world->contacts.count == 0 &&
++			world->sensors.count == 0 && context->shapeInputAllMasksDisabled;
++		stepContext->metalTreeRefitEligible = treeRefitEligible;
++		world->metalShapeInputReuseCount += 1;
++		return context->shapeInputCount;
++	}
++	if ( world->metalShapeCpuBoundsStale && b3MetalSyncAllShapeBounds( context, world ) == false )
++	{
++		context->shapeInputCacheValid = false;
++		world->metalShapeFallbackCount += 1;
++		return 0;
++	}
++
 +	int shapeCount = 0;
 +	for ( int i = 0; i < bodyCount; ++i )
 +	{
 +		shapeCount += world->bodies.data[sims[i].bodyId].shapeCount;
 +	}
-+	if ( shapeCount == 0 ) return 0;
-+	if ( b3MetalEnsureShapeCapacity( context, (NSUInteger)shapeCount * sizeof( b3MetalShapeInput ),
++	if ( shapeCount == 0 )
++	{
++		context->shapeInputCacheValid = false;
++		return 0;
++	}
++	if ( b3MetalEnsureShapeBodyCapacity( context, bodyCount ) == false ||
++		b3MetalEnsureShapeCapacity( context, (NSUInteger)shapeCount * sizeof( b3MetalShapeInput ),
 +		(NSUInteger)shapeCount * sizeof( b3MetalShapeAABBResult ) ) == false )
 +	{
++		context->shapeInputCacheValid = false;
 +		world->metalShapeFallbackCount += 1;
 +		return 0;
 +	}
 +
 +	b3MetalShapeInput* inputs = context->shapeInputBuffer.contents;
-+	bool treeRefitEligible = world->metalBroadPhaseEnabled && world->userTreeTask == NULL &&
-+		context->pairTreeBuffer != nil && context->pairTreeRevision == world->broadPhase.treeRevision;
-+	bool deferShapeResultApply = world->enableContinuous == false && world->contacts.count == 0 && world->sensors.count == 0;
++	bool allMasksDisabled = true;
 +	int outputIndex = 0;
 +	for ( int simIndex = 0; simIndex < bodyCount; ++simIndex )
 +	{
-+		if ( sims[simIndex].flags & b3_isFast ) treeRefitEligible = false;
++		context->shapeInputBodyIds[simIndex] = sims[simIndex].bodyId;
 +		b3Body* body = world->bodies.data + sims[simIndex].bodyId;
 +		int shapeId = body->headShapeId;
 +		while ( shapeId != B3_NULL_INDEX )
 +		{
 +			b3Shape* shape = world->shapes.data + shapeId;
-+			if ( shape->filter.maskBits != 0 ) deferShapeResultApply = false;
++			if ( shape->filter.maskBits != 0 ) allMasksDisabled = false;
 +			shape->metalResultIndex = outputIndex;
 +			b3MetalShapeInput* input = inputs + outputIndex++;
 +			*input = (b3MetalShapeInput){
@@ -4798,10 +4957,14 @@ index 0000000..1fc1332
 +		}
 +	}
 +	B3_ASSERT( outputIndex == shapeCount );
-+	stepContext->metalShapeBoundsResident = context->shapeBoundsRevision == world->broadPhase.treeRevision &&
-+		context->shapeBoundsCount == shapeCount;
-+	stepContext->metalDeferShapeResultApply = deferShapeResultApply;
++	context->shapeInputBodyCount = bodyCount;
++	context->shapeInputCount = shapeCount;
++	context->shapeInputAllMasksDisabled = allMasksDisabled;
++	context->shapeInputCacheValid = true;
++	stepContext->metalDeferShapeResultApply = world->enableContinuous == false && world->contacts.count == 0 &&
++		world->sensors.count == 0 && allMasksDisabled;
 +	stepContext->metalTreeRefitEligible = treeRefitEligible;
++	world->metalShapeInputPackCount += 1;
 +	return shapeCount;
 +}
 +
@@ -5139,6 +5302,7 @@ index 0000000..1fc1332
 +		}
 +		if ( finalizationContext != NULL && shapeCount > 0 )
 +		{
++			b3MetalAdvanceShapeResultGeneration( finalizationContext->world );
 +			context->shapeBoundsCount = shapeCount;
 +			finalizationContext->world->metalShapeBoundsResidentDispatchCount +=
 +				finalizationContext->metalShapeBoundsResident ? 1 : 0;
@@ -5469,6 +5633,11 @@ index 0000000..1fc1332
 +	context->shapeBoundsRevision = broadPhase->treeRevision;
 +}
 +
++void b3MetalInvalidateShapeInputCache( b3MetalContext* context )
++{
++	if ( context != NULL ) context->shapeInputCacheValid = false;
++}
++
 +static bool b3MetalApplyShapeBoundResult( b3MetalContext* context, b3World* world, int shapeId )
 +{
 +	if ( context == NULL || world == NULL || context->shapeReadbackBuffer == nil ||
@@ -5479,10 +5648,19 @@ index 0000000..1fc1332
 +
 +	b3Shape* shape = world->shapes.data + shapeId;
 +	int resultIndex = shape->metalResultIndex;
-+	if ( resultIndex < 0 || resultIndex >= context->shapeBoundsCount ) return false;
++	if ( resultIndex < 0 || resultIndex >= context->shapeBoundsCount )
++	{
++		context->shapeInputCacheValid = false;
++		return false;
++	}
++	if ( shape->metalSyncGeneration == world->metalShapeResultGeneration ) return true;
 +	const b3MetalShapeAABBResult* results = context->shapeReadbackBuffer.contents;
 +	const b3MetalShapeAABBResult* result = results + resultIndex;
-+	if ( result->shapeId != shapeId || shape->id != shapeId ) return false;
++	if ( result->shapeId != shapeId || shape->id != shapeId )
++	{
++		context->shapeInputCacheValid = false;
++		return false;
++	}
 +
 +	shape->aabb = (b3AABB){
 +		{ result->lowerX, result->lowerY, result->lowerZ },
@@ -5492,7 +5670,7 @@ index 0000000..1fc1332
 +		{ result->fatLowerX, result->fatLowerY, result->fatLowerZ },
 +		{ result->fatUpperX, result->fatUpperY, result->fatUpperZ },
 +	};
-+	shape->metalResultIndex = B3_NULL_INDEX;
++	shape->metalSyncGeneration = world->metalShapeResultGeneration;
 +	world->metalShapeBoundsSyncCount += 1;
 +	return true;
 +}
@@ -5503,9 +5681,18 @@ index 0000000..1fc1332
 +		shapeId < 0 || shapeId >= world->shapes.count ) return false;
 +	b3Shape* shape = world->shapes.data + shapeId;
 +	int resultIndex = shape->metalResultIndex;
-+	if ( resultIndex < 0 || resultIndex >= context->shapeBoundsCount ) return false;
++	if ( resultIndex < 0 || resultIndex >= context->shapeBoundsCount )
++	{
++		context->shapeInputCacheValid = false;
++		return false;
++	}
++	if ( shape->metalSyncGeneration == world->metalShapeResultGeneration ) return true;
 +	NSUInteger offset = (NSUInteger)resultIndex * sizeof( b3MetalShapeAABBResult );
-+	if ( b3MetalReadbackShapeRange( context, offset, sizeof( b3MetalShapeAABBResult ) ) == false ) return false;
++	if ( b3MetalReadbackShapeRange( context, offset, sizeof( b3MetalShapeAABBResult ) ) == false )
++	{
++		context->shapeInputCacheValid = false;
++		return false;
++	}
 +	return b3MetalApplyShapeBoundResult( context, world, shapeId );
 +}
 +
@@ -5521,7 +5708,14 @@ index 0000000..1fc1332
 +	for ( int resultIndex = 0; resultIndex < resultCount; ++resultIndex )
 +	{
 +		int shapeId = results[resultIndex].shapeId;
-+		b3MetalApplyShapeBoundResult( context, world, shapeId );
++		if ( shapeId < 0 || shapeId >= world->shapes.count )
++		{
++			context->shapeInputCacheValid = false;
++			return false;
++		}
++		b3Shape* shape = world->shapes.data + shapeId;
++		if ( shape->metalResultIndex == B3_NULL_INDEX ) continue;
++		if ( b3MetalApplyShapeBoundResult( context, world, shapeId ) == false ) return false;
 +	}
 +	world->metalShapeCpuBoundsStale = false;
 +	return true;
@@ -5997,6 +6191,7 @@ index 0000000..1fc1332
 +		stepContext->metalFinalizeResults = finalizeBodies ? context->finalizeResultBuffer.contents : NULL;
 +		if ( shapeCount > 0 )
 +		{
++			b3MetalAdvanceShapeResultGeneration( stepContext->world );
 +			context->shapeBoundsCount = shapeCount;
 +			stepContext->world->metalShapeBoundsResidentDispatchCount += stepContext->metalShapeBoundsResident ? 1 : 0;
 +			stepContext->metalShapeResults = shapeReadbackEncoded ? context->shapeReadbackBuffer.contents : NULL;
@@ -7230,7 +7425,7 @@ index 0000000..a4424e5
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..1680aef 100644
+index 29c13c7..970f1bc 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -7257,7 +7452,7 @@ index 29c13c7..1680aef 100644
  	// Detach any recording before teardown. The user owns and frees the recording buffer.
  	b3StopRecordingInternal( world );
  
-@@ -538,6 +548,147 @@ int b3GetWorldCount( void )
+@@ -538,6 +548,149 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -7380,6 +7575,8 @@ index 29c13c7..1680aef 100644
 +	profile.shapeFallbackCount = world->metalShapeFallbackCount;
 +	profile.shapeCompactDispatchCount = world->metalShapeCompactDispatchCount;
 +	profile.shapeBoundsResidentDispatchCount = world->metalShapeBoundsResidentDispatchCount;
++	profile.shapeInputPackCount = world->metalShapeInputPackCount;
++	profile.shapeInputReuseCount = world->metalShapeInputReuseCount;
 +	profile.shapeResultApplyCount = world->metalShapeResultApplyCount;
 +	profile.shapeBoundsSyncCount = world->metalShapeBoundsSyncCount;
 +	profile.lastShapeResultCount = world->metalLastShapeResultCount;
@@ -7405,7 +7602,7 @@ index 29c13c7..1680aef 100644
  int b3GetMaxWorldCount( void )
  {
  	return b3_maxWorldCount;
-@@ -1039,6 +1190,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1192,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -7428,7 +7625,7 @@ index 29c13c7..1680aef 100644
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -3473,6 +3640,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +3642,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -7441,10 +7638,10 @@ index 29c13c7..1680aef 100644
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8..5fb133e 100644
+index 8bd3df8..230e758 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
-@@ -266,6 +266,43 @@ typedef struct b3World
+@@ -266,6 +266,46 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
@@ -7466,9 +7663,12 @@ index 8bd3df8..5fb133e 100644
 +	uint64_t metalShapeFallbackCount;
 +	uint64_t metalShapeCompactDispatchCount;
 +	uint64_t metalShapeBoundsResidentDispatchCount;
++	uint64_t metalShapeInputPackCount;
++	uint64_t metalShapeInputReuseCount;
 +	uint64_t metalShapeResultApplyCount;
 +	uint64_t metalShapeBoundsSyncCount;
 +	uint64_t metalShapeCpuStaleRevision;
++	uint64_t metalShapeResultGeneration;
 +	bool metalShapeCpuBoundsStale;
 +	int metalLastShapeResultCount;
 +	int metalLastEnlargedShapeResultCount;
@@ -7488,13 +7688,13 @@ index 8bd3df8..5fb133e 100644
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -347,4 +384,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +387,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
 -
 diff --git a/src/shape.c b/src/shape.c
-index 1f0c305..516077c 100644
+index 1f0c305..03e9f67 100644
 --- a/src/shape.c
 +++ b/src/shape.c
 @@ -9,6 +9,9 @@
@@ -7515,20 +7715,32 @@ index 1f0c305..516077c 100644
  
  	// Smaller margin for static bodies. Cannot be zero due to TOI tolerance.
  	float margin = proxyType == b3_staticBody ? speculativeDistance : aabbMargin;
-@@ -183,6 +187,7 @@ static b3Shape* b3CreateShapeInternal( b3World* world, b3Body* body, b3WorldTran
+@@ -183,6 +187,8 @@ static b3Shape* b3CreateShapeInternal( b3World* world, b3Body* body, b3WorldTran
  	shape->flags |= def->enablePreSolveEvents ? b3_enablePreSolveEvents : 0;
  	shape->flags |= def->enableSpeculativeContact ? b3_enableSpeculative : 0;
  	shape->proxyKey = B3_NULL_INDEX;
 +	shape->metalResultIndex = B3_NULL_INDEX;
++	shape->metalSyncGeneration = 0;
  	shape->localCentroid = b3GetShapeCentroid( shape );
  	shape->aabbMargin = b3ComputeShapeMargin( shape );
  	shape->aabb = (b3AABB){ b3Vec3_zero, b3Vec3_zero };
-@@ -1811,6 +1816,15 @@ b3AABB b3Shape_GetAABB( b3ShapeId shapeId )
+@@ -1394,6 +1400,9 @@ void b3Shape_SetFilter( b3ShapeId shapeId, b3Filter filter, bool invokeContacts
+ 	}
+ 
+ 	shape->filter = filter;
++#if defined( BOX3D_METAL )
++	b3MetalInvalidateShapeInputCache( world->metalContext );
++#endif
+ 
+ 	if ( invokeContacts )
+ 	{
+@@ -1811,6 +1820,16 @@ b3AABB b3Shape_GetAABB( b3ShapeId shapeId )
  	}
  
  	b3Shape* shape = b3GetShape( world, shapeId );
 +#if defined( BOX3D_METAL )
 +	if ( world->locked == false && world->metalShapeCpuBoundsStale && shape->metalResultIndex != B3_NULL_INDEX &&
++		shape->metalSyncGeneration != world->metalShapeResultGeneration &&
 +		b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
 +	{
 +		b3Body* body = world->bodies.data + shape->bodyId;
@@ -7540,19 +7752,20 @@ index 1f0c305..516077c 100644
  }
  
 diff --git a/src/shape.h b/src/shape.h
-index ed76dd4..b65c7b0 100644
+index ed76dd4..86b87cb 100644
 --- a/src/shape.h
 +++ b/src/shape.h
-@@ -31,6 +31,7 @@ typedef struct b3Shape
+@@ -31,6 +31,8 @@ typedef struct b3Shape
  	int nextShapeId;
  	int sensorIndex;
  	int proxyKey;
 +	int metalResultIndex;
++	uint64_t metalSyncGeneration;
  	b3ShapeType type;
  	float density;
  	float explosionScale;
 diff --git a/src/solver.c b/src/solver.c
-index d8aace0..251af4c 100644
+index d8aace0..bdfb9de 100644
 --- a/src/solver.c
 +++ b/src/solver.c
 @@ -19,6 +19,9 @@
@@ -7676,7 +7889,7 @@ index d8aace0..251af4c 100644
  			{
  				b3AABB aabb = b3ComputeFatShapeAABB( shape, transform, speculativeScalar );
  				shape->aabb = aabb;
-@@ -859,6 +885,46 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+@@ -859,6 +885,47 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
  	b3TracyCZoneEnd( finalize_bodies );
  }
  
@@ -7716,6 +7929,7 @@ index d8aace0..251af4c 100644
 +			shape->flags |= b3_enlargedAABB;
 +			b3SetBit( enlargedSimBitSet, result->simIndex );
 +		}
++		shape->metalSyncGeneration = world->metalShapeResultGeneration;
 +	}
 +}
 +#endif
@@ -7723,7 +7937,7 @@ index d8aace0..251af4c 100644
  typedef struct b3BlockDim
  {
  	// number of items per block (except last block)
-@@ -1148,6 +1214,199 @@ static void b3ExecuteMainStage( b3SolverStage* stage, b3StepContext* context, ui
+@@ -1148,6 +1215,199 @@ static void b3ExecuteMainStage( b3SolverStage* stage, b3StepContext* context, ui
  	}
  }
  
@@ -7923,7 +8137,7 @@ index d8aace0..251af4c 100644
  // Parallel solver task
  static void b3SolverTask( void* taskContext )
  {
-@@ -1231,6 +1490,15 @@ static void b3SolverTask( void* taskContext )
+@@ -1231,6 +1491,15 @@ static void b3SolverTask( void* taskContext )
  
  		int graphSyncIndex = 1;
  		int subStepCount = context->subStepCount;
@@ -7939,7 +8153,7 @@ index d8aace0..251af4c 100644
  		for ( int subStepIndex = 0; subStepIndex < subStepCount; ++subStepIndex )
  		{
  			// stageIndex restarted each iteration
-@@ -1240,21 +1508,42 @@ static void b3SolverTask( void* taskContext )
+@@ -1240,21 +1509,42 @@ static void b3SolverTask( void* taskContext )
  			// Integrate velocities
  			syncBits = ( bodySyncIndex << 16 ) | iterationStageIndex;
  			B3_ASSERT( stages[iterationStageIndex].type == b3_stageIntegrateVelocities );
@@ -7986,7 +8200,7 @@ index d8aace0..251af4c 100644
  				iterationStageIndex += 1;
  			}
  			graphSyncIndex += 1;
-@@ -1266,14 +1555,26 @@ static void b3SolverTask( void* taskContext )
+@@ -1266,14 +1556,26 @@ static void b3SolverTask( void* taskContext )
  			for ( int j = 0; j < ITERATIONS; ++j )
  			{
  				// Overflow constraints have lower priority. Typically these are dynamic-vs-dynamic.
@@ -8016,7 +8230,7 @@ index d8aace0..251af4c 100644
  					iterationStageIndex += 1;
  				}
  				graphSyncIndex += 1;
-@@ -1284,7 +1585,22 @@ static void b3SolverTask( void* taskContext )
+@@ -1284,7 +1586,22 @@ static void b3SolverTask( void* taskContext )
  			// Integrate positions
  			B3_ASSERT( stages[iterationStageIndex].type == b3_stageIntegratePositions );
  			syncBits = ( bodySyncIndex << 16 ) | iterationStageIndex;
@@ -8040,7 +8254,7 @@ index d8aace0..251af4c 100644
  			iterationStageIndex += 1;
  			bodySyncIndex += 1;
  
-@@ -1294,14 +1610,26 @@ static void b3SolverTask( void* taskContext )
+@@ -1294,14 +1611,26 @@ static void b3SolverTask( void* taskContext )
  			useBias = false;
  			for ( int j = 0; j < RELAX_ITERATIONS; ++j )
  			{
@@ -8070,7 +8284,7 @@ index d8aace0..251af4c 100644
  					iterationStageIndex += 1;
  				}
  				graphSyncIndex += 1;
-@@ -1317,14 +1645,26 @@ static void b3SolverTask( void* taskContext )
+@@ -1317,14 +1646,26 @@ static void b3SolverTask( void* taskContext )
  		// Restitution
  		for ( int iteration = 0; iteration < B3_RESTITUTION_ITERATIONS; ++iteration )
  		{
@@ -8099,7 +8313,7 @@ index d8aace0..251af4c 100644
  				iterStageIndex += 1;
  			}
  			graphSyncIndex += 1;
-@@ -1444,7 +1784,12 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1444,7 +1785,12 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  	int awakeBodyCount = awakeSet->bodySims.count;
  	if ( awakeBodyCount == 0 )
  	{
@@ -8113,7 +8327,7 @@ index d8aace0..251af4c 100644
  		return;
  	}
  
-@@ -1462,6 +1807,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1462,6 +1808,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  		stepContext->sims = awakeSet->bodySims.data;
  		stepContext->states = awakeSet->bodyStates.data;
@@ -8128,7 +8342,7 @@ index d8aace0..251af4c 100644
  
  		// count contacts, joints, and colors
  		int activeColorCount = 0;
-@@ -1557,13 +1910,20 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1557,13 +1911,20 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3BlockDim jointPrepareDim = b3ComputeBlockCount( jointCount, minJointsPerBlock, maxBlockCount );
  
  		int wideContactByteCount = b3GetWideContactConstraintByteCount();
@@ -8156,7 +8370,7 @@ index d8aace0..251af4c 100644
  		b3GraphColor* overflow = colors + B3_OVERFLOW_INDEX;
  		int overflowCount = overflow->contacts.count;
  		int overflowManifoldCount = 0;
-@@ -1573,10 +1933,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1573,10 +1934,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			overflowManifoldCount += overflow->contacts.data[i].manifoldCount;
  		}
  
@@ -8199,7 +8413,7 @@ index d8aace0..251af4c 100644
  
  		// Build the span table for the flat prepare/store parallel-for while I slice the
  		// wide constraint buffer across colors. One entry per active color plus a sentinel
-@@ -1798,9 +2186,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1798,9 +2187,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		stepContext->wideContactCount = wideContactCount;
  		stepContext->manifoldConstraints = manifoldConstraints;
  		stepContext->contactConstraints = contactConstraints;
@@ -8215,7 +8429,7 @@ index d8aace0..251af4c 100644
  		b3AtomicStoreU32( &stepContext->atomicSyncBits, 0 );
  		b3AtomicStoreInt( &stepContext->mainClaimed, 0 );
  
-@@ -1884,7 +2278,24 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1884,7 +2279,24 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		}
  
  		// Finalize bodies. Must happen after the constraint solver and after island splitting.
@@ -8240,7 +8454,7 @@ index d8aace0..251af4c 100644
  
  		// Free in reverse order
  		b3StackFree( &world->stack, graphBlocks );
-@@ -1893,11 +2304,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1893,11 +2305,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3StackFree( &world->stack, convexBlocks );
  		b3StackFree( &world->stack, bodyBlocks );
  		b3StackFree( &world->stack, stages );
@@ -8263,7 +8477,7 @@ index d8aace0..251af4c 100644
  
  		world->profile.transforms = b3GetMilliseconds( transformTicks );
  		b3TracyCZoneEnd( update_transforms );
-@@ -2083,25 +2500,50 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2083,25 +2501,50 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			world->activeTaskCount -= 1;
  		}
  
@@ -8326,7 +8540,7 @@ index d8aace0..251af4c 100644
  			b3Body* bodyArray = world->bodies.data;
  			b3BodySim* bodySimArray = awakeSet->bodySims.data;
  			b3Shape* shapeArray = world->shapes.data;
-@@ -2113,24 +2555,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2113,24 +2556,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  				{
  					uint32_t ctz = b3CTZ64( word );
  					uint32_t bodySimIndex = 64 * k + ctz;
@@ -8351,7 +8565,7 @@ index d8aace0..251af4c 100644
  							shapeId = shape->nextShapeId;
  						}
  					}
-@@ -2139,21 +2572,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2139,21 +2573,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  						while ( shapeId != B3_NULL_INDEX )
  						{
  							b3Shape* shape = shapeArray + shapeId;
@@ -8373,7 +8587,7 @@ index d8aace0..251af4c 100644
  					word = word & ( word - 1 );
  				}
  			}
-@@ -2178,7 +2604,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2178,7 +2605,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  		// Serially enlarge broad-phase proxies for bullet shapes
  		b3BroadPhase* broadPhase = &world->broadPhase;
@@ -8381,7 +8595,7 @@ index d8aace0..251af4c 100644
  
  		// Fast array access is important here
  		b3Body* bodyArray = world->bodies.data;
-@@ -2219,12 +2644,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2219,12 +2645,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  				int proxyKey = shape->proxyKey;
  				int proxyId = B3_PROXY_ID( proxyKey );
@@ -8396,7 +8610,7 @@ index d8aace0..251af4c 100644
  
  				shapeId = shape->nextShapeId;
  			}
-@@ -2234,6 +2660,18 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2234,6 +2661,18 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3TracyCZoneEnd( bullets );
  	}
  
@@ -8539,10 +8753,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..633e10f
+index 0000000..9692ac3
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,1724 @@
+@@ -0,0 +1,1804 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -9165,6 +9379,8 @@ index 0000000..633e10f
 +	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
 +	ENSURE( profile.shapeCompactDispatchCount == 2 );
 +	ENSURE( profile.shapeBoundsResidentDispatchCount == 1 );
++	ENSURE( profile.shapeInputPackCount == 1 );
++	ENSURE( profile.shapeInputReuseCount == 1 );
 +	ENSURE( profile.lastShapeResultCount == bodyCount );
 +	ENSURE( profile.lastEnlargedShapeResultCount == bodyCount / 2 );
 +	ENSURE( world->broadPhase.moveArray.count == bodyCount / 2 );
@@ -9181,24 +9397,99 @@ index 0000000..633e10f
 +	profile = b3World_GetMetalProfile( worldId );
 +	ENSURE( profile.shapeResultApplyCount == 0 );
 +	ENSURE( profile.shapeBoundsSyncCount == 1 );
-+	// A public mutation increments the tree revision, so the following dispatch
-+	// must reseed from CPU bounds instead of trusting the old resident layout.
-+	b3Body_SetTransform( mutationBodyId, (b3Pos){ 3.0f, 2.0f, 0.0f }, b3Quat_identity );
++	// A public transform synchronizes stale peers and invalidates the packed
++	// registry even when the new AABB remains inside the existing fat bound.
++	b3Body_SetTransform( mutationBodyId, (b3Pos){ 3.0f, 0.01f, 0.0f }, b3Quat_identity );
 +	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 +	profile = b3World_GetMetalProfile( worldId );
 +	ENSURE( profile.shapeBoundsResidentDispatchCount == 1 );
++	ENSURE( profile.shapeInputPackCount == 2 );
++	ENSURE( profile.shapeInputReuseCount == 1 );
 +	ENSURE( profile.shapeResultApplyCount == 0 );
-+	ENSURE( profile.shapeBoundsSyncCount == bodyCount - 1 );
-+	printf( "    shape compaction enlarged=%d/%d stableOrder=yes residentBounds=%llu fullApplies=%llu syncShapes=%llu\n",
++	ENSURE( profile.shapeBoundsSyncCount == bodyCount );
++	printf( "    shape compaction enlarged=%d/%d stableOrder=yes residentBounds=%llu inputPacks=%llu inputReuses=%llu "
++		"fullApplies=%llu syncShapes=%llu\n",
 +		profile.lastEnlargedShapeResultCount, profile.lastShapeResultCount,
 +		(unsigned long long)profile.shapeBoundsResidentDispatchCount,
++		(unsigned long long)profile.shapeInputPackCount, (unsigned long long)profile.shapeInputReuseCount,
 +		(unsigned long long)profile.shapeResultApplyCount, (unsigned long long)profile.shapeBoundsSyncCount );
 +
 +	b3World_DisableMetal( worldId );
 +	ENSURE( world->metalShapeCpuBoundsStale == false );
-+	ENSURE( world->metalShapeBoundsSyncCount == 2 * bodyCount - 1 );
++	ENSURE( world->metalShapeBoundsSyncCount == 2 * bodyCount );
 +	free( movingShapeIds );
 +	free( movingProxyKeys );
++	b3DestroyWorld( worldId );
++	return 0;
++}
++
++static int MetalShapeInputRegistryTest( void )
++{
++	const int bodyCount = 64;
++	b3WorldDef worldDef = b3DefaultWorldDef();
++	worldDef.gravity = b3Vec3_zero;
++	worldDef.enableContinuous = false;
++	b3WorldId worldId = b3CreateWorld( &worldDef );
++	ENSURE( b3World_EnableMetal( worldId, 1 ) );
++	ENSURE( b3World_SetMetalFinalization( worldId, true ) );
++	ENSURE( b3World_SetMetalBroadPhase( worldId, true ) );
++
++	b3ShapeDef shapeDef = b3DefaultShapeDef();
++	shapeDef.filter.maskBits = 0;
++	shapeDef.invokeContactCreation = false;
++	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.2f };
++	b3BodyId bodies[bodyCount];
++	b3ShapeId shapes[bodyCount];
++	for ( int i = 0; i < bodyCount; ++i )
++	{
++		b3BodyDef bodyDef = b3DefaultBodyDef();
++		bodyDef.type = b3_dynamicBody;
++		bodyDef.position = (b3Pos){ 2.0f * (float)i, 0.0f, 0.0f };
++		bodies[i] = b3CreateBody( worldId, &bodyDef );
++		shapes[i] = b3CreateSphereShape( bodies[i], &shapeDef, &sphere );
++	}
++
++	b3World_Step( worldId, 1.0f / 60.0f, 1 );
++	b3World_Step( worldId, 1.0f / 60.0f, 1 );
++	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
++	ENSURE( profile.shapeInputPackCount == 1 );
++	ENSURE( profile.shapeInputReuseCount == 1 );
++
++	// Sleeping a middle body swap-removes an awake sim without changing shape
++	// geometry. Exact cached body ids must reject the old bodyIndex mapping.
++	b3Body_SetAwake( bodies[17], false );
++	ENSURE( b3Body_IsAwake( bodies[17] ) == false );
++	b3World_Step( worldId, 1.0f / 60.0f, 1 );
++	profile = b3World_GetMetalProfile( worldId );
++	ENSURE( profile.shapeInputPackCount == 2 );
++	ENSURE( profile.shapeInputReuseCount == 1 );
++	ENSURE( profile.shapeBoundsSyncCount == bodyCount );
++
++	b3Body_SetAwake( bodies[17], true );
++	ENSURE( b3Body_IsAwake( bodies[17] ) );
++	b3World_Step( worldId, 1.0f / 60.0f, 1 );
++	b3World_Step( worldId, 1.0f / 60.0f, 1 );
++	profile = b3World_GetMetalProfile( worldId );
++	printf( "    shape registry packs=%llu reuses=%llu awakeReorders=2 syncShapes=%llu\n",
++		(unsigned long long)profile.shapeInputPackCount, (unsigned long long)profile.shapeInputReuseCount,
++		(unsigned long long)profile.shapeBoundsSyncCount );
++	ENSURE( profile.shapeInputPackCount == 3 );
++	ENSURE( profile.shapeInputReuseCount == 2 );
++	ENSURE( profile.shapeBoundsSyncCount == 2 * bodyCount - 1 );
++
++	// Filter-only edits may deliberately skip immediate contact invocation and
++	// therefore do not need to mutate tree topology. They still invalidate the
++	// cached eligibility bit and force an exact registry rebuild.
++	b3Filter filter = b3Shape_GetFilter( shapes[9] );
++	filter.maskBits = 1;
++	b3Shape_SetFilter( shapes[9], filter, false );
++	b3World_Step( worldId, 1.0f / 60.0f, 1 );
++	profile = b3World_GetMetalProfile( worldId );
++	ENSURE( profile.shapeInputPackCount == 4 );
++	ENSURE( profile.shapeInputReuseCount == 2 );
++	ENSURE( profile.shapeBoundsSyncCount == 3 * bodyCount - 1 );
++	ENSURE( profile.shapeResultApplyCount == 1 );
++
 +	b3DestroyWorld( worldId );
 +	return 0;
 +}
@@ -9557,6 +9848,8 @@ index 0000000..633e10f
 +	ENSURE( profile.finalizationDispatchCount == 10 );
 +	ENSURE( profile.shapeDispatchCount == 10 );
 +	ENSURE( profile.shapeFallbackCount == 0 );
++	ENSURE( profile.shapeInputPackCount == 1 );
++	ENSURE( profile.shapeInputReuseCount == 9 );
 +	ENSURE( profile.shapeResultApplyCount == 10 );
 +	ENSURE( profile.shapeBoundsSyncCount == 0 );
 +	ENSURE( profile.pairTreeUploadCount == 1 );
@@ -10254,6 +10547,7 @@ index 0000000..633e10f
 +	RUN_SUBTEST( MetalPairTraversalTest );
 +	RUN_SUBTEST( MetalPairTraversalFallbackTest );
 +	RUN_SUBTEST( MetalShapeCompactionTest );
++	RUN_SUBTEST( MetalShapeInputRegistryTest );
 +	RUN_SUBTEST( MetalWorldIntegrationTest );
 +	RUN_SUBTEST( MetalDistanceJointContactTest );
 +	RUN_SUBTEST( MetalUnsupportedJointFallbackTest );

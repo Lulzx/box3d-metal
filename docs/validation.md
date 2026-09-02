@@ -33,6 +33,14 @@ Direct primitive tests separately cover packed state and integration kernels.
   2,048 records through one body query plus the existing shape-query oracle.
 - The ten-step contact world remains on the compatibility route and records ten
   full shape-result applies with zero selective synchronizations.
+- The sparse resident world records one initial shape-input pack and one reuse;
+  its transform mutation forces the second pack.
+- A dedicated 64-shape world proves exact awake-order rejection: sleep and wake
+  swap-removals force two rebuilds and synchronize 64 then 63 stale records.
+  The following unchanged step reuses the rebuilt registry.
+- A filter-only edit with immediate contact invocation disabled still invalidates
+  cached no-contact eligibility and forces a rebuild plus compatibility apply.
+- The ten-step convex contact world records one input pack and nine reuses.
 - A ten-step contact world records one initial tree upload and ten device refits.
 - At `(+1e8, -1e8)`, every VF64 AABB contains a fresh CPU oracle AABB computed
   from the same Metal-world transform; maximum inward error is zero.
@@ -91,6 +99,10 @@ The completed acceptance matrix includes:
 The private-result checkpoint reran the full CPU-only suite and focused float
 and double warning-as-error Metal suites after its final source guard fix. The
 full sanitizer and Metal matrices had already passed the same implementation.
+
+The persistent-input checkpoint passes float/double warning-as-error Metal,
+full CPU-only, full AddressSanitizer, full float UndefinedBehaviorSanitizer, and
+double UndefinedBehaviorSanitizer Metal gates.
 
 ## What the tests do not prove
 
