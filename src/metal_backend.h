@@ -39,6 +39,14 @@ typedef struct b3MetalPairCandidate
 	int padding;
 } b3MetalPairCandidate;
 
+// Minimal CPU-visible contact creation payload for the common pair-planning
+// route. Metal emits these in Box3D's deterministic serial commit order.
+typedef struct b3MetalPairContactSeed
+{
+	int shapeIndexA;
+	int shapeIndexB;
+} b3MetalPairContactSeed;
+
 // Finalized sphere/capsule/compact-hull geometry in world axes, with point
 // anchors relative to each body's center of mass. The record also carries GPU-authored point
 // persistence and warm-start impulses matched against the prior resident solve.
@@ -103,6 +111,11 @@ typedef struct b3MetalDispatchStats
 	int pairFilterRegistryUploadCount;
 	// Non-zero when an emitted pair still needs CPU compound/custom filtering.
 	int pairRequiresCpuFiltering;
+	int pairContactSeedCount;
+	int pairContactSeedDispatchCount;
+	uint64_t pairContactSeedSharedBytes;
+	int pairCpuFilterCandidateCount;
+	int pairDirectCandidateCount;
 } b3MetalDispatchStats;
 
 // Returns false when there is no usable Metal device or the shader pipeline
@@ -157,11 +170,15 @@ bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, 
 
 // Traverse the existing Box3D dynamic trees and compact candidate ranges on
 // Metal. Per-move records and candidates preserve move-array and tree traversal
-// order. Returns false before exposing results if the bounded Metal traversal
-// cannot represent the step.
+// order. Zero-exception plans within the 16-candidates-per-move commit bound also
+// expose a flat contactSeeds stream in exact CPU commit order; residual custom
+// and compound plans continue to expose the complete record/candidate stream.
+// Returns false before exposing results if the bounded Metal traversal cannot
+// represent the step.
 bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* world, const int* moveArray, int moveCount,
 									const b3MetalPairQueryRecord** records, const b3MetalPairCandidate** candidates,
 									int* candidateCount, const int** cpuFilterMoves, int* cpuFilterMoveCount,
+									const b3MetalPairContactSeed** contactSeeds, int* contactSeedCount,
 									b3MetalDispatchStats* stats );
 
 // Number of deterministically compacted proxy moves retained on the device by
