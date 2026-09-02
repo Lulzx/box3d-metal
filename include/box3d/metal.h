@@ -46,12 +46,15 @@ typedef struct b3MetalProfile
 	uint64_t pairMetadataUploadCount;
 	uint64_t pairSetUploadCount;
 	uint64_t pairTreeRefitCount;
+	uint64_t narrowPhaseDispatchCount;
+	uint64_t narrowPhaseFallbackCount;
 	double lastPositionGpuMilliseconds;
 	double lastUnconstrainedGpuMilliseconds;
 	double lastContactGpuMilliseconds;
 	double lastJointGpuMilliseconds;
 	double lastFinalizationGpuMilliseconds;
 	double lastPairGpuMilliseconds;
+	double lastNarrowPhaseGpuMilliseconds;
 	char deviceName[128];
 } b3MetalProfile;
 

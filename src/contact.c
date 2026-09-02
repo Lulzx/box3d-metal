@@ -480,7 +480,8 @@ void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies )
 }
 
 static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact* contact, const b3Shape* shapeA,
-									 b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB, b3Arena arena )
+									 b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB,
+									 const b3LocalManifold* precomputedSphereManifold, b3Arena arena )
 {
 	b3ShapeType typeA = shapeA->type;
 	b3ShapeType typeB = shapeB->type;
@@ -493,45 +494,59 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 	b3LocalManifold geomManifold = { 0 };
 	geomManifold.points = pointBuffer;
 
-	b3Transform transformBtoA = b3InvMulWorldTransforms( xfA, xfB );
-
-	if ( typeA == b3_sphereShape )
+	if ( precomputedSphereManifold != NULL )
 	{
-		B3_ASSERT( typeB == b3_sphereShape );
-		b3CollideSpheres( &geomManifold, pointCapacity, &shapeA->sphere, &shapeB->sphere, transformBtoA );
-	}
-	else if ( typeA == b3_capsuleShape )
-	{
-		if ( typeB == b3_sphereShape )
+		B3_ASSERT( typeA == b3_sphereShape && typeB == b3_sphereShape );
+		geomManifold = *precomputedSphereManifold;
+		geomManifold.points = pointBuffer;
+		if ( precomputedSphereManifold->pointCount > 0 )
 		{
-			b3CollideCapsuleAndSphere( &geomManifold, pointCapacity, &shapeA->capsule, &shapeB->sphere, transformBtoA );
-		}
-		else
-		{
-			B3_ASSERT( typeB == b3_capsuleShape );
-			b3CollideCapsules( &geomManifold, pointCapacity, &shapeA->capsule, &shapeB->capsule, transformBtoA );
+			B3_ASSERT( precomputedSphereManifold->pointCount == 1 );
+			pointBuffer[0] = precomputedSphereManifold->points[0];
 		}
 	}
 	else
 	{
-		B3_ASSERT( typeA == b3_hullShape );
+		b3Transform transformBtoA = b3InvMulWorldTransforms( xfA, xfB );
 
-		if ( typeB == b3_sphereShape )
+		if ( typeA == b3_sphereShape )
 		{
-			b3CollideHullAndSphere( &geomManifold, pointCapacity, shapeA->hull, &shapeB->sphere, transformBtoA,
-									&cache->simplexCache );
+			B3_ASSERT( typeB == b3_sphereShape );
+			b3CollideSpheres( &geomManifold, pointCapacity, &shapeA->sphere, &shapeB->sphere, transformBtoA );
 		}
-		else if ( typeB == b3_capsuleShape )
+		else if ( typeA == b3_capsuleShape )
 		{
-			b3CollideHullAndCapsule( &geomManifold, pointCapacity, shapeA->hull, &shapeB->capsule, transformBtoA,
-									 &cache->simplexCache );
+			if ( typeB == b3_sphereShape )
+			{
+				b3CollideCapsuleAndSphere( &geomManifold, pointCapacity, &shapeA->capsule, &shapeB->sphere, transformBtoA );
+			}
+			else
+			{
+				B3_ASSERT( typeB == b3_capsuleShape );
+				b3CollideCapsules( &geomManifold, pointCapacity, &shapeA->capsule, &shapeB->capsule, transformBtoA );
+			}
 		}
 		else
 		{
-			B3_ASSERT( typeB == b3_hullShape );
-			b3CollideHulls( &geomManifold, pointCapacity, shapeA->hull, shapeB->hull, transformBtoA, &cache->satCache );
-			world->taskContexts.data[workerIndex].satCallCount += 1;
-			world->taskContexts.data[workerIndex].satCacheHitCount += cache->satCache.hit;
+			B3_ASSERT( typeA == b3_hullShape );
+
+			if ( typeB == b3_sphereShape )
+			{
+				b3CollideHullAndSphere( &geomManifold, pointCapacity, shapeA->hull, &shapeB->sphere, transformBtoA,
+										&cache->simplexCache );
+			}
+			else if ( typeB == b3_capsuleShape )
+			{
+				b3CollideHullAndCapsule( &geomManifold, pointCapacity, shapeA->hull, &shapeB->capsule, transformBtoA,
+										 &cache->simplexCache );
+			}
+			else
+			{
+				B3_ASSERT( typeB == b3_hullShape );
+				b3CollideHulls( &geomManifold, pointCapacity, shapeA->hull, shapeB->hull, transformBtoA, &cache->satCache );
+				world->taskContexts.data[workerIndex].satCallCount += 1;
+				world->taskContexts.data[workerIndex].satCacheHitCount += cache->satCache.hit;
+			}
 		}
 	}
 
@@ -615,10 +630,12 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 }
 
 static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* contact, b3Shape* shapeA, b3WorldTransform xfA,
-								   b3Shape* shapeB, b3WorldTransform xfB, bool flip, b3Arena arena )
+								   b3Shape* shapeB, b3WorldTransform xfB, bool flip,
+								   const b3LocalManifold* precomputedSphereManifold, b3Arena arena )
 {
 	// Compute new manifold
-	bool touching = b3ComputeConvexManifold( world, workerIndex, contact, shapeA, xfA, shapeB, xfB, arena );
+	bool touching = b3ComputeConvexManifold( world, workerIndex, contact, shapeA, xfA, shapeB, xfB,
+		precomputedSphereManifold, arena );
 
 	if ( touching == false )
 	{
@@ -730,7 +747,7 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
 // Note: do not assume the shape AABBs are overlapping or are valid.
 bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Shape* shapeA, b3Vec3 localCenterA,
 					  b3WorldTransform xfA, b3Shape* shapeB, b3Vec3 localCenterB, b3WorldTransform xfB, bool isFast,
-					  b3Arena arena )
+					  const b3LocalManifold* precomputedSphereManifold, b3Arena arena )
 {
 	bool touching;
 
@@ -764,12 +781,12 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
 			{
 				// Flip
 				bool flip = true;
-				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, arena );
+				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, NULL, arena );
 			}
 			else
 			{
 				bool flip = false;
-				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, arena );
+				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, NULL, arena );
 			}
 		}
 		else if ( child.type == b3_hullShape )
@@ -777,7 +794,7 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
 			childShapeA.hull = child.hull;
 			b3WorldTransform xfChild = b3MulWorldTransforms( xfA, child.transform );
 			bool flip = false;
-			touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfChild, shapeB, xfB, flip, arena );
+			touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfChild, shapeB, xfB, flip, NULL, arena );
 		}
 		else if ( child.type == b3_meshShape )
 		{
@@ -808,12 +825,12 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
 			{
 				// Flip
 				bool flip = true;
-				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, arena );
+				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, NULL, arena );
 			}
 			else
 			{
 				bool flip = false;
-				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, arena );
+				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, NULL, arena );
 			}
 		}
 
@@ -854,7 +871,8 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
 	{
 		// Convex-vs-convex
 		bool flip = false;
-		touching = b3UpdateConvexContact( world, workerIndex, contact, shapeA, xfA, shapeB, xfB, flip, arena );
+		touching = b3UpdateConvexContact( world, workerIndex, contact, shapeA, xfA, shapeB, xfB, flip,
+			precomputedSphereManifold, arena );
 	}
 
 	if ( touching )

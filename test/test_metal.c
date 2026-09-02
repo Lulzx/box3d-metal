@@ -451,6 +451,173 @@ static int MetalFinalizationTest( void )
 	return 0;
 }
 
+static int MetalSphereManifoldTest( void )
+{
+#if defined( BOX3D_DOUBLE_PRECISION )
+	// AABB mirrors remain float, so widely separated small deltas at 1e12 are
+	// intentionally not used as independent broad-phase cells.
+	const int pairCount = 1;
+#else
+	const int pairCount = 32;
+#endif
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	b3World_SetContactRecycleDistance( worldId, 0.0f );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3Sphere sphereA = { .center = { -0.05f, 0.02f, 0.01f }, .radius = 0.55f };
+	b3Sphere sphereB = { .center = { 0.04f, -0.03f, 0.02f }, .radius = 0.50f };
+#if defined( BOX3D_DOUBLE_PRECISION )
+	const double base = 1000000000000.0;
+#else
+	const float base = 0.0f;
+#endif
+	for ( int i = 0; i < pairCount; ++i )
+	{
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_staticBody;
+		bodyDef.position = (b3Pos){ base + 4.0 * i, 0.0, 0.0 };
+		b3BodyId bodyA = b3CreateBody( worldId, &bodyDef );
+		b3CreateSphereShape( bodyA, &shapeDef, &sphereA );
+		bodyDef.type = b3_dynamicBody;
+		bodyDef.position = (b3Pos){ base + 4.0 * i + 0.72, 0.08, -0.04 };
+		bodyDef.rotation = b3MakeQuatFromAxisAngle( b3Normalize( (b3Vec3){ 0.3f, 0.8f, -0.2f } ), 0.15f * (float)( i % 3 ) );
+		b3BodyId bodyB = b3CreateBody( worldId, &bodyDef );
+		b3CreateSphereShape( bodyB, &shapeDef, &sphereB );
+	}
+
+	// One unsupported hull contact proves that eligibility is per record and
+	// the ordinary CPU path remains available in the same narrow-phase batch.
+	b3BoxHull box = b3MakeBoxHull( 0.5f, 0.5f, 0.5f );
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_staticBody;
+	bodyDef.position = (b3Pos){ base, 10.0, 0.0 };
+	b3BodyId boxA = b3CreateBody( worldId, &bodyDef );
+	b3CreateHullShape( boxA, &shapeDef, &box.base );
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.position.y = 10.6;
+	b3BodyId boxB = b3CreateBody( worldId, &bodyDef );
+	b3CreateHullShape( boxB, &shapeDef, &box.base );
+
+	// Build contacts with the CPU oracle first, then exercise the batch API.
+	b3World_Step( worldId, 0.0f, 1 );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	b3World* world = b3GetWorldFromId( worldId );
+	int contactCount = b3GetIdCount( &world->contactIdPool );
+	ENSURE( contactCount == pairCount + 1 );
+	int* contactIndices = malloc( (size_t)contactCount * sizeof( int ) );
+	ENSURE( contactIndices != NULL );
+	int cursor = 0;
+	for ( int contactIndex = 0; contactIndex < world->contacts.count; ++contactIndex )
+	{
+		if ( world->contacts.data[contactIndex].contactId != B3_NULL_INDEX ) contactIndices[cursor++] = contactIndex;
+	}
+	ENSURE( cursor == contactCount );
+	b3Manifold* cpuStepManifolds = calloc( (size_t)contactCount, sizeof( b3Manifold ) );
+	ENSURE( cpuStepManifolds != NULL );
+	for ( int i = 0; i < contactCount; ++i )
+	{
+		const b3Contact* contact = world->contacts.data + contactIndices[i];
+		if ( world->shapes.data[contact->shapeIdA].type == b3_sphereShape )
+		{
+			ENSURE( contact->manifoldCount == 1 );
+			cpuStepManifolds[i] = contact->manifolds[0];
+		}
+	}
+
+	const b3MetalSphereManifoldResult* gpu = NULL;
+	int eligibleCount = 0;
+	b3MetalDispatchStats stats = { 0 };
+	ENSURE( b3MetalComputeSphereManifolds( world->metalContext, world, contactIndices, contactCount, &gpu,
+		&eligibleCount, &stats ) );
+	ENSURE( eligibleCount == pairCount );
+	ENSURE( stats.commandBufferCount == 1 );
+	float maxError = 0.0f;
+	int ineligibleCount = 0;
+	for ( int i = 0; i < contactCount; ++i )
+	{
+		const b3Contact* contact = world->contacts.data + contactIndices[i];
+		const b3Shape* shape1 = world->shapes.data + contact->shapeIdA;
+		const b3Shape* shape2 = world->shapes.data + contact->shapeIdB;
+		if ( shape1->type != b3_sphereShape || shape2->type != b3_sphereShape )
+		{
+			ENSURE( gpu[i].eligible == 0 );
+			ineligibleCount += 1;
+			continue;
+		}
+		b3Body* body1 = world->bodies.data + shape1->bodyId;
+		b3Body* body2 = world->bodies.data + shape2->bodyId;
+		b3Transform relative = b3InvMulWorldTransforms( b3GetBodyTransformQuick( world, body1 ),
+			b3GetBodyTransformQuick( world, body2 ) );
+		b3LocalManifoldPoint point = { 0 };
+		b3LocalManifold reference = { .points = &point };
+		b3CollideSpheres( &reference, 1, &shape1->sphere, &shape2->sphere, relative );
+		ENSURE( gpu[i].eligible == 1 );
+		ENSURE( gpu[i].touching == (uint32_t)( reference.pointCount == 1 ) );
+		if ( reference.pointCount == 1 )
+		{
+			maxError = b3MaxFloat( maxError, fabsf( gpu[i].normalX - reference.normal.x ) );
+			maxError = b3MaxFloat( maxError, fabsf( gpu[i].normalY - reference.normal.y ) );
+			maxError = b3MaxFloat( maxError, fabsf( gpu[i].normalZ - reference.normal.z ) );
+			maxError = b3MaxFloat( maxError, fabsf( gpu[i].pointX - point.point.x ) );
+			maxError = b3MaxFloat( maxError, fabsf( gpu[i].pointY - point.point.y ) );
+			maxError = b3MaxFloat( maxError, fabsf( gpu[i].pointZ - point.point.z ) );
+			maxError = b3MaxFloat( maxError, fabsf( gpu[i].separation - point.separation ) );
+		}
+	}
+	ENSURE( ineligibleCount == 1 );
+	ENSURE( maxError <= 3.0e-5f );
+
+	b3MetalSphereManifoldResult* first = malloc( (size_t)contactCount * sizeof( b3MetalSphereManifoldResult ) );
+	ENSURE( first != NULL );
+	memcpy( first, gpu, (size_t)contactCount * sizeof( b3MetalSphereManifoldResult ) );
+	ENSURE( b3MetalComputeSphereManifolds( world->metalContext, world, contactIndices, contactCount, &gpu,
+		&eligibleCount, &stats ) );
+	ENSURE( memcmp( first, gpu, (size_t)contactCount * sizeof( b3MetalSphereManifoldResult ) ) == 0 );
+
+	b3World_Step( worldId, 0.0f, 1 );
+	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
+	float maxApplyError = 0.0f;
+	for ( int i = 0; i < contactCount; ++i )
+	{
+		b3Contact* contact = world->contacts.data + contactIndices[i];
+		if ( world->shapes.data[contact->shapeIdA].type != b3_sphereShape ) continue;
+		ENSURE( contact->manifoldCount == 1 );
+		const b3Manifold* cpu = cpuStepManifolds + i;
+		const b3Manifold* applied = contact->manifolds;
+		ENSURE( cpu->pointCount == applied->pointCount );
+		maxApplyError = b3MaxFloat( maxApplyError, b3Length( b3Sub( cpu->normal, applied->normal ) ) );
+		for ( int pointIndex = 0; pointIndex < cpu->pointCount; ++pointIndex )
+		{
+			maxApplyError = b3MaxFloat( maxApplyError,
+				b3Length( b3Sub( cpu->points[pointIndex].anchorA, applied->points[pointIndex].anchorA ) ) );
+			maxApplyError = b3MaxFloat( maxApplyError,
+				b3Length( b3Sub( cpu->points[pointIndex].anchorB, applied->points[pointIndex].anchorB ) ) );
+			maxApplyError = b3MaxFloat( maxApplyError,
+				fabsf( cpu->points[pointIndex].separation - applied->points[pointIndex].separation ) );
+			ENSURE( cpu->points[pointIndex].featureId == applied->points[pointIndex].featureId );
+		}
+	}
+	printf( "    sphere manifolds contacts=%d eligible=%d VF64=%s gpu=%.3f ms oracleError=%.3g applyError=%.3g deterministic=yes\n",
+		contactCount, eligibleCount,
+#if defined( BOX3D_DOUBLE_PRECISION )
+		"yes",
+#else
+		"no",
+#endif
+		stats.gpuMilliseconds, maxError, maxApplyError );
+	ENSURE( profile.narrowPhaseDispatchCount == 1 );
+	ENSURE( profile.narrowPhaseFallbackCount == 0 );
+	ENSURE( maxApplyError <= 5.0e-5f );
+
+	free( cpuStepManifolds );
+	free( first );
+	free( contactIndices );
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
 static int MetalPairTraversalTest( void )
 {
 	const int bodyCount = 607;
@@ -1906,6 +2073,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalPositionIntegrationTest );
 	RUN_SUBTEST( MetalFusedIntegrationTest );
 	RUN_SUBTEST( MetalFinalizationTest );
+	RUN_SUBTEST( MetalSphereManifoldTest );
 	RUN_SUBTEST( MetalPairTraversalTest );
 	RUN_SUBTEST( MetalExistingPairFilterTest );
 	RUN_SUBTEST( MetalPairTraversalFallbackTest );

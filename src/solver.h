@@ -173,6 +173,8 @@ typedef struct b3MetalEnlargedShapeResult
 	float upperX, upperY, upperZ;
 } b3MetalEnlargedShapeResult;
 
+typedef struct b3MetalSphereManifoldResult b3MetalSphereManifoldResult;
+
 // Constraint softness
 typedef struct b3Softness
 {
@@ -261,6 +263,7 @@ typedef struct b3StepContext
 	// Contact ids for simplified parallel-for access. Used in narrow-phase.
 	// These contacts may or may not be touching. They are associated with awake bodies.
 	int* awakeContactIndices;
+	const b3MetalSphereManifoldResult* metalSphereManifolds;
 
 	// Flat view of the wide contact constraint array used by prepare and store.
 	// prepareSpans has activeColorCount + 1 entries, the last being a sentinel

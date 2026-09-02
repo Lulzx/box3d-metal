@@ -679,12 +679,15 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.pairMetadataUploadCount = world->metalPairMetadataUploadCount;
 	profile.pairSetUploadCount = world->metalPairSetUploadCount;
 	profile.pairTreeRefitCount = world->metalPairTreeRefitCount;
+	profile.narrowPhaseDispatchCount = world->metalNarrowPhaseDispatchCount;
+	profile.narrowPhaseFallbackCount = world->metalNarrowPhaseFallbackCount;
 	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
 	profile.lastUnconstrainedGpuMilliseconds = world->metalLastUnconstrainedGpuMilliseconds;
 	profile.lastContactGpuMilliseconds = world->metalLastContactGpuMilliseconds;
 	profile.lastJointGpuMilliseconds = world->metalLastJointGpuMilliseconds;
 	profile.lastFinalizationGpuMilliseconds = world->metalLastFinalizationGpuMilliseconds;
 	profile.lastPairGpuMilliseconds = world->metalLastPairGpuMilliseconds;
+	profile.lastNarrowPhaseGpuMilliseconds = world->metalLastNarrowPhaseGpuMilliseconds;
 	if ( world->metalContext != NULL )
 	{
 		b3MetalGetDeviceName( world->metalContext, profile.deviceName, sizeof( profile.deviceName ) );
@@ -896,9 +899,30 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
 		contact->flags |= b3_relativeTransformValid;
 
-		// This updates solid contacts
+		// This updates solid contacts. Metal sphere results contain only local
+		// geometry; the CPU still owns material callbacks, manifold persistence,
+		// events, recycling, and graph/island transitions.
+		const b3LocalManifold* precomputedSphereManifold = NULL;
+#if defined( BOX3D_METAL )
+		b3LocalManifold localSphereManifold = { 0 };
+		b3LocalManifoldPoint localSpherePoint = { 0 };
+		if ( stepContext->metalSphereManifolds != NULL )
+		{
+			const b3MetalSphereManifoldResult* result = stepContext->metalSphereManifolds + i;
+			if ( result->eligible != 0 )
+			{
+				localSphereManifold.normal = (b3Vec3){ result->normalX, result->normalY, result->normalZ };
+				localSphereManifold.points = &localSpherePoint;
+				localSphereManifold.pointCount = result->touching != 0 ? 1 : 0;
+				localSpherePoint.point = (b3Vec3){ result->pointX, result->pointY, result->pointZ };
+				localSpherePoint.separation = result->separation;
+				precomputedSphereManifold = &localSphereManifold;
+			}
+		}
+#endif
 		bool touching = b3UpdateContact( world, workerIndex, contact, shapeA, bodySimA->localCenter, transformA, shapeB,
-										 bodySimB->localCenter, transformB, isFast, taskContext->arena );
+										 bodySimB->localCenter, transformB, isFast, precomputedSphereManifold,
+										 taskContext->arena );
 
 		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
 		if ( bucketIndex > 0 )
@@ -1028,6 +1052,7 @@ static void b3Collide( b3StepContext* context )
 	}
 
 	context->awakeContactIndices = contactIndices;
+	context->metalSphereManifolds = NULL;
 
 	// Contact bit set on ids because contact pointers are unstable as they move between touching and not touching.
 	int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
@@ -1041,12 +1066,36 @@ static void b3Collide( b3StepContext* context )
 		memset( taskContext->manifoldCounts, 0, sizeof( taskContext->manifoldCounts ) );
 	}
 
+#if defined( BOX3D_METAL )
+	if ( world->metalContext != NULL && contactCount >= world->metalMinimumBodyCount )
+	{
+		const b3MetalSphereManifoldResult* sphereResults = NULL;
+		int eligibleCount = 0;
+		b3MetalDispatchStats stats = { 0 };
+		if ( b3MetalComputeSphereManifolds( world->metalContext, world, contactIndices, contactCount, &sphereResults,
+			&eligibleCount, &stats ) )
+		{
+			if ( eligibleCount > 0 )
+			{
+				context->metalSphereManifolds = sphereResults;
+				world->metalNarrowPhaseDispatchCount += 1;
+				world->metalLastNarrowPhaseGpuMilliseconds = stats.gpuMilliseconds;
+			}
+		}
+		else
+		{
+			world->metalNarrowPhaseFallbackCount += 1;
+		}
+	}
+#endif
+
 	// Task should take at least 40us on a 4GHz CPU (10K cycles)
 	int minRange = 20;
 	b3ParallelFor( world, b3CollideTask, contactCount, minRange, context, "collide" );
 
 	b3StackFree( &world->stack, contactIndices );
 	context->awakeContactIndices = NULL;
+	context->metalSphereManifolds = NULL;
 	contactIndices = NULL;
 
 	// Serially update contact state

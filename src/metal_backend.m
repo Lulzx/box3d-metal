@@ -52,6 +52,7 @@ struct b3MetalContext
 	id<MTLComputePipelineState> pairAddOffsetsPipeline;
 	id<MTLComputePipelineState> pairUpdateLeavesPipeline;
 	id<MTLComputePipelineState> pairRefitPipeline;
+	id<MTLComputePipelineState> sphereManifoldPipeline;
 	id<MTLComputePipelineState> warmStartContactsPipeline;
 	id<MTLComputePipelineState> solveContactsPipeline;
 	id<MTLComputePipelineState> restitutionContactsPipeline;
@@ -117,6 +118,10 @@ struct b3MetalContext
 	id<MTLBuffer> pairSummaryBuffer;
 	id<MTLBuffer> pairBlockBuffer;
 	NSUInteger pairBlockCapacity;
+	id<MTLBuffer> sphereManifoldInputBuffer;
+	NSUInteger sphereManifoldInputCapacity;
+	id<MTLBuffer> sphereManifoldResultBuffer;
+	NSUInteger sphereManifoldResultCapacity;
 	id<MTLBuffer> contactConstraintBuffer;
 	NSUInteger contactConstraintCapacity;
 	id<MTLBuffer> meshContactBuffer;
@@ -199,6 +204,20 @@ typedef struct b3MetalPairShape
 	uint64_t maskBits;
 } b3MetalPairShape;
 
+typedef struct b3MetalSphereManifoldInput
+{
+	uint32_t eligible;
+	uint32_t padding;
+	float centerAX, centerAY, centerAZ, radiusA;
+	float centerBX, centerBY, centerBZ, radiusB;
+	float qAX, qAY, qAZ, qAW;
+	float qBX, qBY, qBZ, qBW;
+	float positionAX, positionAY, positionAZ;
+	float positionBX, positionBY, positionBZ;
+	uint64_t positionAXBits, positionAYBits, positionAZBits;
+	uint64_t positionBXBits, positionBYBits, positionBZBits;
+} b3MetalSphereManifoldInput;
+
 _Static_assert( sizeof( b3MetalBodyProperties ) == 128, "Metal body property ABI changed" );
 _Static_assert( sizeof( b3MetalFinalizeProperties ) == 64, "Metal finalization-property ABI changed" );
 _Static_assert( sizeof( b3MetalFinalizeResult ) == 100, "Metal finalization-result ABI changed" );
@@ -215,6 +234,8 @@ _Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI 
 _Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
 _Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
 _Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed" );
+_Static_assert( sizeof( b3MetalSphereManifoldInput ) == 144, "Metal sphere-manifold input ABI changed" );
+_Static_assert( sizeof( b3MetalSphereManifoldResult ) == 40, "Metal sphere-manifold result ABI changed" );
 _Static_assert( sizeof( b3SetItem ) == 16, "Metal pair-set item ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintPointWide ) == 192, "Metal wide contact point ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintWide ) == 1696, "Metal wide contact ABI changed" );
@@ -354,6 +375,13 @@ static const char* b3_metalSource =
 	"struct PairBlock { uint sum,flags,offset,padding; };\n"
 	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates,shapeCount,pairCapacity,p1,p2; };\n"
 	"struct PairPrefixParams { uint moveCount,candidateCapacity,candidateLimit,padding; };\n"
+	"struct SphereManifoldInput {\n"
+	"  uint eligible,padding; float centerAX,centerAY,centerAZ,radiusA; float centerBX,centerBY,centerBZ,radiusB;\n"
+	"  float qAX,qAY,qAZ,qAW,qBX,qBY,qBZ,qBW; float positionAX,positionAY,positionAZ,positionBX,positionBY,positionBZ;\n"
+	"  ulong positionAXBits,positionAYBits,positionAZBits,positionBXBits,positionBYBits,positionBZBits;\n"
+	"};\n"
+	"struct SphereManifoldResult { uint eligible,touching; float nx,ny,nz,px,py,pz,separation,padding; };\n"
+	"struct SphereManifoldParams { uint contactCount,p0,p1,p2; };\n"
 	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
 	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
 	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
@@ -386,6 +414,10 @@ static const char* b3_metalSource =
 	"  ulong value=b3_vf64_add_float(center,delta); value=b3_vf64_add_float(value,origin);\n"
 	"  value=b3_vf64_add_float(value,local); uint flags=0;\n"
 	"  return as_type<float>(uint(soft_f64_to_format_status(value,roundingMode,8u,23u,127,flags)));\n"
+	"}\n"
+	"float b3_vf64_difference(ulong b,ulong a) {\n"
+	"  uint flags=0; ulong value=soft_sub64_status(b,a,soft_round_near_even,flags);\n"
+	"  return as_type<float>(uint(soft_f64_to_format_status(value,soft_round_near_even,8u,23u,127,flags)));\n"
 	"}\n"
 	"#endif\n"
 	"float3x3 invert_matrix(float3x3 m) {\n"
@@ -758,6 +790,32 @@ static const char* b3_metalSource =
 	"kernel void b3_pair_add_offsets(device PairQueryRecord* records [[buffer(0)]],const device PairBlock* blocks [[buffer(1)]],\n"
 	"                                constant PairPrefixParams& p [[buffer(2)]],uint i [[thread_position_in_grid]]) {\n"
 	"  if(i<p.moveCount){PairQueryRecord r=records[i];r.offset+=blocks[i/256u].offset;records[i]=r;}\n"
+	"}\n"
+	"kernel void b3_sphere_manifolds(const device SphereManifoldInput* inputs [[buffer(0)]],\n"
+	"                                device SphereManifoldResult* results [[buffer(1)]],\n"
+	"                                constant SphereManifoldParams& p [[buffer(2)]],\n"
+	"                                uint i [[thread_position_in_grid]]) {\n"
+	"  if(i>=p.contactCount)return; SphereManifoldInput in=inputs[i]; SphereManifoldResult out={};\n"
+	"  if(in.eligible==0u){results[i]=out;return;} out.eligible=1u;\n"
+	"  float3 d;\n"
+	"#if defined(B3_DOUBLE_PRECISION)\n"
+	"  d=float3(b3_vf64_difference(in.positionBXBits,in.positionAXBits),\n"
+	"           b3_vf64_difference(in.positionBYBits,in.positionAYBits),\n"
+	"           b3_vf64_difference(in.positionBZBits,in.positionAZBits));\n"
+	"#else\n"
+	"  d=float3(in.positionBX-in.positionAX,in.positionBY-in.positionAY,in.positionBZ-in.positionAZ);\n"
+	"#endif\n"
+	"  float4 qA=float4(in.qAX,in.qAY,in.qAZ,in.qAW),qB=float4(in.qBX,in.qBY,in.qBZ,in.qBW);\n"
+	"  float3 relativePosition=inv_rotate(qA,d); float4 relativeRotation=quat_mul(float4(-qA.xyz,qA.w),qB);\n"
+	"  float3 center1=float3(in.centerAX,in.centerAY,in.centerAZ);\n"
+	"  float3 center2=rotate(relativeRotation,float3(in.centerBX,in.centerBY,in.centerBZ))+relativePosition;\n"
+	"  float totalRadius=in.radiusA+in.radiusB; float3 offset=center2-center1; float distanceSq=dot(offset,offset);\n"
+	"  if(distanceSq>totalRadius*totalRadius){results[i]=out;return;}\n"
+	"  float distance=sqrt(distanceSq); float3 normal=float3(0.0f,1.0f,0.0f);\n"
+	"  if(distance*distance>1000.0f*1.17549435e-38f)normal=offset/distance;\n"
+	"  float3 point=0.5f*((center1+in.radiusA*normal+center2)-in.radiusB*normal);\n"
+	"  out.touching=1u;out.nx=normal.x;out.ny=normal.y;out.nz=normal.z;\n"
+	"  out.px=point.x;out.py=point.y;out.pz=point.z;out.separation=distance-totalRadius;results[i]=out;\n"
 	"}\n";
 #pragma clang diagnostic pop
 
@@ -1147,6 +1205,11 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			? [device newComputePipelineStateWithFunction:pairRefitFunction error:&error]
 			: nil;
 		[pairRefitFunction release];
+		id<MTLFunction> sphereManifoldFunction = [library newFunctionWithName:@"b3_sphere_manifolds"];
+		id<MTLComputePipelineState> sphereManifoldPipeline = sphereManifoldFunction != nil
+			? [device newComputePipelineStateWithFunction:sphereManifoldFunction error:&error]
+			: nil;
+		[sphereManifoldFunction release];
 		[library release];
 
 		NSString* contactSource = [NSString stringWithUTF8String:b3_contactSource];
@@ -1229,6 +1292,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			 shapeScanBlocksPipeline == nil || shapePrefixPipeline == nil || shapeScatterPipeline == nil ||
 			 pairCandidatesPipeline == nil || pairScanBlocksPipeline == nil || pairPrefixPipeline == nil ||
 			 pairAddOffsetsPipeline == nil || pairUpdateLeavesPipeline == nil || pairRefitPipeline == nil ||
+			 sphereManifoldPipeline == nil ||
 			 warmStartPipeline == nil || solvePipeline == nil ||
 			 restitutionPipeline == nil || warmStartMeshPipeline == nil || solveMeshPipeline == nil || restitutionMeshPipeline == nil ||
 			 warmStartOverflowPipeline == nil || solveOverflowPipeline == nil || restitutionOverflowPipeline == nil ||
@@ -1249,6 +1313,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[pairAddOffsetsPipeline release];
 			[pairUpdateLeavesPipeline release];
 			[pairRefitPipeline release];
+			[sphereManifoldPipeline release];
 			[warmStartPipeline release];
 			[solvePipeline release];
 			[restitutionPipeline release];
@@ -1286,6 +1351,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[pairAddOffsetsPipeline release];
 			[pairUpdateLeavesPipeline release];
 			[pairRefitPipeline release];
+			[sphereManifoldPipeline release];
 			[warmStartPipeline release];
 			[solvePipeline release];
 			[restitutionPipeline release];
@@ -1322,6 +1388,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		context->pairAddOffsetsPipeline = pairAddOffsetsPipeline;
 		context->pairUpdateLeavesPipeline = pairUpdateLeavesPipeline;
 		context->pairRefitPipeline = pairRefitPipeline;
+		context->sphereManifoldPipeline = sphereManifoldPipeline;
 		context->warmStartContactsPipeline = warmStartPipeline;
 		context->solveContactsPipeline = solvePipeline;
 		context->restitutionContactsPipeline = restitutionPipeline;
@@ -1369,6 +1436,8 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->pairCandidateBuffer release];
 	[context->pairSummaryBuffer release];
 	[context->pairBlockBuffer release];
+	[context->sphereManifoldInputBuffer release];
+	[context->sphereManifoldResultBuffer release];
 	[context->contactConstraintBuffer release];
 	[context->meshContactBuffer release];
 	[context->meshManifoldBuffer release];
@@ -1388,6 +1457,7 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->pairAddOffsetsPipeline release];
 	[context->pairUpdateLeavesPipeline release];
 	[context->pairRefitPipeline release];
+	[context->sphereManifoldPipeline release];
 	[context->warmStartContactsPipeline release];
 	[context->solveContactsPipeline release];
 	[context->restitutionContactsPipeline release];
@@ -1513,6 +1583,31 @@ static bool b3MetalEnsureFinalizePropertiesCapacity( b3MetalContext* context, NS
 	[context->finalizePropertiesBuffer release];
 	context->finalizePropertiesBuffer = buffer;
 	context->finalizePropertiesCapacity = capacity;
+	return true;
+}
+
+static bool b3MetalEnsureSphereManifoldCapacity( b3MetalContext* context, NSUInteger inputBytes, NSUInteger resultBytes )
+{
+	if ( context->sphereManifoldInputCapacity < inputBytes )
+	{
+		NSUInteger capacity = context->sphereManifoldInputCapacity > 0 ? context->sphereManifoldInputCapacity : 4096;
+		while ( capacity < inputBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->sphereManifoldInputBuffer release];
+		context->sphereManifoldInputBuffer = buffer;
+		context->sphereManifoldInputCapacity = capacity;
+	}
+	if ( context->sphereManifoldResultCapacity < resultBytes )
+	{
+		NSUInteger capacity = context->sphereManifoldResultCapacity > 0 ? context->sphereManifoldResultCapacity : 4096;
+		while ( capacity < resultBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->sphereManifoldResultBuffer release];
+		context->sphereManifoldResultBuffer = buffer;
+		context->sphereManifoldResultCapacity = capacity;
+	}
 	return true;
 }
 
@@ -2850,6 +2945,114 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 		*candidatesOut = context->pairCandidateBuffer.contents;
 		*candidateCountOut = (int)summary->totalCount;
 		if ( stats != NULL ) stats->gpuMilliseconds = gpuMilliseconds;
+		return true;
+	}
+}
+
+bool b3MetalComputeSphereManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
+	int contactCount, const b3MetalSphereManifoldResult** resultsOut, int* eligibleCountOut, b3MetalDispatchStats* stats )
+{
+	if ( resultsOut != NULL ) *resultsOut = NULL;
+	if ( eligibleCountOut != NULL ) *eligibleCountOut = 0;
+	if ( stats != NULL ) *stats = (b3MetalDispatchStats){ .bodyCount = contactCount };
+	if ( context == NULL || world == NULL || contactIndices == NULL || contactCount < 0 || resultsOut == NULL ||
+		 eligibleCountOut == NULL )
+	{
+		return false;
+	}
+	if ( contactCount == 0 ) return true;
+	if ( (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalSphereManifoldInput ) ||
+		 (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalSphereManifoldResult ) )
+	{
+		return false;
+	}
+
+	@autoreleasepool
+	{
+		NSUInteger inputBytes = (NSUInteger)contactCount * sizeof( b3MetalSphereManifoldInput );
+		NSUInteger resultBytes = (NSUInteger)contactCount * sizeof( b3MetalSphereManifoldResult );
+		if ( b3MetalEnsureSphereManifoldCapacity( context, inputBytes, resultBytes ) == false ) return false;
+		b3MetalSphereManifoldInput* inputs = context->sphereManifoldInputBuffer.contents;
+		memset( inputs, 0, inputBytes );
+		int eligibleCount = 0;
+		for ( int i = 0; i < contactCount; ++i )
+		{
+			int contactIndex = contactIndices[i];
+			if ( contactIndex < 0 || contactIndex >= world->contacts.count ) return false;
+			const b3Contact* contact = world->contacts.data + contactIndex;
+			if ( contact->contactId != contactIndex || contact->shapeIdA < 0 || contact->shapeIdA >= world->shapes.count ||
+				 contact->shapeIdB < 0 || contact->shapeIdB >= world->shapes.count )
+			{
+				return false;
+			}
+			const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
+			const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
+			if ( shapeA->type != b3_sphereShape || shapeB->type != b3_sphereShape ) continue;
+			const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
+			const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
+			b3WorldTransform transformA = b3GetBodyTransformQuick( (b3World*)world, (b3Body*)bodyA );
+			b3WorldTransform transformB = b3GetBodyTransformQuick( (b3World*)world, (b3Body*)bodyB );
+			b3MetalSphereManifoldInput* input = inputs + i;
+			input->eligible = 1;
+			input->centerAX = shapeA->sphere.center.x;
+			input->centerAY = shapeA->sphere.center.y;
+			input->centerAZ = shapeA->sphere.center.z;
+			input->radiusA = shapeA->sphere.radius;
+			input->centerBX = shapeB->sphere.center.x;
+			input->centerBY = shapeB->sphere.center.y;
+			input->centerBZ = shapeB->sphere.center.z;
+			input->radiusB = shapeB->sphere.radius;
+			input->qAX = transformA.q.v.x;
+			input->qAY = transformA.q.v.y;
+			input->qAZ = transformA.q.v.z;
+			input->qAW = transformA.q.s;
+			input->qBX = transformB.q.v.x;
+			input->qBY = transformB.q.v.y;
+			input->qBZ = transformB.q.v.z;
+			input->qBW = transformB.q.s;
+			input->positionAX = (float)transformA.p.x;
+			input->positionAY = (float)transformA.p.y;
+			input->positionAZ = (float)transformA.p.z;
+			input->positionBX = (float)transformB.p.x;
+			input->positionBY = (float)transformB.p.y;
+			input->positionBZ = (float)transformB.p.z;
+#if defined( BOX3D_DOUBLE_PRECISION )
+			memcpy( &input->positionAXBits, &transformA.p.x, sizeof( uint64_t ) );
+			memcpy( &input->positionAYBits, &transformA.p.y, sizeof( uint64_t ) );
+			memcpy( &input->positionAZBits, &transformA.p.z, sizeof( uint64_t ) );
+			memcpy( &input->positionBXBits, &transformB.p.x, sizeof( uint64_t ) );
+			memcpy( &input->positionBYBits, &transformB.p.y, sizeof( uint64_t ) );
+			memcpy( &input->positionBZBits, &transformB.p.z, sizeof( uint64_t ) );
+#endif
+			eligibleCount += 1;
+		}
+		if ( eligibleCount == 0 ) return true;
+
+		struct { uint32_t contactCount, padding[3]; } params = { (uint32_t)contactCount, { 0, 0, 0 } };
+		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
+		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
+		if ( commandBuffer == nil || encoder == nil ) return false;
+		id<MTLComputePipelineState> pipeline = context->sphereManifoldPipeline;
+		[encoder setComputePipelineState:pipeline];
+		[encoder setBuffer:context->sphereManifoldInputBuffer offset:0 atIndex:0];
+		[encoder setBuffer:context->sphereManifoldResultBuffer offset:0 atIndex:1];
+		[encoder setBytes:&params length:sizeof( params ) atIndex:2];
+		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
+			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
+		[encoder endEncoding];
+		[commandBuffer commit];
+		[commandBuffer waitUntilCompleted];
+		if ( commandBuffer.status != MTLCommandBufferStatusCompleted ) return false;
+		*resultsOut = context->sphereManifoldResultBuffer.contents;
+		*eligibleCountOut = eligibleCount;
+		if ( stats != NULL )
+		{
+			stats->commandBufferCount = 1;
+			if ( commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime )
+			{
+				stats->gpuMilliseconds = 1000.0 * ( commandBuffer.GPUEndTime - commandBuffer.GPUStartTime );
+			}
+		}
 		return true;
 	}
 }

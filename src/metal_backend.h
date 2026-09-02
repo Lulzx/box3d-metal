@@ -35,6 +35,20 @@ typedef struct b3MetalPairCandidate
 	int padding;
 } b3MetalPairCandidate;
 
+// Local sphere-sphere geometry in shape A's body frame. The record array is
+// indexed exactly like the narrow-phase contact-index array. eligible == 0
+// means the CPU path owns that contact; eligible != 0 is authoritative even
+// when touching == 0.
+typedef struct b3MetalSphereManifoldResult
+{
+	uint32_t eligible;
+	uint32_t touching;
+	float normalX, normalY, normalZ;
+	float pointX, pointY, pointZ;
+	float separation;
+	float padding;
+} b3MetalSphereManifoldResult;
+
 typedef struct b3MetalDispatchStats
 {
 	double gpuMilliseconds;
@@ -102,6 +116,13 @@ bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, 
 bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* world, const int* moveArray, int moveCount,
 	const b3MetalPairQueryRecord** records,
 	const b3MetalPairCandidate** candidates, int* candidateCount, b3MetalDispatchStats* stats );
+
+// Batch the first common convex narrow-phase route. Results preserve contact
+// array order and use exact VF64 subtraction for double-precision world
+// translations before converting the relative displacement to float, matching
+// Box3D's scalar narrow-phase boundary.
+bool b3MetalComputeSphereManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
+	int contactCount, const b3MetalSphereManifoldResult** results, int* eligibleCount, b3MetalDispatchStats* stats );
 
 // Mark the resident tree snapshot as matching CPU bounds after a successful
 // shape-result leaf update/refit and the corresponding CPU bookkeeping pass.

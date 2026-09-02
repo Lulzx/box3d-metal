@@ -160,7 +160,7 @@ above 63, shader stack overflow, changing counts, allocation failure, or more
 than 64 raw candidates per moved proxy on average fall back to the full CPU
 traversal before any partial result is consumed.
 
-Broad-phase topology mutation, narrow phase, contact and joint preparation,
+Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 unsupported joint solution, continuous collision, events, and sleeping/island
 mutation still run on the CPU. Unsupported
 constrained worlds retain the position-only path, which may lose to the CPU once
@@ -176,9 +176,9 @@ paths, not yet the final performance architecture.
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 | Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
-| Narrow phase and manifolds | CPU |
+| Narrow phase and manifolds | Sphere-sphere local geometry is batched on Metal; CPU applies persistence, materials, callbacks, and state transitions. Capsules, hulls, meshes, height fields, and compounds remain CPU |
 | Contact preparation and impulse storage | CPU |
-| Body and awake-shape finalization | Experimental Metal kernels; resident bounds feed tree refit and enlarged shapes are stably compacted, while CPU still applies the full flat result for public AABBs and retains CCD/topology |
+| Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
 | Double-precision world positions | VF64 exact add plus directed narrowing produces conservative far-world AABBs on Metal |
 | Cross-platform bit determinism | CPU only; Metal is tolerance-equivalent |
@@ -247,6 +247,8 @@ Resident moved-proxy and built-in shape filtering are recorded in
 [`benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md`](benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md).
 Resident existing-contact suppression is recorded in
 [`benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md`](benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md).
+The first batched sphere-sphere narrow-phase checkpoint is recorded in
+[`benchmarks/m4-pro-sphere-narrow-phase-2026-09-02.md`](benchmarks/m4-pro-sphere-narrow-phase-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in
