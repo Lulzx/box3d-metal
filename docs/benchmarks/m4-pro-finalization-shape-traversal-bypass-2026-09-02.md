@@ -39,3 +39,8 @@ the contiguous body finalization walk. The CPU still materializes transforms,
 move events, flags, force reset, and previous-pose state from every returned
 solver state. Persistent device body authority and deterministic device-authored
 move events are required before that final walk can disappear.
+
+The subsequent
+[`device transform registry`](m4-pro-device-transform-registry-2026-09-02.md)
+checkpoint connects finalization authority directly to the next resident
+narrow-phase consumer while retaining the CPU public-transform mirror.

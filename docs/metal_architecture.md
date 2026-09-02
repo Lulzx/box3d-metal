@@ -151,6 +151,20 @@ the CPU body traversal, solver-state readback, move-event bookkeeping, force
 reset, or public transform mirror. Device-authoritative body transforms and
 compact move events are the next residency boundary.
 
+On that bounded route, finalization also scatters each awake body's completed
+rotation and origin position into the body-id-indexed narrow-phase transform
+registry. Double-precision builds preserve the position as VF64 binary64 bits;
+the narrow-phase kernel continues to subtract those bits before narrowing the
+relative displacement. Static and sleeping records are seeded from the CPU
+only when body topology or the explicit transform revision changes. A
+successful command marks the registry authoritative for the current world
+step, so the next collision pass can consume it without repacking CPU body
+sims. `narrowPhaseTransformDeviceRefreshCount` exposes the device updates.
+Explicit transforms, topology changes, unsupported routes, sleeping, and CCD
+fail closed through the existing revision/step checks. This is transform
+authority for device collision consumers, not yet lazy public body transforms:
+the CPU finalization walk still maintains the public body-sim mirror.
+
 An independently opt-in pair stage copies Erin's existing static, kinematic,
 and dynamic tree topology into persistent shared Metal buffers. A monotonic
 broad-phase revision lets node snapshots remain resident across pair queries.

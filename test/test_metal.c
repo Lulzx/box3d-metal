@@ -2396,13 +2396,17 @@ static int MetalWorldIntegrationTest( void )
 
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    integrated world device=%s fusedDispatches=%llu shapeDispatches=%llu compact=%d/%d finalizeBytes=%llu/%llu "
-			"shapeWalkBypasses=%llu fullApplies=%llu syncShapes=%llu maxPositionError=%.3g maxRotationError=%.3g "
+			"shapeWalkBypasses=%llu transformRegistry=%llu/%llu/%llu fullApplies=%llu syncShapes=%llu "
+			"maxPositionError=%.3g maxRotationError=%.3g "
 			"maxAABBError=%.3g\n",
 			profile.deviceName, (unsigned long long)profile.unconstrainedDispatchCount,
 			(unsigned long long)profile.shapeDispatchCount, profile.lastEnlargedShapeResultCount, profile.lastShapeResultCount,
 			(unsigned long long)profile.lastFinalizationReadbackBytes,
 			(unsigned long long)profile.finalizationReadbackBypassCount,
 			(unsigned long long)profile.finalizationShapeTraversalBypassCount,
+			(unsigned long long)profile.narrowPhaseTransformUploadCount,
+			(unsigned long long)profile.narrowPhaseTransformReuseCount,
+			(unsigned long long)profile.narrowPhaseTransformDeviceRefreshCount,
 			(unsigned long long)profile.shapeResultApplyCount, (unsigned long long)profile.shapeBoundsSyncCount, maxPositionError,
 			maxRotationError, maxAABBError );
 	ENSURE( profile.enabled );
@@ -2413,6 +2417,8 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.finalizationReadbackBypassCount == 1 );
 	ENSURE( profile.lastFinalizationReadbackBytes == 0 );
 	ENSURE( profile.finalizationShapeTraversalBypassCount == 1 );
+	ENSURE( profile.narrowPhaseTransformUploadCount == 1 );
+	ENSURE( profile.narrowPhaseTransformDeviceRefreshCount == 1 );
 	ENSURE( profile.shapeDispatchCount == 1 );
 	ENSURE( profile.shapeFallbackCount == 0 );
 	ENSURE( profile.shapeCompactDispatchCount == 1 );
@@ -2615,7 +2621,9 @@ static int MetalConvexFrictionContactTest( void )
 		b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
 		b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
 	}
+	b3World* gpuWorldInternal = b3GetWorldFromId( gpuWorld );
 	float maxTransformError = 0.0f;
+	float maxResidentTransformError = 0.0f;
 	float maxVelocityError = 0.0f;
 	for ( int i = 0; i < count; ++i )
 	{
@@ -2628,6 +2636,22 @@ static int MetalConvexFrictionContactTest( void )
 		maxTransformError = b3MaxFloat( maxTransformError, fabsf( a.q.v.y - b.q.v.y ) );
 		maxTransformError = b3MaxFloat( maxTransformError, fabsf( a.q.v.z - b.q.v.z ) );
 		maxTransformError = b3MaxFloat( maxTransformError, fabsf( a.q.s - b.q.s ) );
+		b3WorldTransform residentTransform;
+		int residentSimIndex = B3_NULL_INDEX;
+		ENSURE( b3MetalReadResidentBodyTransform( gpuWorldInternal->metalContext, gpuWorldInternal,
+			gpuBodies[i].index1 - 1, &residentTransform, &residentSimIndex ) );
+		b3Body* gpuBody = b3Array_Get( gpuWorldInternal->bodies, gpuBodies[i].index1 - 1 );
+		ENSURE( residentSimIndex == gpuBody->localIndex );
+		maxResidentTransformError =
+			b3MaxFloat( maxResidentTransformError, (float)fabs( (double)residentTransform.p.x - (double)b.p.x ) );
+		maxResidentTransformError =
+			b3MaxFloat( maxResidentTransformError, (float)fabs( (double)residentTransform.p.y - (double)b.p.y ) );
+		maxResidentTransformError =
+			b3MaxFloat( maxResidentTransformError, (float)fabs( (double)residentTransform.p.z - (double)b.p.z ) );
+		maxResidentTransformError = b3MaxFloat( maxResidentTransformError, fabsf( residentTransform.q.v.x - b.q.v.x ) );
+		maxResidentTransformError = b3MaxFloat( maxResidentTransformError, fabsf( residentTransform.q.v.y - b.q.v.y ) );
+		maxResidentTransformError = b3MaxFloat( maxResidentTransformError, fabsf( residentTransform.q.v.z - b.q.v.z ) );
+		maxResidentTransformError = b3MaxFloat( maxResidentTransformError, fabsf( residentTransform.q.s - b.q.s ) );
 		b3Vec3 av = b3Body_GetLinearVelocity( cpuBodies[i] );
 		b3Vec3 bv = b3Body_GetLinearVelocity( gpuBodies[i] );
 		b3Vec3 aw = b3Body_GetAngularVelocity( cpuBodies[i] );
@@ -2641,12 +2665,16 @@ static int MetalConvexFrictionContactTest( void )
 
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    convex friction contacts dispatches=%llu treeUploads=%llu treeRefits=%llu finalizeBytes=%llu/%llu "
-			"shapeWalkBypasses=%llu gpu=%.3f ms transformError=%.3g velocityError=%.3g\n",
+			"shapeWalkBypasses=%llu transformRegistry=%llu/%llu/%llu gpu=%.3f ms transformError=%.3g "
+			"residentTransformError=%.3g velocityError=%.3g\n",
 			(unsigned long long)profile.contactDispatchCount, (unsigned long long)profile.pairTreeUploadCount,
 			(unsigned long long)profile.pairTreeRefitCount, (unsigned long long)profile.lastFinalizationReadbackBytes,
 			(unsigned long long)profile.finalizationReadbackBypassCount,
-			(unsigned long long)profile.finalizationShapeTraversalBypassCount, profile.lastContactGpuMilliseconds,
-			maxTransformError, maxVelocityError );
+			(unsigned long long)profile.finalizationShapeTraversalBypassCount,
+			(unsigned long long)profile.narrowPhaseTransformUploadCount,
+			(unsigned long long)profile.narrowPhaseTransformReuseCount,
+			(unsigned long long)profile.narrowPhaseTransformDeviceRefreshCount, profile.lastContactGpuMilliseconds,
+			maxTransformError, maxResidentTransformError, maxVelocityError );
 	ENSURE( profile.contactDispatchCount == 40 );
 	ENSURE( profile.pairDispatchCount >= 1 );
 	ENSURE( profile.pairFallbackCount == 0 );
@@ -2654,6 +2682,8 @@ static int MetalConvexFrictionContactTest( void )
 	ENSURE( profile.finalizationReadbackBypassCount == 10 );
 	ENSURE( profile.lastFinalizationReadbackBytes == 0 );
 	ENSURE( profile.finalizationShapeTraversalBypassCount == 10 );
+	ENSURE( profile.narrowPhaseTransformUploadCount == 1 );
+	ENSURE( profile.narrowPhaseTransformDeviceRefreshCount == 10 );
 	ENSURE( profile.shapeDispatchCount == 10 );
 	ENSURE( profile.shapeFallbackCount == 0 );
 	ENSURE( profile.shapeInputPackCount == 1 );
@@ -2665,7 +2695,16 @@ static int MetalConvexFrictionContactTest( void )
 	ENSURE( profile.positionDispatchCount == 0 );
 	ENSURE( profile.unconstrainedDispatchCount == 0 );
 	ENSURE( maxTransformError <= 2.0e-4f );
+	ENSURE( maxResidentTransformError <= 3.0e-5f );
 	ENSURE( maxVelocityError <= 2.0e-4f );
+
+	// An explicit CPU transform mutation invalidates device authority before a
+	// query or later collision can consume stale registry data.
+	b3WorldTransform mutationTransform = b3Body_GetTransform( gpuBodies[0] );
+	b3Body_SetTransform( gpuBodies[0], mutationTransform.p, mutationTransform.q );
+	b3WorldTransform invalidTransform;
+	ENSURE( b3MetalReadResidentBodyTransform( gpuWorldInternal->metalContext, gpuWorldInternal,
+		gpuBodies[0].index1 - 1, &invalidTransform, NULL ) == false );
 
 	// Disabling the resident broad-phase must restore the CPU tree invariant.
 	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, false ) );

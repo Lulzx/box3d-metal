@@ -132,6 +132,9 @@ typedef struct b3MetalProfile
 	uint64_t narrowPhaseGeometryReuseCount;
 	uint64_t narrowPhaseTransformUploadCount;
 	uint64_t narrowPhaseTransformReuseCount;
+	/// Finalization phases that refreshed the next-step narrow-phase transform
+	/// registry directly from private device results.
+	uint64_t narrowPhaseTransformDeviceRefreshCount;
 	int lastNarrowPhaseHullShapeCount;
 	int lastNarrowPhaseUniqueHullCount;
 	int lastNarrowPhaseResultCount;

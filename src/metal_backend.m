@@ -220,7 +220,7 @@ typedef struct b3MetalFinalizeProperties
 	float localCenterX, localCenterY, localCenterZ;
 	float maxExtentX, maxExtentY, maxExtentZ;
 	float centerX, centerY, centerZ;
-	float padding;
+	int32_t bodyId;
 	uint64_t centerXBits, centerYBits, centerZBits;
 } b3MetalFinalizeProperties;
 
@@ -480,7 +480,7 @@ static const char* b3_metalSource =
 	"struct FinalizeProperties {\n"
 	"  float localCenterX, localCenterY, localCenterZ;\n"
 	"  float maxExtentX, maxExtentY, maxExtentZ;\n"
-	"  float centerX, centerY, centerZ; float padding;\n"
+	"  float centerX, centerY, centerZ; int bodyId;\n"
 	"  ulong centerXBits, centerYBits, centerZBits;\n"
 	"};\n"
 	"struct FinalizeResult {\n"
@@ -537,7 +537,7 @@ static const char* b3_metalSource =
 	"struct ManifoldCompactParams { uint contactCount,blockCount,previousCount,previousGeneration,currentGeneration,p0,p1,p2; };\n"
 	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
 	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
-	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
+	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint transformCount; uint publishTransforms; };\n"
 	"struct ShapeParams { uint shapeCount; float extra; uint useResidentBounds; uint p1; };\n"
 	"struct ShapeCompactParams { uint shapeCount,blockCount,p0,p1; };\n"
 	"struct FusedParams {\n"
@@ -710,6 +710,7 @@ static const char* b3_metalSource =
 	"                               const device FinalizeProperties* finalizeProps [[buffer(2)]],\n"
 	"                               device FinalizeResult* results [[buffer(3)]],\n"
 	"                               constant FinalizeParams& p [[buffer(4)]],\n"
+	"                               device BodyTransform* bodyTransforms [[buffer(5)]],\n"
 	"                               uint i [[thread_position_in_grid]]) {\n"
 	"  if (i >= p.bodyCount) return;\n"
 	"  BodyState s = states[i]; BodyProperties bp = props[i]; FinalizeProperties fp = finalizeProps[i];\n"
@@ -753,6 +754,17 @@ static const char* b3_metalSource =
 	"  out.invInertiaWorld[3]=invIW[1].x; out.invInertiaWorld[4]=invIW[1].y; out.invInertiaWorld[5]=invIW[1].z;\n"
 	"  out.invInertiaWorld[6]=invIW[2].x; out.invInertiaWorld[7]=invIW[2].y; out.invInertiaWorld[8]=invIW[2].z;\n"
 	"  results[i] = out;\n"
+	"  if(p.publishTransforms!=0u&&fp.bodyId>=0&&uint(fp.bodyId)<p.transformCount){\n"
+	"    BodyTransform t=bodyTransforms[fp.bodyId];t.qx=q.x;t.qy=q.y;t.qz=q.z;t.qw=q.w;\n"
+	"    t.px=position.x;t.py=position.y;t.pz=position.z;t.supported=1u;t.index=int(i);t.flags=0u;\n"
+	"    t.localCenterX=fp.localCenterX;t.localCenterY=fp.localCenterY;t.localCenterZ=fp.localCenterZ;\n"
+	"#if defined(B3_DOUBLE_PRECISION)\n"
+	"    t.pxBits=b3_vf64_add_float(b3_vf64_add_float(fp.centerXBits,dp.x),origin.x);\n"
+	"    t.pyBits=b3_vf64_add_float(b3_vf64_add_float(fp.centerYBits,dp.y),origin.y);\n"
+	"    t.pzBits=b3_vf64_add_float(b3_vf64_add_float(fp.centerZBits,dp.z),origin.z);\n"
+	"#endif\n"
+	"    bodyTransforms[fp.bodyId]=t;\n"
+	"  }\n"
 	"}\n"
 	"kernel void b3_finalize_shapes(const device ShapeInput* inputs [[buffer(0)]],\n"
 	"                               const device FinalizeResult* bodies [[buffer(1)]],\n"
@@ -2845,6 +2857,7 @@ static void b3MetalPackFinalizeProperties( b3MetalFinalizeProperties* properties
 			.centerX = (float)sims[i].center.x,
 			.centerY = (float)sims[i].center.y,
 			.centerZ = (float)sims[i].center.z,
+			.bodyId = sims[i].bodyId,
 		};
 #if defined( BOX3D_DOUBLE_PRECISION )
 		memcpy( &properties[i].centerXBits, &sims[i].center.x, sizeof( uint64_t ) );
@@ -3229,6 +3242,9 @@ bool b3MetalIntegratePositions( b3MetalContext* context, b3BodyState* states, in
 	}
 }
 
+static bool b3MetalPrepareBodyTransformDeviceRefresh( b3MetalContext* context, const b3World* world );
+static void b3MetalCommitBodyTransformDeviceRefresh( b3MetalContext* context, b3World* world );
+
 bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState* states, const b3BodySim* sims,
 	int bodyCount, int subStepCount, float h, b3Vec3 gravity, float maxLinearSpeed, float maxAngularSpeed,
 	float invTimeStep, const b3MetalFinalizeResult** finalizeResults, b3StepContext* finalizationContext,
@@ -3275,6 +3291,8 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 		int shapeCount = finalizationContext != NULL ? b3MetalPackShapeInputs( context, finalizationContext ) : 0;
 		bool omitFinalizeReadback = finalizeResults != NULL && finalizationContext != NULL &&
 			finalizationContext->world->enableSleep == false && finalizationContext->world->enableContinuous == false;
+		bool publishBodyTransforms = omitFinalizeReadback &&
+			b3MetalPrepareBodyTransformDeviceRefresh( context, finalizationContext->world );
 		bool treeRefitEncoded = false;
 		bool shapeReadbackEncoded = false;
 
@@ -3319,8 +3337,11 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 		if ( finalizeResults != NULL )
 		{
 			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
-			struct { uint32_t bodyCount; float invTimeStep; uint32_t padding[2]; } finalizeParams =
-				{ (uint32_t)bodyCount, invTimeStep, { 0, 0 } };
+			struct { uint32_t bodyCount; float invTimeStep; uint32_t transformCount, publishTransforms; } finalizeParams = {
+				(uint32_t)bodyCount, invTimeStep,
+				publishBodyTransforms ? (uint32_t)finalizationContext->world->bodies.count : 0u,
+				publishBodyTransforms ? 1u : 0u,
+			};
 			id<MTLComputePipelineState> finalizePipeline = context->finalizeBodiesPipeline;
 			[encoder setComputePipelineState:finalizePipeline];
 			[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
@@ -3328,6 +3349,8 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 			[encoder setBuffer:context->finalizePropertiesBuffer offset:0 atIndex:2];
 			[encoder setBuffer:context->finalizeResultBuffer offset:0 atIndex:3];
 			[encoder setBytes:&finalizeParams length:sizeof( finalizeParams ) atIndex:4];
+			[encoder setBuffer:( publishBodyTransforms ? context->convexBodyTransformBuffer : context->finalizeResultBuffer )
+				offset:0 atIndex:5];
 			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
 				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
 			b3MetalEncodeShapeFinalization( context, encoder, finalizationContext, shapeCount );
@@ -3349,6 +3372,10 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 		if ( commandBuffer.status != MTLCommandBufferStatusCompleted )
 		{
 			return false;
+		}
+		if ( publishBodyTransforms )
+		{
+			b3MetalCommitBodyTransformDeviceRefresh( context, finalizationContext->world );
 		}
 
 		memcpy( states, context->bodyStateBuffer.contents, stateByteCount );
@@ -3477,6 +3504,7 @@ bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, 
 		[encoder setBuffer:context->finalizePropertiesBuffer offset:0 atIndex:2];
 		[encoder setBuffer:context->finalizeResultBuffer offset:0 atIndex:3];
 		[encoder setBytes:&params length:sizeof( params ) atIndex:4];
+		[encoder setBuffer:context->finalizeResultBuffer offset:0 atIndex:5];
 		NSUInteger groupWidth = b3MetalThreadgroupWidth( pipeline );
 		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( groupWidth, 1, 1 )];
@@ -4043,6 +4071,52 @@ static bool b3MetalEnsureBodyTransformRegistry( b3MetalContext* context, const b
 	context->convexBodyTransformStepIndex = world->stepIndex;
 	context->convexBodyTransformRevision = world->metalBodyTransformRevision;
 	( (b3World*)world )->metalNarrowPhaseTransformUploadCount += 1;
+	return true;
+}
+
+static bool b3MetalPrepareBodyTransformDeviceRefresh( b3MetalContext* context, const b3World* world )
+{
+	if ( context == NULL || world == NULL ) return false;
+	int bodyCount = world->bodies.count;
+	if ( context->convexBodyTransformBuffer != nil && context->convexBodyTransformCount == bodyCount &&
+		 context->convexBodyTransformRevision == world->metalBodyTransformRevision )
+	{
+		return true;
+	}
+	return b3MetalEnsureBodyTransformRegistry( context, world );
+}
+
+static void b3MetalCommitBodyTransformDeviceRefresh( b3MetalContext* context, b3World* world )
+{
+	B3_ASSERT( context != NULL && world != NULL );
+	context->convexBodyTransformCount = world->bodies.count;
+	context->convexBodyTransformStepIndex = world->stepIndex;
+	context->convexBodyTransformRevision = world->metalBodyTransformRevision;
+	world->metalNarrowPhaseTransformDeviceRefreshCount += 1;
+}
+
+bool b3MetalReadResidentBodyTransform( const b3MetalContext* context, const b3World* world, int bodyId,
+	b3WorldTransform* transform, int* bodySimIndex )
+{
+	if ( context == NULL || world == NULL || transform == NULL || bodyId < 0 || bodyId >= world->bodies.count ||
+		 context->convexBodyTransformBuffer == nil || context->convexBodyTransformCount != world->bodies.count ||
+		 context->convexBodyTransformStepIndex != world->stepIndex ||
+		 context->convexBodyTransformRevision != world->metalBodyTransformRevision )
+	{
+		return false;
+	}
+	const b3MetalBodyTransform* record =
+		( (const b3MetalBodyTransform*)context->convexBodyTransformBuffer.contents ) + bodyId;
+	if ( record->supported == 0 ) return false;
+	transform->q = (b3Quat){ { record->qx, record->qy, record->qz }, record->qw };
+#if defined( BOX3D_DOUBLE_PRECISION )
+	memcpy( &transform->p.x, &record->pxBits, sizeof( uint64_t ) );
+	memcpy( &transform->p.y, &record->pyBits, sizeof( uint64_t ) );
+	memcpy( &transform->p.z, &record->pzBits, sizeof( uint64_t ) );
+#else
+	transform->p = (b3Pos){ record->px, record->py, record->pz };
+#endif
+	if ( bodySimIndex != NULL ) *bodySimIndex = record->index;
 	return true;
 }
 
@@ -4631,6 +4705,8 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		bool finalizeBodies = stepContext->world->metalFinalizationEnabled;
 		bool omitFinalizeReadback = finalizeBodies && stepContext->world->enableSleep == false &&
 			stepContext->world->enableContinuous == false;
+		bool publishBodyTransforms = omitFinalizeReadback &&
+			b3MetalPrepareBodyTransformDeviceRefresh( context, stepContext->world );
 		NSUInteger finalizationBytes = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeResult );
 		NSUInteger finalizePropertyBytes = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeProperties );
 		if ( b3MetalEnsureBodyCapacity( context, stateBytes ) == false ||
@@ -5054,8 +5130,11 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		if ( finalizeBodies )
 		{
 			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
-			struct { uint32_t bodyCount; float invTimeStep; uint32_t padding[2]; } finalizeParams =
-				{ (uint32_t)bodyCount, stepContext->inv_dt, { 0, 0 } };
+			struct { uint32_t bodyCount; float invTimeStep; uint32_t transformCount, publishTransforms; } finalizeParams = {
+				(uint32_t)bodyCount, stepContext->inv_dt,
+				publishBodyTransforms ? (uint32_t)stepContext->world->bodies.count : 0u,
+				publishBodyTransforms ? 1u : 0u,
+			};
 			id<MTLComputePipelineState> finalizePipeline = context->finalizeBodiesPipeline;
 			[encoder setComputePipelineState:finalizePipeline];
 			[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:0];
@@ -5063,6 +5142,8 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 			[encoder setBuffer:context->finalizePropertiesBuffer offset:0 atIndex:2];
 			[encoder setBuffer:context->finalizeResultBuffer offset:0 atIndex:3];
 			[encoder setBytes:&finalizeParams length:sizeof( finalizeParams ) atIndex:4];
+			[encoder setBuffer:( publishBodyTransforms ? context->convexBodyTransformBuffer : context->finalizeResultBuffer )
+				offset:0 atIndex:5];
 			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
 				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
 			b3MetalEncodeShapeFinalization( context, encoder, stepContext, shapeCount );
@@ -5089,6 +5170,10 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		if ( prepareContactsOnGpu && *(const uint32_t*)context->contactPrepareStatusBuffer.contents != 0 )
 		{
 			return false;
+		}
+		if ( publishBodyTransforms )
+		{
+			b3MetalCommitBodyTransformDeviceRefresh( context, stepContext->world );
 		}
 		if ( prepareContactsOnGpu )
 		{

@@ -161,6 +161,11 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 // contactIndices may be NULL only when the revisioned contact input/order
 // registry is reusable for contactCount.
 bool b3MetalCanReuseConvexManifoldInputs( const b3MetalContext* context, const b3World* world, int contactCount );
+// Diagnostic access to the current device-refreshed transform registry. This
+// does not pack or synchronize CPU body sims and fails when the registry is not
+// authoritative for the world's current step and revision.
+bool b3MetalReadResidentBodyTransform( const b3MetalContext* context, const b3World* world, int bodyId,
+									   b3WorldTransform* transform, int* bodySimIndex );
 bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices, int contactCount,
 									const b3MetalConvexManifoldResult** results, int* resultCount, int* residentBypassCount,
 									b3MetalDispatchStats* stats );
