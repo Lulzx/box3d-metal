@@ -144,11 +144,24 @@ typedef struct b3MetalFinalizeResult
 	b3Vec3 deltaPosition;
 	b3Quat rotation;
 	b3Vec3 originOffset;
+	b3Vec3 transformPosition;
 	float sleepVelocity;
 	float maxVelocity;
 	float maxDeltaPosition;
 	b3Matrix3 invInertiaWorld;
 } b3MetalFinalizeResult;
+
+typedef struct b3MetalShapeAABBResult
+{
+	int shapeId;
+	int simIndex;
+	uint32_t enlarged;
+	uint32_t padding;
+	float lowerX, lowerY, lowerZ;
+	float upperX, upperY, upperZ;
+	float fatLowerX, fatLowerY, fatLowerZ;
+	float fatUpperX, fatUpperY, fatUpperZ;
+} b3MetalShapeAABBResult;
 
 // Constraint softness
 typedef struct b3Softness
@@ -217,6 +230,8 @@ typedef struct b3StepContext
 	// Optional arithmetic results produced by the Metal finalization kernel.
 	// Pointer lifetime is owned by the world's Metal context.
 	const b3MetalFinalizeResult* metalFinalizeResults;
+	const b3MetalShapeAABBResult* metalShapeResults;
+	int metalShapeResultCount;
 	bool metalStatesResident;
 
 	// array of all shape ids for shapes that have enlarged AABBs

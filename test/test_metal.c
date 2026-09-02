@@ -214,6 +214,8 @@ static int MetalFusedIntegrationTest( void )
 		float iy = b3MetalRandomFloat( 0.1f, 2.0f );
 		float iz = b3MetalRandomFloat( 0.1f, 2.0f );
 		sims[i].transform.q = b3MakeQuatFromAxisAngle( axis, b3MetalRandomFloat( -B3_PI, B3_PI ) );
+		sims[i].center = (b3Pos){ b3MetalRandomFloat( -100.0f, 100.0f ), b3MetalRandomFloat( -100.0f, 100.0f ),
+			b3MetalRandomFloat( -100.0f, 100.0f ) };
 		sims[i].force = (b3Vec3){ b3MetalRandomFloat( -100.0f, 100.0f ), b3MetalRandomFloat( -100.0f, 100.0f ),
 			b3MetalRandomFloat( -100.0f, 100.0f ) };
 		sims[i].torque = (b3Vec3){ b3MetalRandomFloat( -30.0f, 30.0f ), b3MetalRandomFloat( -30.0f, 30.0f ),
@@ -300,6 +302,8 @@ static int MetalFinalizationTest( void )
 		reference[i].deltaPosition = states[i].deltaPosition;
 		reference[i].rotation = b3NormalizeQuat( b3MulQuat( states[i].deltaRotation, sims[i].transform.q ) );
 		reference[i].originOffset = b3Neg( b3RotateVector( reference[i].rotation, sims[i].localCenter ) );
+		b3Vec3 center = { (float)sims[i].center.x, (float)sims[i].center.y, (float)sims[i].center.z };
+		reference[i].transformPosition = b3Add( b3Add( center, states[i].deltaPosition ), reference[i].originOffset );
 		reference[i].maxVelocity = b3Length( states[i].linearVelocity ) + b3Length( velocityArc );
 		reference[i].maxDeltaPosition = b3Length( states[i].deltaPosition ) + 2.0f * b3Length( rotationArc );
 		reference[i].sleepVelocity = b3MaxFloat( reference[i].maxVelocity,
@@ -320,7 +324,7 @@ static int MetalFinalizationTest( void )
 	{
 		const float* a = (const float*)( reference + i );
 		const float* b = (const float*)( gpu + i );
-		for ( int j = 0; j < 22; ++j )
+		for ( int j = 0; j < 25; ++j )
 		{
 			maxError = b3MaxFloat( maxError, fabsf( a[j] - b[j] ) );
 		}
@@ -340,6 +344,7 @@ static int MetalWorldIntegrationTest( void )
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.gravity = b3Vec3_zero;
 	worldDef.enableSleep = false;
+	worldDef.enableContinuous = false;
 	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
 	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
@@ -347,7 +352,12 @@ static int MetalWorldIntegrationTest( void )
 
 	b3BodyId* cpuBodies = malloc( (size_t)count * sizeof( b3BodyId ) );
 	b3BodyId* gpuBodies = malloc( (size_t)count * sizeof( b3BodyId ) );
-	ENSURE( cpuBodies != NULL && gpuBodies != NULL );
+	b3ShapeId* cpuShapes = malloc( (size_t)count * sizeof( b3ShapeId ) );
+	b3ShapeId* gpuShapes = malloc( (size_t)count * sizeof( b3ShapeId ) );
+	ENSURE( cpuBodies != NULL && gpuBodies != NULL && cpuShapes != NULL && gpuShapes != NULL );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.filter.maskBits = 0;
+	shapeDef.invokeContactCreation = false;
 	for ( int i = 0; i < count; ++i )
 	{
 		b3BodyDef bodyDef = b3DefaultBodyDef();
@@ -359,6 +369,25 @@ static int MetalWorldIntegrationTest( void )
 										   b3MetalRandomFloat( -20.0f, 20.0f ) };
 		cpuBodies[i] = b3CreateBody( cpuWorld, &bodyDef );
 		gpuBodies[i] = b3CreateBody( gpuWorld, &bodyDef );
+		if ( i % 3 == 0 )
+		{
+			b3Sphere sphere = { .center = { 0.13f, -0.09f, 0.07f }, .radius = 0.21f };
+			cpuShapes[i] = b3CreateSphereShape( cpuBodies[i], &shapeDef, &sphere );
+			gpuShapes[i] = b3CreateSphereShape( gpuBodies[i], &shapeDef, &sphere );
+		}
+		else if ( i % 3 == 1 )
+		{
+			b3Capsule capsule = { .center1 = { -0.18f, -0.12f, 0.05f }, .center2 = { 0.16f, 0.22f, -0.08f },
+				.radius = 0.11f };
+			cpuShapes[i] = b3CreateCapsuleShape( cpuBodies[i], &shapeDef, &capsule );
+			gpuShapes[i] = b3CreateCapsuleShape( gpuBodies[i], &shapeDef, &capsule );
+		}
+		else
+		{
+			b3BoxHull hull = b3MakeOffsetBoxHull( 0.17f, 0.23f, 0.14f, (b3Vec3){ 0.12f, -0.08f, 0.09f } );
+			cpuShapes[i] = b3CreateHullShape( cpuBodies[i], &shapeDef, &hull.base );
+			gpuShapes[i] = b3CreateHullShape( gpuBodies[i], &shapeDef, &hull.base );
+		}
 	}
 
 	b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
@@ -366,6 +395,7 @@ static int MetalWorldIntegrationTest( void )
 
 	float maxPositionError = 0.0f;
 	float maxRotationError = 0.0f;
+	float maxAABBError = 0.0f;
 	for ( int i = 0; i < count; ++i )
 	{
 		b3WorldTransform a = b3Body_GetTransform( cpuBodies[i] );
@@ -377,21 +407,41 @@ static int MetalWorldIntegrationTest( void )
 		maxRotationError = b3MaxFloat( maxRotationError, fabsf( a.q.v.y - b.q.v.y ) );
 		maxRotationError = b3MaxFloat( maxRotationError, fabsf( a.q.v.z - b.q.v.z ) );
 		maxRotationError = b3MaxFloat( maxRotationError, fabsf( a.q.s - b.q.s ) );
+		b3AABB cpuAABB = b3Shape_GetAABB( cpuShapes[i] );
+		b3AABB gpuAABB = b3Shape_GetAABB( gpuShapes[i] );
+		const float* cpuBounds = (const float*)&cpuAABB;
+		const float* gpuBounds = (const float*)&gpuAABB;
+		for ( int j = 0; j < 6; ++j )
+		{
+			maxAABBError = b3MaxFloat( maxAABBError, fabsf( cpuBounds[j] - gpuBounds[j] ) );
+		}
 	}
 
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
-	printf( "    integrated world device=%s fusedDispatches=%llu maxPositionError=%.3g maxRotationError=%.3g\n",
-			profile.deviceName, (unsigned long long)profile.unconstrainedDispatchCount, maxPositionError, maxRotationError );
+	printf( "    integrated world device=%s fusedDispatches=%llu shapeDispatches=%llu maxPositionError=%.3g "
+			"maxRotationError=%.3g maxAABBError=%.3g\n", profile.deviceName,
+			(unsigned long long)profile.unconstrainedDispatchCount, (unsigned long long)profile.shapeDispatchCount,
+			maxPositionError, maxRotationError, maxAABBError );
 	ENSURE( profile.enabled );
 	ENSURE( profile.unconstrainedDispatchCount == 4 );
 	ENSURE( profile.unconstrainedFallbackCount == 0 );
 	ENSURE( profile.finalizationEnabled );
 	ENSURE( profile.finalizationDispatchCount == 1 );
+#if defined( BOX3D_DOUBLE_PRECISION )
+	ENSURE( profile.shapeDispatchCount == 0 );
+	ENSURE( profile.shapeFallbackCount == 1 );
+#else
+	ENSURE( profile.shapeDispatchCount == 1 );
+	ENSURE( profile.shapeFallbackCount == 0 );
+#endif
 	ENSURE( profile.positionDispatchCount == 0 );
 	ENSURE( profile.positionFallbackCount == 0 );
 	ENSURE( maxPositionError <= 3.0e-5f );
 	ENSURE( maxRotationError <= 3.0e-5f );
+	ENSURE( maxAABBError <= 5.0e-5f );
 
+	free( gpuShapes );
+	free( cpuShapes );
 	free( gpuBodies );
 	free( cpuBodies );
 	b3DestroyWorld( gpuWorld );
@@ -534,6 +584,7 @@ static int MetalConvexFrictionContactTest( void )
 	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
 	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( gpuWorld, true ) );
 
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
 	shapeDef.baseMaterial.friction = 0.65f;
@@ -600,6 +651,14 @@ static int MetalConvexFrictionContactTest( void )
 		(unsigned long long)profile.contactDispatchCount, profile.lastContactGpuMilliseconds,
 		maxTransformError, maxVelocityError );
 	ENSURE( profile.contactDispatchCount == 40 );
+	ENSURE( profile.finalizationDispatchCount == 10 );
+#if defined( BOX3D_DOUBLE_PRECISION )
+	ENSURE( profile.shapeDispatchCount == 0 );
+	ENSURE( profile.shapeFallbackCount == 10 );
+#else
+	ENSURE( profile.shapeDispatchCount == 10 );
+	ENSURE( profile.shapeFallbackCount == 0 );
+#endif
 	ENSURE( profile.positionDispatchCount == 0 );
 	ENSURE( profile.unconstrainedDispatchCount == 0 );
 	ENSURE( maxTransformError <= 2.0e-4f );

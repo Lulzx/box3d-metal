@@ -29,6 +29,8 @@ typedef struct b3MetalProfile
 	uint64_t jointFallbackCount;
 	uint64_t finalizationDispatchCount;
 	uint64_t finalizationFallbackCount;
+	uint64_t shapeDispatchCount;
+	uint64_t shapeFallbackCount;
 	double lastPositionGpuMilliseconds;
 	double lastUnconstrainedGpuMilliseconds;
 	double lastContactGpuMilliseconds;

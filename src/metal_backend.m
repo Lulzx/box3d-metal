@@ -10,6 +10,7 @@
 #include "contact_solver.h"
 #include "joint.h"
 #include "physics_world.h"
+#include "shape.h"
 #include "solver_set.h"
 
 #include <stddef.h>
@@ -32,6 +33,7 @@ struct b3MetalContext
 	id<MTLComputePipelineState> integratePositionsPipeline;
 	id<MTLComputePipelineState> integrateUnconstrainedPipeline;
 	id<MTLComputePipelineState> finalizeBodiesPipeline;
+	id<MTLComputePipelineState> finalizeShapesPipeline;
 	id<MTLComputePipelineState> warmStartContactsPipeline;
 	id<MTLComputePipelineState> solveContactsPipeline;
 	id<MTLComputePipelineState> restitutionContactsPipeline;
@@ -55,6 +57,10 @@ struct b3MetalContext
 	NSUInteger finalizeResultCapacity;
 	id<MTLBuffer> finalizePropertiesBuffer;
 	NSUInteger finalizePropertiesCapacity;
+	id<MTLBuffer> shapeInputBuffer;
+	NSUInteger shapeInputCapacity;
+	id<MTLBuffer> shapeResultBuffer;
+	NSUInteger shapeResultCapacity;
 	id<MTLBuffer> contactConstraintBuffer;
 	NSUInteger contactConstraintCapacity;
 	id<MTLBuffer> meshContactBuffer;
@@ -95,12 +101,27 @@ typedef struct b3MetalFinalizeProperties
 {
 	float localCenterX, localCenterY, localCenterZ;
 	float maxExtentX, maxExtentY, maxExtentZ;
-	float padding[2];
+	float centerX, centerY, centerZ;
+	float padding;
 } b3MetalFinalizeProperties;
 
+typedef struct b3MetalShapeInput
+{
+	uint32_t bodyIndex;
+	uint32_t shapeId;
+	uint32_t type;
+	uint32_t padding;
+	float point1X, point1Y, point1Z, radius;
+	float point2X, point2Y, point2Z, margin;
+	float fatLowerX, fatLowerY, fatLowerZ;
+	float fatUpperX, fatUpperY, fatUpperZ;
+} b3MetalShapeInput;
+
 _Static_assert( sizeof( b3MetalBodyProperties ) == 128, "Metal body property ABI changed" );
-_Static_assert( sizeof( b3MetalFinalizeProperties ) == 32, "Metal finalization-property ABI changed" );
-_Static_assert( sizeof( b3MetalFinalizeResult ) == 88, "Metal finalization-result ABI changed" );
+_Static_assert( sizeof( b3MetalFinalizeProperties ) == 40, "Metal finalization-property ABI changed" );
+_Static_assert( sizeof( b3MetalFinalizeResult ) == 100, "Metal finalization-result ABI changed" );
+_Static_assert( sizeof( b3MetalShapeInput ) == 72, "Metal shape-input ABI changed" );
+_Static_assert( sizeof( b3MetalShapeAABBResult ) == 64, "Metal shape-result ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintPointWide ) == 192, "Metal wide contact point ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintWide ) == 1696, "Metal wide contact ABI changed" );
 _Static_assert( sizeof( b3ManifoldConstraintPoint ) == 48, "Metal mesh contact-point ABI changed" );
@@ -207,15 +228,27 @@ static const char* b3_metalSource =
 	"};\n"
 	"struct FinalizeProperties {\n"
 	"  float localCenterX, localCenterY, localCenterZ;\n"
-	"  float maxExtentX, maxExtentY, maxExtentZ; float padding[2];\n"
+	"  float maxExtentX, maxExtentY, maxExtentZ;\n"
+	"  float centerX, centerY, centerZ; float padding;\n"
 	"};\n"
 	"struct FinalizeResult {\n"
 	"  float dpx, dpy, dpz; float qx, qy, qz, qw;\n"
 	"  float originX, originY, originZ;\n"
+	"  float positionX, positionY, positionZ;\n"
 	"  float sleepVelocity, maxVelocity, maxDeltaPosition;\n"
 	"  float invInertiaWorld[9];\n"
 	"};\n"
+	"struct ShapeInput {\n"
+	"  uint bodyIndex, shapeId, type, padding;\n"
+	"  float p1x,p1y,p1z,radius; float p2x,p2y,p2z,margin;\n"
+	"  float oldLx,oldLy,oldLz,oldUx,oldUy,oldUz;\n"
+	"};\n"
+	"struct ShapeResult {\n"
+	"  uint shapeId, bodyIndex, enlarged, padding;\n"
+	"  float lx,ly,lz,ux,uy,uz; float flx,fly,flz,fux,fuy,fuz;\n"
+	"};\n"
 	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
+	"struct ShapeParams { uint shapeCount; float extra; uint p0; uint p1; };\n"
 	"struct FusedParams {\n"
 	"  uint bodyCount; float h; float maxLinearSpeed; float maxAngularSpeed;\n"
 	"  float gravityX, gravityY, gravityZ; uint integratePosition;\n"
@@ -396,6 +429,7 @@ static const char* b3_metalSource =
 	"  float sleepVelocity = max(maxVelocity, 0.5f * p.invTimeStep * maxDelta);\n"
 	"  float3 localCenter = float3(fp.localCenterX, fp.localCenterY, fp.localCenterZ);\n"
 	"  float3 origin = -rotate(q, localCenter);\n"
+	"  float3 position = float3(fp.centerX,fp.centerY,fp.centerZ) + dp + origin;\n"
 	"  float3x3 R = float3x3(rotate(q, float3(1.0f,0.0f,0.0f)),\n"
 	"                          rotate(q, float3(0.0f,1.0f,0.0f)),\n"
 	"                          rotate(q, float3(0.0f,0.0f,1.0f)));\n"
@@ -407,11 +441,41 @@ static const char* b3_metalSource =
 	"  FinalizeResult out; out.dpx=dp.x; out.dpy=dp.y; out.dpz=dp.z;\n"
 	"  out.qx=q.x; out.qy=q.y; out.qz=q.z; out.qw=q.w;\n"
 	"  out.originX=origin.x; out.originY=origin.y; out.originZ=origin.z;\n"
+	"  out.positionX=position.x; out.positionY=position.y; out.positionZ=position.z;\n"
 	"  out.sleepVelocity=sleepVelocity; out.maxVelocity=maxVelocity; out.maxDeltaPosition=maxDelta;\n"
 	"  out.invInertiaWorld[0]=invIW[0].x; out.invInertiaWorld[1]=invIW[0].y; out.invInertiaWorld[2]=invIW[0].z;\n"
 	"  out.invInertiaWorld[3]=invIW[1].x; out.invInertiaWorld[4]=invIW[1].y; out.invInertiaWorld[5]=invIW[1].z;\n"
 	"  out.invInertiaWorld[6]=invIW[2].x; out.invInertiaWorld[7]=invIW[2].y; out.invInertiaWorld[8]=invIW[2].z;\n"
 	"  results[i] = out;\n"
+	"}\n"
+	"kernel void b3_finalize_shapes(const device ShapeInput* inputs [[buffer(0)]],\n"
+	"                               const device FinalizeResult* bodies [[buffer(1)]],\n"
+	"                               device ShapeResult* results [[buffer(2)]],\n"
+	"                               constant ShapeParams& p [[buffer(3)]],\n"
+	"                               uint i [[thread_position_in_grid]]) {\n"
+	"  if (i >= p.shapeCount) return; ShapeInput in = inputs[i]; FinalizeResult b = bodies[in.bodyIndex];\n"
+	"  float4 q=float4(b.qx,b.qy,b.qz,b.qw); float3 position=float3(b.positionX,b.positionY,b.positionZ);\n"
+	"  float3 lo,hi;\n"
+	"  if (in.type == 5u) { float3 c=position+rotate(q,float3(in.p1x,in.p1y,in.p1z));\n"
+	"    lo=c-float3(in.radius); hi=c+float3(in.radius);\n"
+	"  } else if (in.type == 0u) {\n"
+	"    float3 a=position+rotate(q,float3(in.p1x,in.p1y,in.p1z));\n"
+	"    float3 c=position+rotate(q,float3(in.p2x,in.p2y,in.p2z));\n"
+	"    lo=min(a,c)-float3(in.radius); hi=max(a,c)+float3(in.radius);\n"
+	"  } else {\n"
+	"    float3 localLo=float3(in.p1x,in.p1y,in.p1z), localHi=float3(in.p2x,in.p2y,in.p2z);\n"
+	"    float3 center=0.5f*(localLo+localHi), extent=0.5f*(localHi-localLo);\n"
+	"    float3 rx=rotate(q,float3(1,0,0)), ry=rotate(q,float3(0,1,0)), rz=rotate(q,float3(0,0,1));\n"
+	"    float3 worldCenter=position+rotate(q,center); float3 worldExtent=abs(rx)*extent.x+abs(ry)*extent.y+abs(rz)*extent.z;\n"
+	"    lo=worldCenter-worldExtent; hi=worldCenter+worldExtent;\n"
+	"  }\n"
+	"  lo-=float3(p.extra); hi+=float3(p.extra);\n"
+	"  float3 oldLo=float3(in.oldLx,in.oldLy,in.oldLz), oldHi=float3(in.oldUx,in.oldUy,in.oldUz);\n"
+	"  bool enlarged=any(oldLo>lo)||any(hi>oldHi); float3 fatLo=oldLo, fatHi=oldHi;\n"
+	"  if (enlarged) { fatLo=lo-float3(in.margin); fatHi=hi+float3(in.margin); }\n"
+	"  ShapeResult out; out.shapeId=in.shapeId; out.bodyIndex=in.bodyIndex; out.enlarged=enlarged?1u:0u; out.padding=0;\n"
+	"  out.lx=lo.x;out.ly=lo.y;out.lz=lo.z;out.ux=hi.x;out.uy=hi.y;out.uz=hi.z;\n"
+	"  out.flx=fatLo.x;out.fly=fatLo.y;out.flz=fatLo.z;out.fux=fatHi.x;out.fuy=fatHi.y;out.fuz=fatHi.z; results[i]=out;\n"
 	"}\n";
 #pragma clang diagnostic pop
 
@@ -744,6 +808,11 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		id<MTLComputePipelineState> finalizePipeline =
 			finalizeFunction != nil ? [device newComputePipelineStateWithFunction:finalizeFunction error:&error] : nil;
 		[finalizeFunction release];
+		id<MTLFunction> finalizeShapesFunction = [library newFunctionWithName:@"b3_finalize_shapes"];
+		id<MTLComputePipelineState> finalizeShapesPipeline = finalizeShapesFunction != nil
+			? [device newComputePipelineStateWithFunction:finalizeShapesFunction error:&error]
+			: nil;
+		[finalizeShapesFunction release];
 		[library release];
 
 		NSString* contactSource = [NSString stringWithUTF8String:b3_contactSource];
@@ -822,7 +891,8 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			: nil;
 		[solveJointOverflowFunction release];
 		[contactLibrary release];
-		if ( positionPipeline == nil || fusedPipeline == nil || finalizePipeline == nil || warmStartPipeline == nil || solvePipeline == nil ||
+		if ( positionPipeline == nil || fusedPipeline == nil || finalizePipeline == nil || finalizeShapesPipeline == nil ||
+			 warmStartPipeline == nil || solvePipeline == nil ||
 			 restitutionPipeline == nil || warmStartMeshPipeline == nil || solveMeshPipeline == nil || restitutionMeshPipeline == nil ||
 			 warmStartOverflowPipeline == nil || solveOverflowPipeline == nil || restitutionOverflowPipeline == nil ||
 			 warmStartDistancePipeline == nil || solveDistancePipeline == nil || warmStartParallelPipeline == nil ||
@@ -832,6 +902,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[positionPipeline release];
 			[fusedPipeline release];
 			[finalizePipeline release];
+			[finalizeShapesPipeline release];
 			[warmStartPipeline release];
 			[solvePipeline release];
 			[restitutionPipeline release];
@@ -859,6 +930,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 			[positionPipeline release];
 			[fusedPipeline release];
 			[finalizePipeline release];
+			[finalizeShapesPipeline release];
 			[warmStartPipeline release];
 			[solvePipeline release];
 			[restitutionPipeline release];
@@ -885,6 +957,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		context->integratePositionsPipeline = positionPipeline;
 		context->integrateUnconstrainedPipeline = fusedPipeline;
 		context->finalizeBodiesPipeline = finalizePipeline;
+		context->finalizeShapesPipeline = finalizeShapesPipeline;
 		context->warmStartContactsPipeline = warmStartPipeline;
 		context->solveContactsPipeline = solvePipeline;
 		context->restitutionContactsPipeline = restitutionPipeline;
@@ -916,6 +989,8 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->bodyPropertiesBuffer release];
 	[context->finalizeResultBuffer release];
 	[context->finalizePropertiesBuffer release];
+	[context->shapeInputBuffer release];
+	[context->shapeResultBuffer release];
 	[context->contactConstraintBuffer release];
 	[context->meshContactBuffer release];
 	[context->meshManifoldBuffer release];
@@ -925,6 +1000,7 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->integratePositionsPipeline release];
 	[context->integrateUnconstrainedPipeline release];
 	[context->finalizeBodiesPipeline release];
+	[context->finalizeShapesPipeline release];
 	[context->warmStartContactsPipeline release];
 	[context->solveContactsPipeline release];
 	[context->restitutionContactsPipeline release];
@@ -1052,6 +1128,33 @@ static bool b3MetalEnsureFinalizePropertiesCapacity( b3MetalContext* context, NS
 	context->finalizePropertiesCapacity = capacity;
 	return true;
 }
+
+#if !defined( BOX3D_DOUBLE_PRECISION )
+static bool b3MetalEnsureShapeCapacity( b3MetalContext* context, NSUInteger inputBytes, NSUInteger resultBytes )
+{
+	if ( context->shapeInputCapacity < inputBytes )
+	{
+		NSUInteger capacity = context->shapeInputCapacity > 0 ? context->shapeInputCapacity : 4096;
+		while ( capacity < inputBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->shapeInputBuffer release];
+		context->shapeInputBuffer = buffer;
+		context->shapeInputCapacity = capacity;
+	}
+	if ( context->shapeResultCapacity < resultBytes )
+	{
+		NSUInteger capacity = context->shapeResultCapacity > 0 ? context->shapeResultCapacity : 4096;
+		while ( capacity < resultBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->shapeResultBuffer release];
+		context->shapeResultBuffer = buffer;
+		context->shapeResultCapacity = capacity;
+	}
+	return true;
+}
+#endif
 
 static bool b3MetalEnsureContactCapacity( b3MetalContext* context, NSUInteger requiredBytes )
 {
@@ -1343,8 +1446,113 @@ static void b3MetalPackFinalizeProperties( b3MetalFinalizeProperties* properties
 			.maxExtentX = sims[i].maxExtent.x,
 			.maxExtentY = sims[i].maxExtent.y,
 			.maxExtentZ = sims[i].maxExtent.z,
+			.centerX = (float)sims[i].center.x,
+			.centerY = (float)sims[i].center.y,
+			.centerZ = (float)sims[i].center.z,
 		};
 	}
+}
+
+static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepContext )
+{
+	stepContext->metalShapeResults = NULL;
+	stepContext->metalShapeResultCount = 0;
+	b3World* world = stepContext->world;
+	b3BodySim* sims = stepContext->sims;
+	int bodyCount = world->solverSets.data[b3_awakeSet].bodySims.count;
+	int shapeCount = 0;
+	for ( int i = 0; i < bodyCount; ++i )
+	{
+		shapeCount += world->bodies.data[sims[i].bodyId].shapeCount;
+	}
+	if ( shapeCount == 0 ) return 0;
+#if defined( BOX3D_DOUBLE_PRECISION )
+	B3_UNUSED( context );
+	world->metalShapeFallbackCount += 1;
+	return 0;
+#else
+	if ( b3MetalEnsureShapeCapacity( context, (NSUInteger)shapeCount * sizeof( b3MetalShapeInput ),
+		(NSUInteger)shapeCount * sizeof( b3MetalShapeAABBResult ) ) == false )
+	{
+		world->metalShapeFallbackCount += 1;
+		return 0;
+	}
+
+	b3MetalShapeInput* inputs = context->shapeInputBuffer.contents;
+	int outputIndex = 0;
+	for ( int simIndex = 0; simIndex < bodyCount; ++simIndex )
+	{
+		b3Body* body = world->bodies.data + sims[simIndex].bodyId;
+		int shapeId = body->headShapeId;
+		while ( shapeId != B3_NULL_INDEX )
+		{
+			b3Shape* shape = world->shapes.data + shapeId;
+			b3MetalShapeInput* input = inputs + outputIndex++;
+			*input = (b3MetalShapeInput){
+				.bodyIndex = (uint32_t)simIndex,
+				.shapeId = (uint32_t)shapeId,
+				.type = (uint32_t)shape->type,
+				.margin = shape->aabbMargin,
+				.fatLowerX = (float)shape->fatAABB.lowerBound.x,
+				.fatLowerY = (float)shape->fatAABB.lowerBound.y,
+				.fatLowerZ = (float)shape->fatAABB.lowerBound.z,
+				.fatUpperX = (float)shape->fatAABB.upperBound.x,
+				.fatUpperY = (float)shape->fatAABB.upperBound.y,
+				.fatUpperZ = (float)shape->fatAABB.upperBound.z,
+			};
+			if ( shape->type == b3_sphereShape )
+			{
+				input->point1X = shape->sphere.center.x;
+				input->point1Y = shape->sphere.center.y;
+				input->point1Z = shape->sphere.center.z;
+				input->point2X = shape->sphere.center.x;
+				input->point2Y = shape->sphere.center.y;
+				input->point2Z = shape->sphere.center.z;
+				input->radius = shape->sphere.radius;
+			}
+			else if ( shape->type == b3_capsuleShape )
+			{
+				input->point1X = shape->capsule.center1.x;
+				input->point1Y = shape->capsule.center1.y;
+				input->point1Z = shape->capsule.center1.z;
+				input->point2X = shape->capsule.center2.x;
+				input->point2Y = shape->capsule.center2.y;
+				input->point2Z = shape->capsule.center2.z;
+				input->radius = shape->capsule.radius;
+			}
+			else
+			{
+				b3AABB localAABB = b3ComputeShapeAABB( shape, b3Transform_identity );
+				input->point1X = (float)localAABB.lowerBound.x;
+				input->point1Y = (float)localAABB.lowerBound.y;
+				input->point1Z = (float)localAABB.lowerBound.z;
+				input->point2X = (float)localAABB.upperBound.x;
+				input->point2Y = (float)localAABB.upperBound.y;
+				input->point2Z = (float)localAABB.upperBound.z;
+			}
+			shapeId = shape->nextShapeId;
+		}
+	}
+	B3_ASSERT( outputIndex == shapeCount );
+	return shapeCount;
+#endif
+}
+
+static void b3MetalEncodeShapeFinalization( b3MetalContext* context, id<MTLComputeCommandEncoder> encoder,
+	int shapeCount )
+{
+	if ( shapeCount == 0 ) return;
+	struct { uint32_t shapeCount; float extra; uint32_t padding[2]; } params =
+		{ (uint32_t)shapeCount, B3_SPECULATIVE_DISTANCE, { 0, 0 } };
+	id<MTLComputePipelineState> pipeline = context->finalizeShapesPipeline;
+	[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+	[encoder setComputePipelineState:pipeline];
+	[encoder setBuffer:context->shapeInputBuffer offset:0 atIndex:0];
+	[encoder setBuffer:context->finalizeResultBuffer offset:0 atIndex:1];
+	[encoder setBuffer:context->shapeResultBuffer offset:0 atIndex:2];
+	[encoder setBytes:&params length:sizeof( params ) atIndex:3];
+	[encoder dispatchThreads:MTLSizeMake( (NSUInteger)shapeCount, 1, 1 )
+		threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
 }
 
 static bool b3MetalHasRestitution( const b3ContactConstraintWide* constraints, int count )
@@ -1443,7 +1651,8 @@ bool b3MetalIntegratePositions( b3MetalContext* context, b3BodyState* states, in
 
 bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState* states, const b3BodySim* sims,
 	int bodyCount, int subStepCount, float h, b3Vec3 gravity, float maxLinearSpeed, float maxAngularSpeed,
-	float invTimeStep, const b3MetalFinalizeResult** finalizeResults, b3MetalDispatchStats* stats )
+	float invTimeStep, const b3MetalFinalizeResult** finalizeResults, b3StepContext* finalizationContext,
+	b3MetalDispatchStats* stats )
 {
 	if ( finalizeResults != NULL )
 	{
@@ -1483,6 +1692,7 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 		{
 			b3MetalPackFinalizeProperties( context->finalizePropertiesBuffer.contents, sims, bodyCount );
 		}
+		int shapeCount = finalizationContext != NULL ? b3MetalPackShapeInputs( context, finalizationContext ) : 0;
 
 		b3MetalFusedParams params = {
 			.bodyCount = (uint32_t)bodyCount,
@@ -1536,6 +1746,7 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 			[encoder setBytes:&finalizeParams length:sizeof( finalizeParams ) atIndex:4];
 			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
 				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
+			b3MetalEncodeShapeFinalization( context, encoder, shapeCount );
 		}
 		[encoder endEncoding];
 		[commandBuffer commit];
@@ -1550,6 +1761,12 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 		{
 			*finalizeResults = context->finalizeResultBuffer.contents;
 		}
+		if ( finalizationContext != NULL && shapeCount > 0 )
+		{
+			finalizationContext->metalShapeResults = context->shapeResultBuffer.contents;
+			finalizationContext->metalShapeResultCount = shapeCount;
+			finalizationContext->world->metalShapeDispatchCount += 1;
+		}
 		if ( stats != NULL && commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime )
 		{
 			stats->gpuMilliseconds = 1000.0 * ( commandBuffer.GPUEndTime - commandBuffer.GPUStartTime );
@@ -1563,7 +1780,7 @@ bool b3MetalIntegrateUnconstrained( b3MetalContext* context, b3BodyState* states
 									b3MetalDispatchStats* stats )
 {
 	return b3MetalIntegrateUnconstrainedSubsteps( context, states, sims, bodyCount, 1, h, gravity, maxLinearSpeed,
-		maxAngularSpeed, 0.0f, NULL, stats );
+		maxAngularSpeed, 0.0f, NULL, NULL, stats );
 }
 
 bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, const b3BodySim* sims,
@@ -1738,6 +1955,7 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		{
 			b3MetalPackFinalizeProperties( context->finalizePropertiesBuffer.contents, stepContext->sims, bodyCount );
 		}
+		int shapeCount = finalizeBodies ? b3MetalPackShapeInputs( context, stepContext ) : 0;
 		bool constraintsAlreadyShared = contactBytes == 0 || stepContext->wideConstraints == context->contactConstraintBuffer.contents;
 		if ( contactBytes > 0 && constraintsAlreadyShared == false )
 		{
@@ -2094,6 +2312,7 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 			[encoder setBytes:&finalizeParams length:sizeof( finalizeParams ) atIndex:4];
 			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
 				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
+			b3MetalEncodeShapeFinalization( context, encoder, shapeCount );
 		}
 
 		[encoder endEncoding];
@@ -2106,6 +2325,12 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 
 		memcpy( stepContext->states, context->bodyStateBuffer.contents, stateBytes );
 		stepContext->metalFinalizeResults = finalizeBodies ? context->finalizeResultBuffer.contents : NULL;
+		if ( shapeCount > 0 )
+		{
+			stepContext->metalShapeResults = context->shapeResultBuffer.contents;
+			stepContext->metalShapeResultCount = shapeCount;
+			stepContext->world->metalShapeDispatchCount += 1;
+		}
 		if ( contactBytes > 0 && constraintsAlreadyShared == false )
 		{
 			memcpy( stepContext->wideConstraints, context->contactConstraintBuffer.contents, contactBytes );

@@ -55,7 +55,8 @@ bool b3MetalIntegrateUnconstrained( b3MetalContext* context, b3BodyState* states
 // and state is read back only after the final substep.
 bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState* states, const b3BodySim* sims,
 	int bodyCount, int subStepCount, float h, b3Vec3 gravity, float maxLinearSpeed, float maxAngularSpeed,
-	float invTimeStep, const b3MetalFinalizeResult** finalizeResults, b3MetalDispatchStats* stats );
+	float invTimeStep, const b3MetalFinalizeResult** finalizeResults, b3StepContext* finalizationContext,
+	b3MetalDispatchStats* stats );
 
 // Execute velocity integration, colored convex/mesh contact and distance-joint
 // solving, and position integration while state remains GPU-resident for every

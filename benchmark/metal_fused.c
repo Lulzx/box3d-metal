@@ -126,7 +126,7 @@ int main( void )
 		for ( int i = 0; i < 3; ++i )
 		{
 			if ( b3MetalIntegrateUnconstrainedSubsteps( context, gpu, sims, count, subStepCount, 1.0f / 240.0f,
-					(b3Vec3){ 0.0f, -10.0f, 0.0f }, 80.0f, 47.12389f, 0.0f, NULL, &stats ) == false )
+					(b3Vec3){ 0.0f, -10.0f, 0.0f }, 80.0f, 47.12389f, 0.0f, NULL, NULL, &stats ) == false )
 			{
 				return 3;
 			}
@@ -146,7 +146,7 @@ int main( void )
 		for ( int i = 0; i < repeats; ++i )
 		{
 			if ( b3MetalIntegrateUnconstrainedSubsteps( context, gpu, sims, count, subStepCount, 1.0f / 240.0f,
-					(b3Vec3){ 0.0f, -10.0f, 0.0f }, 80.0f, 47.12389f, 0.0f, NULL, &stats ) == false )
+					(b3Vec3){ 0.0f, -10.0f, 0.0f }, 80.0f, 47.12389f, 0.0f, NULL, NULL, &stats ) == false )
 			{
 				return 3;
 			}

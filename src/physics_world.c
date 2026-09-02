@@ -616,6 +616,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.jointFallbackCount = world->metalJointFallbackCount;
 	profile.finalizationDispatchCount = world->metalFinalizationDispatchCount;
 	profile.finalizationFallbackCount = world->metalFinalizationFallbackCount;
+	profile.shapeDispatchCount = world->metalShapeDispatchCount;
+	profile.shapeFallbackCount = world->metalShapeFallbackCount;
 	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
 	profile.lastUnconstrainedGpuMilliseconds = world->metalLastUnconstrainedGpuMilliseconds;
 	profile.lastContactGpuMilliseconds = world->metalLastContactGpuMilliseconds;

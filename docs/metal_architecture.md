@@ -54,11 +54,16 @@ An experimental finalization kernel ports the arithmetic portion of Erin
 Catto's body-finalization loop: final rotation, body-origin offset,
 farthest-point motion and sleep metrics, and world-space inverse inertia. It
 consumes resident solver state in the same command buffer for the fused
-unconstrained and fully supported constraint paths. Double-precision position
-accumulation, CCD, events, sleeping/island mutation, shape AABBs, and
-broad-phase proxy updates remain on the CPU. It is separately opt-in because
-the additional shared result stream has not demonstrated a stable whole-world
-win.
+unconstrained and fully supported constraint paths. The same command buffer now
+continues into shape finalization for awake non-CCD bodies: spheres and capsules
+use their exact transformed primitives, while hull and aggregate geometry use
+their upstream local bounds. The kernel applies speculative and fat-AABB
+margins and emits deterministic flat results in body/shape-list order. CPU code
+still owns double-precision outward rounding, CCD, events, sleeping/island
+mutation, dynamic-tree mutation, and pair generation. It is separately opt-in
+because reading one 64-byte result per awake shape has not demonstrated a
+whole-world win; the next residency boundary is GPU pair generation consuming
+these bounds before any compact CPU handoff.
 
 Enable it with:
 
@@ -73,9 +78,9 @@ fallback count, and last GPU execution time. `b3World_DisableMetal` releases the
 resources. `minimumBodyCount` is deliberately caller-controlled until benchmark
 coverage establishes stable defaults across Apple GPU families.
 
-Broad phase, narrow phase, contact and joint preparation, unsupported joint
-solution, continuous collision, events, sleeping/island mutation, bounds, and
-the topology half of finalization still run on the CPU. Unsupported
+Broad-phase tree mutation and queries, narrow phase, contact and joint
+preparation, unsupported joint solution, continuous collision, events, and
+sleeping/island mutation still run on the CPU. Unsupported
 constrained worlds retain the position-only path, which may lose to the CPU once
 transfer and command-buffer latency are included. These are correct production
 paths, not yet the final performance architecture.
@@ -90,9 +95,9 @@ paths, not yet the final performance architecture.
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 | Broad/narrow phase and manifolds | CPU |
 | Contact preparation and impulse storage | CPU |
-| Body-finalization arithmetic | Experimental opt-in Metal kernel; topology and bounds stay CPU |
+| Body and awake-shape finalization | Experimental opt-in Metal kernels; CPU applies flat results and retains CCD/tree topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
-| Double-precision world positions | Supported by CPU finalization; GPU arithmetic remains float like `b3BodyState` |
+| Double-precision world positions | CPU shape fallback preserves outward-rounded far-world AABBs; VF64 exact add/narrow is the candidate GPU seam |
 | Cross-platform bit determinism | CPU only; Metal is tolerance-equivalent |
 
 ## Target pipeline
@@ -146,3 +151,5 @@ Parallel-joint results are in
 Experimental finalization results, including the current negative whole-world
 performance evidence, are in
 [`benchmarks/m4-pro-finalization-2026-09-02.md`](benchmarks/m4-pro-finalization-2026-09-02.md).
+The follow-on shape-AABB implementation and result-stream measurements are in
+[`benchmarks/m4-pro-shape-finalization-2026-09-02.md`](benchmarks/m4-pro-shape-finalization-2026-09-02.md).

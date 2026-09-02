@@ -714,7 +714,11 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 		{
 			sim->center = b3OffsetPos( sim->center, metalResult->deltaPosition );
 			sim->transform.q = metalResult->rotation;
+#if defined( BOX3D_DOUBLE_PRECISION )
 			sim->transform.p = b3OffsetPos( sim->center, metalResult->originOffset );
+#else
+			sim->transform.p = metalResult->transformPosition;
+#endif
 			maxVelocity = metalResult->maxVelocity;
 			maxDeltaPosition = metalResult->maxDeltaPosition;
 			sleepVelocity = metalResult->sleepVelocity;
@@ -838,7 +842,7 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 			}
 		}
 
-		// Update shapes AABBs
+		// Update shapes AABBs. Non-fast shape results may be applied in a flat pass after body finalization.
 		b3WorldTransform transform = sim->transform;
 		bool isFast = ( sim->flags & b3_isFast ) != 0;
 		int shapeId = body->headShapeId;
@@ -855,7 +859,7 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 				// Bit-set to keep the move array sorted
 				b3SetBit( enlargedSimBitSet, simIndex );
 			}
-			else
+			else if ( stepContext->metalShapeResults == NULL )
 			{
 				b3AABB aabb = b3ComputeFatShapeAABB( shape, transform, speculativeScalar );
 				shape->aabb = aabb;
@@ -879,6 +883,44 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 	}
 
 	b3TracyCZoneEnd( finalize_bodies );
+}
+
+// Implements b3ParallelForCallback. The Metal results are flat so this avoids the per-body
+// shape-list traversal in the ordinary (non-CCD) finalization path.
+static void b3ApplyMetalShapeResultsTask( int startIndex, int endIndex, int workerIndex, void* context )
+{
+	b3StepContext* stepContext = context;
+	b3World* world = stepContext->world;
+	b3BitSet* enlargedSimBitSet = &world->taskContexts.data[workerIndex].enlargedSimBitSet;
+
+	for ( int resultIndex = startIndex; resultIndex < endIndex; ++resultIndex )
+	{
+		const b3MetalShapeAABBResult* result = stepContext->metalShapeResults + resultIndex;
+		b3BodySim* sim = stepContext->sims + result->simIndex;
+
+		// CCD owns bounds for fast bodies. The body finalization task already records them in the
+		// enlarged bit set, matching the CPU path.
+		if ( sim->flags & b3_isFast )
+		{
+			continue;
+		}
+
+		b3Shape* shape = b3Array_Get( world->shapes, result->shapeId );
+		shape->aabb = (b3AABB){
+			{ result->lowerX, result->lowerY, result->lowerZ },
+			{ result->upperX, result->upperY, result->upperZ },
+		};
+		B3_ASSERT( ( shape->flags & b3_enlargedAABB ) == 0 );
+		if ( result->enlarged != 0 )
+		{
+			shape->fatAABB = (b3AABB){
+				{ result->fatLowerX, result->fatLowerY, result->fatLowerZ },
+				{ result->fatUpperX, result->fatUpperY, result->fatUpperZ },
+			};
+			shape->flags |= b3_enlargedAABB;
+			b3SetBit( enlargedSimBitSet, result->simIndex );
+		}
+	}
 }
 
 typedef struct b3BlockDim
@@ -1237,7 +1279,7 @@ static bool b3ExecuteMetalUnconstrainedSubsteps( b3StepContext* context, int sub
 		world->metalFinalizationEnabled ? &context->metalFinalizeResults : NULL;
 	bool success = b3MetalIntegrateUnconstrainedSubsteps( world->metalContext, context->states, context->sims, bodyCount,
 		subStepCount, context->h, world->gravity, context->maxLinearVelocity, maxAngularSpeed, context->inv_dt,
-		finalizeResults, &stats );
+		finalizeResults, world->metalFinalizationEnabled ? context : NULL, &stats );
 	if ( success == false )
 	{
 		world->metalUnconstrainedFallbackCount += (uint64_t)subStepCount;
@@ -1759,6 +1801,8 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		stepContext->sims = awakeSet->bodySims.data;
 		stepContext->states = awakeSet->bodyStates.data;
 		stepContext->metalFinalizeResults = NULL;
+		stepContext->metalShapeResults = NULL;
+		stepContext->metalShapeResultCount = 0;
 		stepContext->metalStatesResident = false;
 
 		// count contacts, joints, and colors
@@ -2227,6 +2271,11 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		b3ExecuteMetalFinalization( stepContext, awakeBodyCount );
 #endif
 		b3ParallelFor( world, &b3FinalizeBodiesTask, awakeBodyCount, 16, stepContext, "ccd" );
+		if ( stepContext->metalShapeResultCount > 0 )
+		{
+			b3ParallelFor( world, &b3ApplyMetalShapeResultsTask, stepContext->metalShapeResultCount, 32, stepContext,
+				"metal shape finalize" );
+		}
 
 		// Free in reverse order
 		b3StackFree( &world->stack, graphBlocks );

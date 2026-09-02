@@ -279,6 +279,8 @@ typedef struct b3World
 	uint64_t metalJointFallbackCount;
 	uint64_t metalFinalizationDispatchCount;
 	uint64_t metalFinalizationFallbackCount;
+	uint64_t metalShapeDispatchCount;
+	uint64_t metalShapeFallbackCount;
 	double metalLastPositionGpuMilliseconds;
 	double metalLastUnconstrainedGpuMilliseconds;
 	double metalLastContactGpuMilliseconds;
