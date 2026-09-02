@@ -130,6 +130,9 @@ typedef struct b3MetalProfile
 	uint64_t shapeBoundsResidentDispatchCount;
 	uint64_t shapeInputPackCount;
 	uint64_t shapeInputReuseCount;
+	/// Constant-time awake-body order revision checks that authorize shape-input
+	/// reuse without scanning every body id.
+	uint64_t shapeInputOrderRevisionCheckCount;
 	uint64_t shapeResultApplyCount;
 	uint64_t shapeBoundsSyncCount;
 	int lastShapeResultCount;

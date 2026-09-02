@@ -40,9 +40,10 @@ non-CCD worlds with contact masks disabled do not blit or apply that stream;
 public AABB queries stage only the requested 64-byte record, while route changes
 and Metal disable synchronize the remaining results explicitly.
 Revision-stable steps also reuse the persistent 72-byte shape-input registry:
-an exact awake-body id sequence protects each cached body index, so geometry,
-filters, proxy keys, and local bounds are not repacked or recomputed. Sleep,
-wake, topology, transform, and filter changes rebuild fail-closed.
+a monotonic awake-order revision protects each cached body index in constant
+time, so stable steps neither scan body ids nor repack geometry, filters, proxy
+keys, and local bounds. Sleep, wake, topology, transform, and filter changes
+rebuild fail-closed.
 On the sleep-disabled, non-CCD route, finalization also authors deterministic
 move events into private Metal storage. Public event queries lazily materialize
 only that 72-byte-per-body stream; unqueried steps perform no move-event

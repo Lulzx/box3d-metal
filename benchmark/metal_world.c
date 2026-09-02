@@ -77,6 +77,7 @@ int main( void )
 		enableBroadPhase ? "on" : "off", createShapes ? "sphere_per_body" : "none" );
 	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,finalization_readback_bytes,finalization_readback_bypasses,"
 		"finalization_shape_traversal_bypasses,finalization_body_traversal_bypasses,body_sim_syncs,last_body_sim_sync_count,"
+		"shape_input_packs,shape_input_reuses,shape_input_order_revision_checks,"
 		"move_event_dispatches,move_event_syncs,last_move_event_readback_bytes,"
 		"transform_device_refreshes,pair_kernel_ms,pair_dispatches,"
 		"body_state_uploads,body_state_reuses,last_body_state_upload_bytes,body_state_revision_checks,body_state_syncs,last_body_state_readback_bytes,"
@@ -115,7 +116,9 @@ int main( void )
 		{
 			uint64_t expectedSteps = (uint64_t)( 5 + repeats );
 			if ( metal.finalizationBodyTraversalBypassCount != expectedSteps || metal.bodySimSyncCount != 0 ||
-				metal.lastBodySimSyncCount != 0 )
+				metal.lastBodySimSyncCount != 0 ||
+				( createShapes && ( metal.shapeInputPackCount != 1 || metal.shapeInputReuseCount + 1 != expectedSteps ||
+					metal.shapeInputOrderRevisionCheckCount != expectedSteps ) ) )
 			{
 				fprintf( stderr, "unexpected body-finalization residency telemetry: bypasses=%llu expected=%llu syncs=%llu last=%llu\n",
 					(unsigned long long)metal.finalizationBodyTraversalBypassCount, (unsigned long long)expectedSteps,
@@ -123,7 +126,7 @@ int main( void )
 				return 1;
 			}
 		}
-		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.3f\n",
+		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.3f\n",
 			bodyCount,
 			repeats, cpuMs, gpuMs,
 			metal.lastUnconstrainedGpuMilliseconds, (unsigned long long)metal.lastFinalizationReadbackBytes,
@@ -132,6 +135,9 @@ int main( void )
 			(unsigned long long)metal.finalizationBodyTraversalBypassCount,
 			(unsigned long long)metal.bodySimSyncCount,
 			(unsigned long long)metal.lastBodySimSyncCount,
+			(unsigned long long)metal.shapeInputPackCount,
+			(unsigned long long)metal.shapeInputReuseCount,
+			(unsigned long long)metal.shapeInputOrderRevisionCheckCount,
 			(unsigned long long)metal.bodyMoveEventDispatchCount,
 			(unsigned long long)metal.bodyMoveEventSyncCount,
 			(unsigned long long)metal.lastBodyMoveEventReadbackBytes,

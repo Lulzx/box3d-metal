@@ -2246,28 +2246,29 @@ static int MetalShapeInputRegistryTest( void )
 	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
 	ENSURE( profile.shapeInputPackCount == 1 );
 	ENSURE( profile.shapeInputReuseCount == 1 );
+	ENSURE( profile.shapeInputOrderRevisionCheckCount == 2 );
 
-	// Sleeping a middle body swap-removes an awake sim without changing shape
-	// geometry. Exact cached body ids must reject the old bodyIndex mapping.
+	// Sleep and immediately wake a middle body before the next step. The awake
+	// count returns to its old value, but swap-removal plus append changes the
+	// bodyIndex mapping; only the monotonic order revision can reject this cache.
+	b3World* world = b3GetWorldFromId( worldId );
+	uint64_t orderRevision = world->metalAwakeBodyRevision;
 	b3Body_SetAwake( bodies[17], false );
 	ENSURE( b3Body_IsAwake( bodies[17] ) == false );
-	b3World_Step( worldId, 1.0f / 60.0f, 1 );
-	profile = b3World_GetMetalProfile( worldId );
-	ENSURE( profile.shapeInputPackCount == 2 );
-	ENSURE( profile.shapeInputReuseCount == 1 );
-	ENSURE( profile.shapeBoundsSyncCount == bodyCount );
-
 	b3Body_SetAwake( bodies[17], true );
 	ENSURE( b3Body_IsAwake( bodies[17] ) );
+	ENSURE( world->metalAwakeBodyRevision == orderRevision + 2 );
 	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 	profile = b3World_GetMetalProfile( worldId );
-	printf( "    shape registry packs=%llu reuses=%llu awakeReorders=2 syncShapes=%llu\n",
+	printf( "    shape registry packs=%llu reuses=%llu orderChecks=%llu awakeReorders=2 syncShapes=%llu\n",
 			(unsigned long long)profile.shapeInputPackCount, (unsigned long long)profile.shapeInputReuseCount,
+			(unsigned long long)profile.shapeInputOrderRevisionCheckCount,
 			(unsigned long long)profile.shapeBoundsSyncCount );
-	ENSURE( profile.shapeInputPackCount == 3 );
+	ENSURE( profile.shapeInputPackCount == 2 );
 	ENSURE( profile.shapeInputReuseCount == 2 );
-	ENSURE( profile.shapeBoundsSyncCount == 2 * bodyCount - 1 );
+	ENSURE( profile.shapeInputOrderRevisionCheckCount == 4 );
+	ENSURE( profile.shapeBoundsSyncCount == bodyCount );
 
 	// Filter-only edits may deliberately skip immediate contact invocation and
 	// therefore do not need to mutate tree topology. They still invalidate the
@@ -2277,9 +2278,10 @@ static int MetalShapeInputRegistryTest( void )
 	b3Shape_SetFilter( shapes[9], filter, false );
 	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 	profile = b3World_GetMetalProfile( worldId );
-	ENSURE( profile.shapeInputPackCount == 4 );
+	ENSURE( profile.shapeInputPackCount == 3 );
 	ENSURE( profile.shapeInputReuseCount == 2 );
-	ENSURE( profile.shapeBoundsSyncCount == 3 * bodyCount - 1 );
+	ENSURE( profile.shapeInputOrderRevisionCheckCount == 5 );
+	ENSURE( profile.shapeBoundsSyncCount == 2 * bodyCount );
 	ENSURE( profile.shapeResultApplyCount == 1 );
 
 	b3DestroyWorld( worldId );

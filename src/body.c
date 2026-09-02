@@ -322,6 +322,10 @@ b3BodyId b3CreateBody( b3WorldId worldId, const b3BodyDef* def )
 
 #if defined( BOX3D_METAL )
 	world->metalBodyTransformRevision += 1;
+	if ( setId == b3_awakeSet )
+	{
+		b3BumpMetalAwakeBodyRevision( world );
+	}
 	b3BumpMetalBodyPropertyRevision( world );
 	b3BumpMetalBodyStateRevision( world );
 #endif
@@ -463,6 +467,10 @@ void b3DestroyBody( b3BodyId bodyId )
 
 #if defined( BOX3D_METAL )
 	world->metalBodyTransformRevision += 1;
+	if ( set->setIndex == b3_awakeSet )
+	{
+		b3BumpMetalAwakeBodyRevision( world );
+	}
 	b3BumpMetalBodyPropertyRevision( world );
 	b3BumpMetalBodyStateRevision( world );
 #endif

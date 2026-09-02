@@ -42,6 +42,7 @@ void b3WakeSolverSet( b3World* world, int setIndex )
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
 	b3SolverSet* disabledSet = b3Array_Get( world->solverSets, b3_disabledSet );
 	b3BumpMetalContactInputRevision( world );
+	b3BumpMetalAwakeBodyRevision( world );
 	b3BumpMetalBodyPropertyRevision( world );
 	b3BumpMetalBodyStateRevision( world );
 
@@ -190,6 +191,7 @@ void b3TrySleepIsland( b3World* world, int islandId )
 		return;
 	}
 	b3BumpMetalContactInputRevision( world );
+	b3BumpMetalAwakeBodyRevision( world );
 	b3BumpMetalBodyPropertyRevision( world );
 	b3BumpMetalBodyStateRevision( world );
 	if ( island->contacts.count > 0 )
@@ -589,6 +591,10 @@ void b3TransferBody( b3World* world, b3SolverSet* targetSet, b3SolverSet* source
 		 b3MaterializeBodySims( world ) == false )
 	{
 		return;
+	}
+	if ( targetSet->setIndex == b3_awakeSet || sourceSet->setIndex == b3_awakeSet )
+	{
+		b3BumpMetalAwakeBodyRevision( world );
 	}
 	b3BumpMetalBodyPropertyRevision( world );
 	b3BumpMetalBodyStateRevision( world );

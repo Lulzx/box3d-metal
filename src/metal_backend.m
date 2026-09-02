@@ -100,9 +100,8 @@ struct b3MetalContext
 	uint64_t bodyMoveResultStepIndex;
 	id<MTLBuffer> shapeInputBuffer;
 	NSUInteger shapeInputCapacity;
-	int* shapeInputBodyIds;
-	int shapeInputBodyCapacity;
 	int shapeInputBodyCount;
+	uint64_t shapeInputBodyRevision;
 	int shapeInputCount;
 	bool shapeInputAllMasksDisabled;
 	bool shapeInputCacheValid;
@@ -1888,7 +1887,6 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->bodyMoveResultBuffer release];
 	[context->bodyMoveReadbackBuffer release];
 	[context->shapeInputBuffer release];
-	free( context->shapeInputBodyIds );
 	[context->shapeResultBuffer release];
 	[context->shapeReadbackBuffer release];
 	[context->shapeCompactBuffer release];
@@ -2952,18 +2950,6 @@ static void b3MetalPackFinalizeProperties( b3MetalFinalizeProperties* properties
 	}
 }
 
-static bool b3MetalEnsureShapeBodyCapacity( b3MetalContext* context, int bodyCount )
-{
-	if ( context->shapeInputBodyCapacity >= bodyCount ) return true;
-	int capacity = context->shapeInputBodyCapacity > 0 ? context->shapeInputBodyCapacity : 64;
-	while ( capacity < bodyCount ) capacity *= 2;
-	int* bodyIds = realloc( context->shapeInputBodyIds, (size_t)capacity * sizeof( int ) );
-	if ( bodyIds == NULL ) return false;
-	context->shapeInputBodyIds = bodyIds;
-	context->shapeInputBodyCapacity = capacity;
-	return true;
-}
-
 static void b3MetalAdvanceShapeResultGeneration( b3World* world )
 {
 	world->metalShapeResultGeneration += 1;
@@ -2986,13 +2972,18 @@ static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepC
 	int bodyCount = world->solverSets.data[b3_awakeSet].bodySims.count;
 	bool treeRefitEligible = world->metalBroadPhaseEnabled && world->userTreeTask == NULL &&
 		context->pairTreeBuffer != nil && context->pairTreeRevision == world->broadPhase.treeRevision;
-	bool bodyOrderMatches = context->shapeInputCacheValid && context->shapeInputBodyCount == bodyCount;
-	for ( int simIndex = 0; simIndex < bodyCount; ++simIndex )
+	bool bodyOrderMatches = context->shapeInputCacheValid && context->shapeInputBodyCount == bodyCount &&
+		context->shapeInputBodyRevision == world->metalAwakeBodyRevision;
+	world->metalShapeInputOrderRevisionCheckCount += 1;
+	if ( world->enableContinuous )
 	{
-		if ( sims[simIndex].flags & b3_isFast ) treeRefitEligible = false;
-		if ( bodyOrderMatches && context->shapeInputBodyIds[simIndex] != sims[simIndex].bodyId )
+		for ( int simIndex = 0; simIndex < bodyCount; ++simIndex )
 		{
-			bodyOrderMatches = false;
+			if ( sims[simIndex].flags & b3_isFast )
+			{
+				treeRefitEligible = false;
+				break;
+			}
 		}
 	}
 
@@ -3026,8 +3017,7 @@ static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepC
 		stepContext->metalShapeFinalizationComplete = true;
 		return 0;
 	}
-	if ( b3MetalEnsureShapeBodyCapacity( context, bodyCount ) == false ||
-		b3MetalEnsureShapeCapacity( context, (NSUInteger)shapeCount * sizeof( b3MetalShapeInput ),
+	if ( b3MetalEnsureShapeCapacity( context, (NSUInteger)shapeCount * sizeof( b3MetalShapeInput ),
 		(NSUInteger)shapeCount * sizeof( b3MetalShapeAABBResult ) ) == false )
 	{
 		context->shapeInputCacheValid = false;
@@ -3040,7 +3030,6 @@ static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepC
 	int outputIndex = 0;
 	for ( int simIndex = 0; simIndex < bodyCount; ++simIndex )
 	{
-		context->shapeInputBodyIds[simIndex] = sims[simIndex].bodyId;
 		b3Body* body = world->bodies.data + sims[simIndex].bodyId;
 		int shapeId = body->headShapeId;
 		while ( shapeId != B3_NULL_INDEX )
@@ -3097,6 +3086,7 @@ static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepC
 	}
 	B3_ASSERT( outputIndex == shapeCount );
 	context->shapeInputBodyCount = bodyCount;
+	context->shapeInputBodyRevision = world->metalAwakeBodyRevision;
 	context->shapeInputCount = shapeCount;
 	context->shapeInputAllMasksDisabled = allMasksDisabled;
 	context->shapeInputCacheValid = true;

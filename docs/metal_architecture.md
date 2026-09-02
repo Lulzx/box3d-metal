@@ -106,15 +106,17 @@ entire contiguous CPU body bookkeeping walk is also omitted; constrained and
 compatibility routes retain it.
 
 The 72-byte shape-input records are also persistent across revision-stable
-steps. The CPU checks the exact awake-body id sequence while it already walks
-body simulations; a match preserves every cached body index and dispatches the
-existing geometry, filter, proxy, local-bound, and resident-fat-bound records
-without counting shapes or walking body shape lists. Sleep/wake swap-removal,
-tree revision changes, explicit transforms, and filter-only edits invalidate
-the registry. A rebuild first materializes any stale CPU mirrors, then repacks
-from the CPU oracle. `shapeInputPackCount` and `shapeInputReuseCount` expose the
-two routes. Cold/topology rebuilds are still CPU work; maintaining the registry
-directly in every topology mutator is a later refinement.
+steps. Every awake-set membership or ordering mutation advances a monotonic
+world revision; the cache stores that revision with its body count. A match
+preserves every cached body index in constant time and dispatches the existing
+geometry, filter, proxy, local-bound, and resident-fat-bound records without
+scanning body ids, counting shapes, or walking body shape lists. Create,
+destroy, sleep/wake swap-removal, awake-set transfers, snapshot restore, tree
+revision changes, explicit transforms, and filter-only edits invalidate the
+appropriate registry authority. A rebuild first materializes stale CPU
+mirrors, then repacks from the CPU oracle. `shapeInputPackCount`,
+`shapeInputReuseCount`, and `shapeInputOrderRevisionCheckCount` expose the two
+routes and their O(1) authorization. Cold/topology rebuilds remain CPU work.
 
 Enable it with:
 
@@ -553,3 +555,5 @@ Persistent shape-input reuse is recorded in
 The complete unconstrained CPU body-finalization traversal bypass and its
 loaded-host whole-world signal are recorded in
 [`benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md`](benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md).
+The follow-on removal of the steady awake-body ID scan is recorded in
+[`benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md`](benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md).

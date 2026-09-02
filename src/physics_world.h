@@ -324,6 +324,8 @@ typedef struct b3World
 	uint64_t metalShapeBoundsResidentDispatchCount;
 	uint64_t metalShapeInputPackCount;
 	uint64_t metalShapeInputReuseCount;
+	uint64_t metalShapeInputOrderRevisionCheckCount;
+	uint64_t metalAwakeBodyRevision;
 	uint64_t metalShapeResultApplyCount;
 	uint64_t metalShapeBoundsSyncCount;
 	uint64_t metalShapeCpuStaleRevision;
@@ -448,6 +450,17 @@ static inline void b3BumpMetalBodyPropertyRevision( b3World* world )
 	world->metalBodyPropertyRevision += 1;
 	if ( world->metalBodyPropertyRevision == 0 )
 		world->metalBodyPropertyRevision = 1;
+#else
+	B3_UNUSED( world );
+#endif
+}
+
+static inline void b3BumpMetalAwakeBodyRevision( b3World* world )
+{
+#if defined( BOX3D_METAL )
+	world->metalAwakeBodyRevision += 1;
+	if ( world->metalAwakeBodyRevision == 0 )
+		world->metalAwakeBodyRevision = 1;
 #else
 	B3_UNUSED( world );
 #endif
