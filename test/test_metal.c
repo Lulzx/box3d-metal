@@ -2428,7 +2428,8 @@ static int MetalWorldIntegrationTest( void )
 
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    integrated world device=%s fusedDispatches=%llu shapeDispatches=%llu compact=%d/%d finalizeBytes=%llu/%llu "
-			"shapeWalkBypasses=%llu transformRegistry=%llu/%llu/%llu state=%llu/%llu/%llu events=%llu/%llu/%llu "
+			"shapeWalkBypasses=%llu transformRegistry=%llu/%llu/%llu state=%llu/%llu/%llu properties=%llu/%llu/%llu "
+			"events=%llu/%llu/%llu "
 			"fullApplies=%llu syncShapes=%llu "
 			"maxPositionError=%.3g maxRotationError=%.3g "
 			"maxAABBError=%.3g\n",
@@ -2442,6 +2443,8 @@ static int MetalWorldIntegrationTest( void )
 			(unsigned long long)profile.narrowPhaseTransformDeviceRefreshCount,
 			(unsigned long long)profile.bodyStateUploadCount, (unsigned long long)profile.bodyStateReuseCount,
 			(unsigned long long)profile.lastBodyStateUploadBytes,
+			(unsigned long long)profile.bodyPropertyUploadCount, (unsigned long long)profile.bodyPropertyReuseCount,
+			(unsigned long long)profile.lastBodyPropertyUploadBytes,
 			(unsigned long long)profile.bodyMoveEventDispatchCount,
 			(unsigned long long)profile.bodyMoveEventSyncCount,
 			(unsigned long long)profile.lastBodyMoveEventReadbackBytes,
@@ -2464,6 +2467,9 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.bodyStateUploadCount == 1 );
 	ENSURE( profile.bodyStateReuseCount == 0 );
 	ENSURE( profile.lastBodyStateUploadBytes == (uint64_t)count * sizeof( b3BodyState ) );
+	ENSURE( profile.bodyPropertyUploadCount == 1 );
+	ENSURE( profile.bodyPropertyReuseCount == 0 );
+	ENSURE( profile.lastBodyPropertyUploadBytes == (uint64_t)count * 128u );
 	ENSURE( profile.shapeDispatchCount == 1 );
 	ENSURE( profile.shapeFallbackCount == 0 );
 	ENSURE( profile.shapeCompactDispatchCount == 1 );
@@ -2711,7 +2717,8 @@ static int MetalConvexFrictionContactTest( void )
 
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    convex friction contacts dispatches=%llu treeUploads=%llu treeRefits=%llu finalizeBytes=%llu/%llu "
-			"shapeWalkBypasses=%llu transformRegistry=%llu/%llu/%llu state=%llu/%llu/%llu gpu=%.3f ms transformError=%.3g "
+			"shapeWalkBypasses=%llu transformRegistry=%llu/%llu/%llu state=%llu/%llu/%llu properties=%llu/%llu/%llu "
+			"gpu=%.3f ms transformError=%.3g "
 			"residentTransformError=%.3g velocityError=%.3g\n",
 			(unsigned long long)profile.contactDispatchCount, (unsigned long long)profile.pairTreeUploadCount,
 			(unsigned long long)profile.pairTreeRefitCount, (unsigned long long)profile.lastFinalizationReadbackBytes,
@@ -2721,7 +2728,9 @@ static int MetalConvexFrictionContactTest( void )
 			(unsigned long long)profile.narrowPhaseTransformReuseCount,
 			(unsigned long long)profile.narrowPhaseTransformDeviceRefreshCount,
 			(unsigned long long)profile.bodyStateUploadCount, (unsigned long long)profile.bodyStateReuseCount,
-			(unsigned long long)profile.lastBodyStateUploadBytes, profile.lastContactGpuMilliseconds,
+			(unsigned long long)profile.lastBodyStateUploadBytes,
+			(unsigned long long)profile.bodyPropertyUploadCount, (unsigned long long)profile.bodyPropertyReuseCount,
+			(unsigned long long)profile.lastBodyPropertyUploadBytes, profile.lastContactGpuMilliseconds,
 			maxTransformError, maxResidentTransformError, maxVelocityError );
 	ENSURE( profile.contactDispatchCount == 40 );
 	ENSURE( profile.pairDispatchCount >= 1 );
@@ -2739,6 +2748,9 @@ static int MetalConvexFrictionContactTest( void )
 	ENSURE( profile.bodyStateUploadCount == 1 );
 	ENSURE( profile.bodyStateReuseCount == 9 );
 	ENSURE( profile.lastBodyStateUploadBytes == 0 );
+	ENSURE( profile.bodyPropertyUploadCount == 1 );
+	ENSURE( profile.bodyPropertyReuseCount == 9 );
+	ENSURE( profile.lastBodyPropertyUploadBytes == 0 );
 	ENSURE( profile.shapeDispatchCount == 10 );
 	ENSURE( profile.shapeFallbackCount == 0 );
 	ENSURE( profile.shapeInputPackCount == 1 );
@@ -2761,6 +2773,19 @@ static int MetalConvexFrictionContactTest( void )
 	ENSURE( mutationProfile.bodyStateUploadCount == 2 );
 	ENSURE( mutationProfile.bodyStateReuseCount == 9 );
 	ENSURE( mutationProfile.lastBodyStateUploadBytes == (uint64_t)count * sizeof( b3BodyState ) );
+	ENSURE( mutationProfile.bodyPropertyUploadCount == 1 );
+	ENSURE( mutationProfile.bodyPropertyReuseCount == 10 );
+	ENSURE( mutationProfile.lastBodyPropertyUploadBytes == 0 );
+
+	// Force is part of the resident property stream, so a CPU force mutation
+	// revision-invalidates it and restores exactly one 128-byte record upload
+	// per awake body on the next step.
+	b3Body_ApplyForceToCenter( gpuBodies[0], (b3Vec3){ 0.5f, 0.25f, -0.125f }, true );
+	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
+	b3MetalProfile propertyMutationProfile = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( propertyMutationProfile.bodyPropertyUploadCount == 2 );
+	ENSURE( propertyMutationProfile.bodyPropertyReuseCount == 10 );
+	ENSURE( propertyMutationProfile.lastBodyPropertyUploadBytes == (uint64_t)count * 128u );
 
 	// An explicit CPU transform mutation invalidates device authority before a
 	// query or later collision can consume stale registry data.

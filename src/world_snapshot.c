@@ -1347,6 +1347,7 @@ bool b3DeserializeIntoShell( const uint8_t* data, int size, b3World* world, b3Re
 		world->metalPairShapeRevision += 1;
 		world->metalBodyTransformRevision += 1;
 		b3BumpMetalContactInputRevision( world );
+		b3BumpMetalBodyPropertyRevision( world );
 	}
 #endif
 

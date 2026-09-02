@@ -192,6 +192,17 @@ fail-closed transitional boundary: `bodyStateUploadCount`,
 still reads the CPU state array, and solved states still return to the CPU; full
 device authority requires revisioned mutators and lazy public synchronization.
 
+The adjacent 128-byte integration-property stream is revision-resident on the
+same bounded route. Device finalization writes the absolute quaternion and
+inverse world inertia back into it and clears force and torque, so an unchanged
+awake ordering needs no CPU body-sim traversal or property upload on the next
+step. Body creation/destruction, wake/sleep/enable transfers, explicit
+transforms, mass/inertia, damping, gravity, wind, force, and torque mutations
+advance a world revision and fail closed to a full repack. The profile exposes
+`bodyPropertyUploadCount`, `bodyPropertyReuseCount`, and
+`lastBodyPropertyUploadBytes`; unsupported/fallback routes do not preserve
+property authority.
+
 An independently opt-in pair stage copies Erin's existing static, kinematic,
 and dynamic tree topology into persistent shared Metal buffers. A monotonic
 broad-phase revision lets node snapshots remain resident across pair queries.

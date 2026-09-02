@@ -304,6 +304,7 @@ b3BodyId b3CreateBody( b3WorldId worldId, const b3BodyDef* def )
 
 #if defined( BOX3D_METAL )
 	world->metalBodyTransformRevision += 1;
+	b3BumpMetalBodyPropertyRevision( world );
 #endif
 
 	world->locked = false;
@@ -433,6 +434,7 @@ void b3DestroyBody( b3BodyId bodyId )
 
 #if defined( BOX3D_METAL )
 	world->metalBodyTransformRevision += 1;
+	b3BumpMetalBodyPropertyRevision( world );
 #endif
 
 	b3ValidateSolverSets( world );
@@ -892,6 +894,7 @@ b3BodyTOIResult b3Body_TimeOfImpactMover( b3BodyId bodyId, b3Pos origin, const b
 
 void b3UpdateBodyMassData( b3World* world, b3Body* body )
 {
+	b3BumpMetalBodyPropertyRevision( world );
 	b3BodySim* bodySim = b3GetBodySim( world, body );
 
 	// Mass is no longer dirty
@@ -1126,6 +1129,7 @@ void b3Body_SetTransform( b3BodyId bodyId, b3Pos position, b3Quat rotation )
 
 #if defined( BOX3D_METAL )
 	world->metalBodyTransformRevision += 1;
+	b3BumpMetalBodyPropertyRevision( world );
 #endif
 
 	b3BroadPhase* broadPhase = &world->broadPhase;
@@ -1383,6 +1387,7 @@ void b3Body_ApplyForce( b3BodyId bodyId, b3Vec3 force, b3Pos point, bool wake )
 		b3BodySim* bodySim = b3GetBodySim( world, body );
 		bodySim->force = b3Add( bodySim->force, force );
 		bodySim->torque = b3Add( bodySim->torque, b3Cross( b3SubPos( point, bodySim->center ), force ) );
+		b3BumpMetalBodyPropertyRevision( world );
 	}
 }
 
@@ -1405,6 +1410,7 @@ void b3Body_ApplyForceToCenter( b3BodyId bodyId, b3Vec3 force, bool wake )
 	{
 		b3BodySim* bodySim = b3GetBodySim( world, body );
 		bodySim->force = b3Add( bodySim->force, force );
+		b3BumpMetalBodyPropertyRevision( world );
 	}
 }
 
@@ -1427,6 +1433,7 @@ void b3Body_ApplyTorque( b3BodyId bodyId, b3Vec3 torque, bool wake )
 	{
 		b3BodySim* bodySim = b3GetBodySim( world, body );
 		bodySim->torque = b3Add( bodySim->torque, torque );
+		b3BumpMetalBodyPropertyRevision( world );
 	}
 }
 
@@ -1875,6 +1882,7 @@ void b3Body_SetMassData( b3BodyId bodyId, b3MassData massData )
 
 	b3Body* body = b3GetBodyFullId( world, bodyId );
 	b3BodySim* bodySim = b3GetBodySim( world, body );
+	b3BumpMetalBodyPropertyRevision( world );
 
 	// Mass is no longer dirty
 	body->flags &= ~b3_dirtyMass;
@@ -1975,6 +1983,7 @@ void b3Body_SetLinearDamping( b3BodyId bodyId, float linearDamping )
 	b3Body* body = b3GetBodyFullId( world, bodyId );
 	b3BodySim* bodySim = b3GetBodySim( world, body );
 	bodySim->linearDamping = linearDamping;
+	b3BumpMetalBodyPropertyRevision( world );
 }
 
 float b3Body_GetLinearDamping( b3BodyId bodyId )
@@ -2000,6 +2009,7 @@ void b3Body_SetAngularDamping( b3BodyId bodyId, float angularDamping )
 	b3Body* body = b3GetBodyFullId( world, bodyId );
 	b3BodySim* bodySim = b3GetBodySim( world, body );
 	bodySim->angularDamping = angularDamping;
+	b3BumpMetalBodyPropertyRevision( world );
 }
 
 float b3Body_GetAngularDamping( b3BodyId bodyId )
@@ -2026,6 +2036,7 @@ void b3Body_SetGravityScale( b3BodyId bodyId, float gravityScale )
 	b3Body* body = b3GetBodyFullId( world, bodyId );
 	b3BodySim* bodySim = b3GetBodySim( world, body );
 	bodySim->gravityScale = gravityScale;
+	b3BumpMetalBodyPropertyRevision( world );
 }
 
 float b3Body_GetGravityScale( b3BodyId bodyId )

@@ -350,6 +350,10 @@ typedef struct b3World
 	uint64_t metalBodyStateUploadCount;
 	uint64_t metalBodyStateReuseCount;
 	uint64_t metalLastBodyStateUploadBytes;
+	uint64_t metalBodyPropertyRevision;
+	uint64_t metalBodyPropertyUploadCount;
+	uint64_t metalBodyPropertyReuseCount;
+	uint64_t metalLastBodyPropertyUploadBytes;
 	int metalLastNarrowPhaseHullShapeCount;
 	int metalLastNarrowPhaseUniqueHullCount;
 	int metalLastNarrowPhaseResultCount;
@@ -398,6 +402,17 @@ static inline void b3BumpMetalContactInputRevision( b3World* world )
 	world->metalContactInputRevision += 1;
 	if ( world->metalContactInputRevision == 0 )
 		world->metalContactInputRevision = 1;
+#else
+	B3_UNUSED( world );
+#endif
+}
+
+static inline void b3BumpMetalBodyPropertyRevision( b3World* world )
+{
+#if defined( BOX3D_METAL )
+	world->metalBodyPropertyRevision += 1;
+	if ( world->metalBodyPropertyRevision == 0 )
+		world->metalBodyPropertyRevision = 1;
 #else
 	B3_UNUSED( world );
 #endif

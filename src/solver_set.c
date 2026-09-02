@@ -40,6 +40,7 @@ void b3WakeSolverSet( b3World* world, int setIndex )
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
 	b3SolverSet* disabledSet = b3Array_Get( world->solverSets, b3_disabledSet );
 	b3BumpMetalContactInputRevision( world );
+	b3BumpMetalBodyPropertyRevision( world );
 
 	b3Body* bodies = world->bodies.data;
 
@@ -176,6 +177,7 @@ void b3TrySleepIsland( b3World* world, int islandId )
 		return;
 	}
 	b3BumpMetalContactInputRevision( world );
+	b3BumpMetalBodyPropertyRevision( world );
 	if ( island->contacts.count > 0 )
 		world->constraintGraph.revision += 1;
 
@@ -564,6 +566,7 @@ void b3TransferBody( b3World* world, b3SolverSet* targetSet, b3SolverSet* source
 	{
 		return;
 	}
+	b3BumpMetalBodyPropertyRevision( world );
 
 	int sourceIndex = body->localIndex;
 	b3BodySim* sourceSim = b3Array_Get( sourceSet->bodySims, sourceIndex );

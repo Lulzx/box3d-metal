@@ -335,6 +335,7 @@ b3WorldId b3CreateWorld( const b3WorldDef* def )
 	world->contactRecycleDistance = B3_CONTACT_RECYCLE_DISTANCE;
 #if defined( BOX3D_METAL )
 	world->metalContactInputRevision = 1;
+	world->metalBodyPropertyRevision = 1;
 #endif
 
 	if ( def->frictionCallback == NULL )
@@ -759,6 +760,9 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.bodyStateUploadCount = world->metalBodyStateUploadCount;
 	profile.bodyStateReuseCount = world->metalBodyStateReuseCount;
 	profile.lastBodyStateUploadBytes = world->metalLastBodyStateUploadBytes;
+	profile.bodyPropertyUploadCount = world->metalBodyPropertyUploadCount;
+	profile.bodyPropertyReuseCount = world->metalBodyPropertyReuseCount;
+	profile.lastBodyPropertyUploadBytes = world->metalLastBodyPropertyUploadBytes;
 	profile.lastNarrowPhaseHullShapeCount = world->metalLastNarrowPhaseHullShapeCount;
 	profile.lastNarrowPhaseUniqueHullCount = world->metalLastNarrowPhaseUniqueHullCount;
 	profile.lastNarrowPhaseResultCount = world->metalLastNarrowPhaseResultCount;

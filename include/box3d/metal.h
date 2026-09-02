@@ -150,6 +150,12 @@ typedef struct b3MetalProfile
 	uint64_t bodyStateUploadCount;
 	uint64_t bodyStateReuseCount;
 	uint64_t lastBodyStateUploadBytes;
+	/// Cross-step 128-byte awake body-property uploads and revision-authorized
+	/// device reuses. Finalization writes the next-step quaternion, inverse
+	/// world inertia, and cleared force/torque directly into this stream.
+	uint64_t bodyPropertyUploadCount;
+	uint64_t bodyPropertyReuseCount;
+	uint64_t lastBodyPropertyUploadBytes;
 	int lastNarrowPhaseHullShapeCount;
 	int lastNarrowPhaseUniqueHullCount;
 	int lastNarrowPhaseResultCount;

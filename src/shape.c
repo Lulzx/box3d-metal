@@ -2106,6 +2106,7 @@ void b3Shape_ApplyWind( b3ShapeId shapeId, b3Vec3 wind, float drag, float lift, 
 
 	sim->force = b3Add( sim->force, force );
 	sim->torque = b3Add( sim->torque, torque );
+	b3BumpMetalBodyPropertyRevision( world );
 }
 
 typedef struct b3MeshImpactContext

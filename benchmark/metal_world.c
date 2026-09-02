@@ -78,7 +78,8 @@ int main( void )
 	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,finalization_readback_bytes,finalization_readback_bypasses,"
 		"finalization_shape_traversal_bypasses,move_event_dispatches,move_event_syncs,last_move_event_readback_bytes,"
 		"transform_device_refreshes,pair_kernel_ms,pair_dispatches,"
-		"body_state_uploads,body_state_reuses,last_body_state_upload_bytes,pair_fallbacks,speedup\n" );
+		"body_state_uploads,body_state_reuses,last_body_state_upload_bytes,"
+		"body_property_uploads,body_property_reuses,last_body_property_upload_bytes,pair_fallbacks,speedup\n" );
 	const int counts[] = { 512, 2048, 8192, 32768, 131072, 524288 };
 	int testCount = selectedBodyCount > 0 ? 1 : (int)( sizeof( counts ) / sizeof( counts[0] ) );
 	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
@@ -109,7 +110,7 @@ int main( void )
 		}
 		double gpuMs = TimeWorld( gpuWorld, repeats );
 		b3MetalProfile metal = b3World_GetMetalProfile( gpuWorld );
-		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%.3f\n",
+		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.6f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%.3f\n",
 			bodyCount,
 			repeats, cpuMs, gpuMs,
 			metal.lastUnconstrainedGpuMilliseconds, (unsigned long long)metal.lastFinalizationReadbackBytes,
@@ -122,6 +123,8 @@ int main( void )
 			metal.lastPairGpuMilliseconds,
 			(unsigned long long)metal.pairDispatchCount, (unsigned long long)metal.bodyStateUploadCount,
 			(unsigned long long)metal.bodyStateReuseCount, (unsigned long long)metal.lastBodyStateUploadBytes,
+			(unsigned long long)metal.bodyPropertyUploadCount, (unsigned long long)metal.bodyPropertyReuseCount,
+			(unsigned long long)metal.lastBodyPropertyUploadBytes,
 			(unsigned long long)metal.pairFallbackCount, cpuMs / gpuMs );
 		b3DestroyWorld( gpuWorld );
 	}
