@@ -310,6 +310,7 @@ typedef struct b3World
 	int metalLastNarrowPhaseHullShapeCount;
 	int metalLastNarrowPhaseUniqueHullCount;
 	int metalLastNarrowPhaseResultCount;
+	int metalLastNarrowPhaseManifoldTableCount;
 	double metalLastPositionGpuMilliseconds;
 	double metalLastUnconstrainedGpuMilliseconds;
 	double metalLastContactGpuMilliseconds;

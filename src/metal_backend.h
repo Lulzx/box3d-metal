@@ -35,8 +35,8 @@ typedef struct b3MetalPairCandidate
 	int padding;
 } b3MetalPairCandidate;
 
-// Local sphere/capsule/compact-hull geometry in shape A's body frame. The
-// record array is indexed exactly like the narrow-phase contact-index array.
+// Finalized sphere/capsule/compact-hull geometry in world axes, with points
+// relative to body A's origin. Compact records preserve input order.
 // eligible == 0 means the CPU path owns that contact; eligible != 0 is authoritative even
 // when touching == 0.
 typedef struct b3MetalConvexManifoldResult
@@ -50,7 +50,8 @@ typedef struct b3MetalConvexManifoldResult
 	float point1X, point1Y, point1Z, separation1;
 	float point2X, point2Y, point2Z, separation2;
 	uint32_t featureId1, featureId2;
-	uint32_t padding3[2];
+	uint32_t scanOffset;
+	uint32_t contactId;
 } b3MetalConvexManifoldResult;
 
 typedef struct b3MetalDispatchStats
@@ -129,6 +130,11 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 // matching Box3D's scalar narrow-phase boundary.
 bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
 	int contactCount, const b3MetalConvexManifoldResult** results, int* eligibleCount, b3MetalDispatchStats* stats );
+
+// Explicit diagnostic/fallback staging of the private contact-id-indexed table.
+// This submits and waits for a blit; it is not part of the steady narrow phase.
+bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalConvexManifoldResult* results,
+	int resultCapacity );
 
 // Mark the resident tree snapshot as matching CPU bounds after a successful
 // shape-result leaf update/refit and the corresponding CPU bookkeeping pass.

@@ -194,6 +194,16 @@ and local-to-world vector transforms; points remain relative to body A's origin
 so exact far-world anchor construction and center-of-mass adjustment retain the
 existing CPU semantics.
 
+The same scatter writes an identical finalized record to a persistent private
+table indexed by Box3D contact id. The 16-byte input's fourth word now carries
+that id. Compact output remains ordered by awake-contact input index for the
+current CPU application path, while the private copy sets `inputIndex` to the
+contact id so its address and identity are independent of input permutation.
+The table is exposed only through an explicit diagnostic/fallback blit; normal
+steps add no shared stream, command buffer, or wait. Entries are authoritative
+only for contacts marked eligible in the current successful dispatch; stale
+unsupported slots are never consumed.
+
 Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 unsupported joint solution, continuous collision, events, and sleeping/island
 mutation still run on the CPU. Unsupported
@@ -301,6 +311,8 @@ recorded in
 [`benchmarks/m4-pro-private-manifold-results-2026-09-02.md`](benchmarks/m4-pro-private-manifold-results-2026-09-02.md).
 Fused manifold orientation finalization is recorded in
 [`benchmarks/m4-pro-manifold-finalization-2026-09-02.md`](benchmarks/m4-pro-manifold-finalization-2026-09-02.md).
+The contact-id-indexed private manifold table is recorded in
+[`benchmarks/m4-pro-resident-manifold-table-2026-09-02.md`](benchmarks/m4-pro-resident-manifold-table-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

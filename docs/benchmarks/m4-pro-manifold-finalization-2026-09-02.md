@@ -37,5 +37,6 @@ UndefinedBehaviorSanitizer Metal suite also pass.
 
 The CPU still walks every active compact record and materializes persistent
 `b3Manifold` objects. The next cut is a stable contact-id-indexed manifold table
-that can feed Metal contact preparation directly while exposing only callback,
-event, topology-transition, and unsupported-geometry exceptions to the CPU.
+that can feed Metal contact preparation directly. The follow-on
+[`resident manifold-table checkpoint`](m4-pro-resident-manifold-table-2026-09-02.md)
+establishes that private address space while retaining the compact CPU path.

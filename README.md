@@ -62,6 +62,10 @@ pre-solve callbacks, events, and island mutation. Other shape pairs stay on the
 unchanged CPU path. High-aspect and speculative hull-sphere contacts explicitly
 retain CPU GJK. Double worlds use VF64 exact subtraction before narrowing
 relative translations to the float convex-collision boundary.
+The same scatter writes each active finalized record into a private table
+indexed by Box3D contact id. The existing 16-byte input uses its former padding
+word for that id. This adds no steady-path readback or dispatch; explicit table
+staging exists only for validation and fallback diagnostics.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.

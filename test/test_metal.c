@@ -686,7 +686,20 @@ static int MetalConvexManifoldTest( void )
 	{
 		ENSURE( gpu[i].eligible == 1 );
 		ENSURE( gpu[i].inputIndex < (uint32_t)contactCount );
+		ENSURE( gpu[i].contactId == (uint32_t)contactIndices[gpu[i].inputIndex] );
+		ENSURE( gpu[i].scanOffset == 0 );
 		if ( i > 0 ) ENSURE( gpu[i - 1].inputIndex < gpu[i].inputIndex );
+	}
+	b3MetalConvexManifoldResult* residentTable =
+		malloc( (size_t)world->contacts.count * sizeof( b3MetalConvexManifoldResult ) );
+	ENSURE( residentTable != NULL );
+	ENSURE( b3MetalCopyResidentConvexManifoldTable( world->metalContext, residentTable, world->contacts.count - 1 ) == false );
+	ENSURE( b3MetalCopyResidentConvexManifoldTable( world->metalContext, residentTable, world->contacts.count ) );
+	for ( int i = 0; i < eligibleCount; ++i )
+	{
+		b3MetalConvexManifoldResult expected = gpu[i];
+		expected.inputIndex = expected.contactId;
+		ENSURE( memcmp( residentTable + expected.contactId, &expected, sizeof( expected ) ) == 0 );
 	}
 	for ( int i = 0; i < contactCount; ++i )
 	{
@@ -783,6 +796,27 @@ static int MetalConvexManifoldTest( void )
 		&eligibleCount, &stats ) );
 	ENSURE( eligibleCount == firstEligibleCount );
 	ENSURE( memcmp( first, gpu, (size_t)firstEligibleCount * sizeof( b3MetalConvexManifoldResult ) ) == 0 );
+	for ( int i = 0; i < contactCount / 2; ++i )
+	{
+		B3_SWAP( contactIndices[i], contactIndices[contactCount - 1 - i] );
+	}
+	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &gpu,
+		&eligibleCount, &stats ) );
+	ENSURE( eligibleCount == firstEligibleCount );
+	b3MetalConvexManifoldResult* reorderedTable =
+		malloc( (size_t)world->contacts.count * sizeof( b3MetalConvexManifoldResult ) );
+	ENSURE( reorderedTable != NULL );
+	ENSURE( b3MetalCopyResidentConvexManifoldTable( world->metalContext, reorderedTable, world->contacts.count ) );
+	for ( int i = 0; i < firstEligibleCount; ++i )
+	{
+		uint32_t contactId = first[i].contactId;
+		ENSURE( memcmp( residentTable + contactId, reorderedTable + contactId,
+			sizeof( b3MetalConvexManifoldResult ) ) == 0 );
+	}
+	for ( int i = 0; i < contactCount / 2; ++i )
+	{
+		B3_SWAP( contactIndices[i], contactIndices[contactCount - 1 - i] );
+	}
 
 	b3World_Step( worldId, 0.0f, 1 );
 	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
@@ -830,17 +864,20 @@ static int MetalConvexManifoldTest( void )
 	ENSURE( profile.lastNarrowPhaseHullShapeCount == 8 );
 	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 1 );
 	ENSURE( profile.lastNarrowPhaseResultCount == expectedEligibleCount - 1 );
-	printf( "    resident narrow inputs geometry=%llu/%llu transforms=%llu/%llu hullShapes=%d uniqueHulls=%d inputBytes=16 resultBytes=%zu\n",
+	ENSURE( profile.lastNarrowPhaseManifoldTableCount == world->contacts.count );
+	printf( "    resident narrow inputs geometry=%llu/%llu transforms=%llu/%llu hullShapes=%d uniqueHulls=%d inputBytes=16 resultBytes=%zu tableSlots=%d\n",
 		(unsigned long long)profile.narrowPhaseGeometryUploadCount,
 		(unsigned long long)profile.narrowPhaseGeometryReuseCount,
 		(unsigned long long)profile.narrowPhaseTransformUploadCount,
 		(unsigned long long)profile.narrowPhaseTransformReuseCount, profile.lastNarrowPhaseHullShapeCount,
 		profile.lastNarrowPhaseUniqueHullCount,
-		(size_t)profile.lastNarrowPhaseResultCount * sizeof( b3MetalConvexManifoldResult ) );
+		(size_t)profile.lastNarrowPhaseResultCount * sizeof( b3MetalConvexManifoldResult ), world->contacts.count );
 	ENSURE( maxApplyError <= 5.0e-5f );
 
 	free( cpuStepManifolds );
 	free( first );
+	free( residentTable );
+	free( reorderedTable );
 	free( contactIndices );
 	b3BoxHull replacementBox = b3MakeBoxHull( 0.55f, 0.50f, 0.50f );
 	b3Shape_SetHull( firstHullShape, &replacementBox.base );
