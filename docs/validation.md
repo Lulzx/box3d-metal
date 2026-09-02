@@ -12,6 +12,11 @@ Direct primitive tests separately cover packed state and integration kernels.
 - Position integration across 16,384 randomized states and flags.
 - Fused velocity/position integration across 8,192 bodies.
 - Body-finalization arithmetic across 4,096 randomized states and all 25 result floats.
+- Batched sphere-sphere geometry over 32 float contacts plus one ineligible hull
+  record: direct CPU-oracle and end-to-end applied-manifold error are `1.19e-7`,
+  and unchanged repeated output is byte-identical.
+- A double-precision sphere contact at a `1e12` origin uses VF64 exact
+  subtraction: direct error is `5.96e-8` and applied-manifold error is `5.98e-8`.
 - Integrated unconstrained worlds with 2,048 moving sphere, capsule, and hull AABBs.
 - Exact filtered pair traversal over 607 mixed bodies and 620 proxies, including
   same-body overlaps, sensors, zero masks, and equal positive/negative groups.
@@ -73,6 +78,8 @@ Direct primitive tests separately cover packed state and integration kernels.
 | Awake-shape AABBs | 3.81e-6 across all bound components |
 | VF64 far-world AABB containment | zero inward error across 2,048 mixed shapes |
 | Filtered pair candidates | 1,905/1,905 exact, including order |
+| Sphere manifold geometry | 1.19e-7 float; 5.96e-8 VF64 double |
+| End-to-end applied sphere manifold | 1.19e-7 float; 5.98e-8 VF64 double |
 | Distance joint plus contacts | 4.66e-10 |
 | Convex friction contacts | 4.77e-7 transform, 3.98e-6 velocity |
 | Convex restitution | 1.19e-7 transform, 2.38e-7 velocity |
@@ -115,6 +122,10 @@ Metal continued through the pinned VF64 exact AABB boundary.
 
 The existing-pair checkpoint again passed the complete sanitizer/CPU matrix and
 focused float/double warning and VF64 gates after specializing CPU consumption.
+
+The sphere narrow-phase checkpoint again passed full CPU-only, AddressSanitizer,
+and float UndefinedBehaviorSanitizer suites, plus focused float/double
+warning-as-error and double/VF64 UndefinedBehaviorSanitizer Metal gates.
 
 ## What the tests do not prove
 

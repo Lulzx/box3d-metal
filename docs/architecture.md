@@ -157,3 +157,17 @@ repacking from the CPU oracle. `shapeInputPackCount` and
 After existing-contact suppression, ordinary candidates go directly to CPU
 joint/custom checks and move-pair append. Compounds retain the complete CPU
 child callback, and deterministic contact creation remains CPU-owned.
+
+## Incremental narrow phase
+
+The first shape-specialized route batches sphere-sphere local manifold geometry
+over the deterministic awake-contact index array. Each record carries explicit
+eligibility, so unsupported pairs stay on the ordinary CPU path in the same
+step. CPU workers apply Metal geometry through the existing contact update,
+preserving allocation, feature-id warm-start matching, material/pre-solve
+callbacks, events, recycling, and graph/island transitions.
+
+Double builds carry both absolute position bit patterns and use the vendored
+VF64 exact subtraction before narrowing the relative displacement to float at
+the same boundary as Box3D's CPU convex collision. Input packing and a shared
+geometry result array remain; this is not yet resident manifold ownership.
