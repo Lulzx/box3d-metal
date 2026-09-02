@@ -286,7 +286,10 @@ typedef struct b3World
 	uint64_t metalContactPersistenceMatchCount;
 	uint64_t metalContactPrepareDeviceRefreshCount;
 	uint64_t metalContactCollisionBypassCount;
+	uint64_t metalContactCollisionCpuCount;
+	uint64_t metalLastContactCollisionExceptionCount;
 	uint64_t metalContactManifoldSyncCount;
+	uint64_t metalContactManifoldGeneration;
 	uint64_t metalContactImpulseStoreBypassCount;
 	uint64_t metalContactImpulseEventSyncCount;
 	uint64_t metalContactImpulseSyncCount;

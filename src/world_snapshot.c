@@ -857,6 +857,8 @@ static void b3DesContacts( b3SnapReader* r, b3World* world )
 		b3Contact* dst = world->contacts.data + i;
 		b3SnapR_Bytes( r, dst, sizeof( b3Contact ) );
 		dst->manifolds = NULL;
+		dst->flags &= ~( b3_simMetalManifold | b3_simMetalManifoldStale );
+		dst->metalSyncGeneration = 0;
 		dst->bodySimIndexA = B3_NULL_INDEX;
 		dst->bodySimIndexB = B3_NULL_INDEX;
 		if ( dst->flags & b3_simMeshContact )

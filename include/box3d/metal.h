@@ -52,6 +52,11 @@ typedef struct b3MetalProfile
 	/// Stable touching contacts that bypassed CPU manifold application after
 	/// their solver preparation record was refreshed on Metal.
 	uint64_t contactCollisionBypassCount;
+	/// Contacts processed by CPU collision workers. Resident steps contain only
+	/// deterministic callback and topology exceptions.
+	uint64_t contactCollisionCpuCount;
+	/// CPU collision exception records emitted by the latest Metal narrow phase.
+	uint64_t lastContactCollisionExceptionCount;
 	/// Individual resident manifolds materialized into the CPU mirror on a
 	/// public, debug, snapshot, route-change, or solver-fallback boundary.
 	uint64_t contactManifoldSyncCount;
@@ -91,6 +96,9 @@ typedef struct b3MetalProfile
 	int lastNarrowPhaseHullShapeCount;
 	int lastNarrowPhaseUniqueHullCount;
 	int lastNarrowPhaseResultCount;
+	/// Shared CPU-exception payload from the latest narrow phase. Stable
+	/// resident steps report zero bytes.
+	uint64_t lastNarrowPhaseResultBytes;
 	int lastNarrowPhaseManifoldTableCount;
 	/// GPU-authored convex contacts that survived callbacks/topology processing
 	/// and entered the current solver graph.

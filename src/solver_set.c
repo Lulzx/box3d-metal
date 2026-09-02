@@ -167,7 +167,7 @@ void b3TrySleepIsland( b3World* world, int islandId )
 	for ( int i = 0; i < island->contacts.count; ++i )
 	{
 		b3Contact* contact = b3Array_Get( world->contacts, island->contacts.data[i].contactId );
-		if ( ( contact->flags & b3_simMetalManifoldStale ) != 0 && b3SyncContactImpulses( world, contact ) == false )
+		if ( b3IsContactManifoldStale( world, contact ) && b3SyncContactImpulses( world, contact ) == false )
 		{
 			return;
 		}

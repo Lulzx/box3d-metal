@@ -681,6 +681,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.contactPersistenceMatchCount = world->metalContactPersistenceMatchCount;
 	profile.contactPrepareDeviceRefreshCount = world->metalContactPrepareDeviceRefreshCount;
 	profile.contactCollisionBypassCount = world->metalContactCollisionBypassCount;
+	profile.contactCollisionCpuCount = world->metalContactCollisionCpuCount;
+	profile.lastContactCollisionExceptionCount = world->metalLastContactCollisionExceptionCount;
 	profile.contactManifoldSyncCount = world->metalContactManifoldSyncCount;
 	profile.contactImpulseStoreBypassCount = world->metalContactImpulseStoreBypassCount;
 	profile.contactImpulseEventSyncCount = world->metalContactImpulseEventSyncCount;
@@ -714,6 +716,7 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.lastNarrowPhaseHullShapeCount = world->metalLastNarrowPhaseHullShapeCount;
 	profile.lastNarrowPhaseUniqueHullCount = world->metalLastNarrowPhaseUniqueHullCount;
 	profile.lastNarrowPhaseResultCount = world->metalLastNarrowPhaseResultCount;
+	profile.lastNarrowPhaseResultBytes = (uint64_t)world->metalLastNarrowPhaseResultCount * 160u;
 	profile.lastNarrowPhaseManifoldTableCount = world->metalLastNarrowPhaseManifoldTableCount;
 	profile.lastResidentConvexContactCount = world->metalLastResidentConvexContactCount;
 	profile.lastResidentConvexConstraintCount = world->metalLastResidentConvexConstraintCount;
@@ -737,7 +740,7 @@ int b3GetMaxWorldCount( void )
 	return b3_maxWorldCount;
 }
 
-// Issues T0 prefetches across the cache lines of a b3Contact (216 B / 4 lines).
+// Issues T0 prefetches across the cache lines of a b3Contact (224 B / 4 lines).
 // Used to hide the random-access latency of contact lookups while we work on an
 // earlier index.
 static inline void b3PrefetchContact( const b3Contact* contact )
@@ -779,8 +782,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 #if defined( BOX3D_METAL )
 	const b3MetalConvexManifoldResult* metalResults = stepContext->metalConvexManifolds;
 	int metalResultCount = stepContext->metalConvexManifoldCount;
+	bool metalCollisionExceptionsOnly = stepContext->metalCollisionExceptionsOnly;
 	int metalResultIndex = 0;
-	if ( metalResults != NULL )
+	if ( metalResults != NULL && metalCollisionExceptionsOnly == false )
 	{
 		int low = 0;
 		int high = metalResultCount;
@@ -800,11 +804,18 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 	{
 #if defined( BOX3D_METAL )
 		const b3MetalConvexManifoldResult* metalResult = NULL;
-		while ( metalResultIndex < metalResultCount && metalResults[metalResultIndex].inputIndex < (uint32_t)i )
+		if ( metalCollisionExceptionsOnly )
+		{
+			B3_ASSERT( metalResults != NULL && i < metalResultCount );
+			metalResult = metalResults + i;
+		}
+		while ( metalCollisionExceptionsOnly == false && metalResultIndex < metalResultCount &&
+				metalResults[metalResultIndex].inputIndex < (uint32_t)i )
 		{
 			metalResultIndex += 1;
 		}
-		if ( metalResultIndex < metalResultCount && metalResults[metalResultIndex].inputIndex == (uint32_t)i )
+		if ( metalCollisionExceptionsOnly == false && metalResultIndex < metalResultCount &&
+			 metalResults[metalResultIndex].inputIndex == (uint32_t)i )
 		{
 			metalResult = metalResults + metalResultIndex;
 			metalResultIndex += 1;
@@ -812,10 +823,12 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 #endif
 		if ( i < prefetchEnd )
 		{
-			b3PrefetchContact( contacts + contactIndices[i + contactPrefetchDistance] );
+			int prefetchContactIndex = metalCollisionExceptionsOnly ? (int)metalResults[i + contactPrefetchDistance].contactId
+																	: contactIndices[i + contactPrefetchDistance];
+			b3PrefetchContact( contacts + prefetchContactIndex );
 		}
 
-		int contactIndex = contactIndices[i];
+		int contactIndex = metalCollisionExceptionsOnly ? (int)metalResult->contactId : contactIndices[i];
 		B3_ASSERT( contactIndex < world->contacts.count );
 
 		b3Contact* contact = contacts + contactIndex;
@@ -880,7 +893,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 		// Contact recycling optimization. Please cite this library if you use this optimization.
 		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
 		// However, this allows larger relative motion and has fewer tuning parameters (just one).
-		if ( ( contact->flags & b3_simMetalManifoldStale ) == 0 && ( isFast == false || isMeshContact == false ) &&
+		if ( b3IsContactManifoldStale( world, contact ) == false && ( isFast == false || isMeshContact == false ) &&
 			 recycleDistance > 0.0f && ( contact->flags & b3_relativeTransformValid ) &&
 			 ( contact->flags & b3_contactRecycleFlag ) )
 		{
@@ -1059,6 +1072,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 							 precomputedAnchorBs, precomputedAnchorsRelativeToCenter, precomputedMaterial, taskContext->arena );
 #if defined( BOX3D_METAL )
 		contact->flags &= ~b3_simMetalManifoldStale;
+		contact->metalSyncGeneration = world->metalContactManifoldGeneration;
 		if ( precomputedConvexManifold != NULL && ( contact->flags & b3_simEnablePreSolveEvents ) == 0 &&
 			 ( prepareRefreshedOnMetal || b3MetalStageResidentContactPrepare( world->metalContext, contact ) ) )
 		{
@@ -1196,6 +1210,7 @@ static void b3Collide( b3StepContext* context )
 	context->awakeContactIndices = contactIndices;
 	context->metalConvexManifolds = NULL;
 	context->metalConvexManifoldCount = 0;
+	context->metalCollisionExceptionsOnly = false;
 
 	// Contact bit set on ids because contact pointers are unstable as they move between touching and not touching.
 	int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
@@ -1210,22 +1225,34 @@ static void b3Collide( b3StepContext* context )
 		memset( taskContext->manifoldCounts, 0, sizeof( taskContext->manifoldCounts ) );
 	}
 
+	int cpuContactCount = contactCount;
 #if defined( BOX3D_METAL )
 	if ( world->metalContext != NULL && contactCount >= world->metalMinimumBodyCount )
 	{
 		const b3MetalConvexManifoldResult* convexResults = NULL;
-		int eligibleCount = 0;
+		int resultCount = 0;
+		int residentBypassCount = 0;
 		b3MetalDispatchStats stats = { 0 };
 		if ( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &convexResults,
-											&eligibleCount, &stats ) )
+											&resultCount, &residentBypassCount, &stats ) )
 		{
-			if ( eligibleCount > 0 )
+			if ( stats.commandBufferCount > 0 )
 			{
+				world->metalContactManifoldGeneration += 1;
+				if ( world->metalContactManifoldGeneration == 0 )
+					world->metalContactManifoldGeneration = 1;
 				context->metalConvexManifolds = convexResults;
-				context->metalConvexManifoldCount = eligibleCount;
-				world->metalLastNarrowPhaseResultCount = eligibleCount;
+				context->metalConvexManifoldCount = resultCount;
+				world->metalLastNarrowPhaseResultCount = resultCount;
 				world->metalNarrowPhaseDispatchCount += 1;
 				world->metalLastNarrowPhaseGpuMilliseconds = stats.gpuMilliseconds;
+				if ( residentBypassCount > 0 )
+				{
+					context->metalCollisionExceptionsOnly = true;
+					cpuContactCount = resultCount;
+					world->metalContactCollisionBypassCount += (uint64_t)residentBypassCount;
+					world->taskContexts.data[0].manifoldCounts[0] += residentBypassCount;
+				}
 			}
 		}
 		else
@@ -1237,9 +1264,15 @@ static void b3Collide( b3StepContext* context )
 
 	// Task should take at least 40us on a 4GHz CPU (10K cycles)
 	int minRange = 20;
-	b3ParallelFor( world, b3CollideTask, contactCount, minRange, context, "collide" );
+	if ( cpuContactCount > 0 )
+	{
+		b3ParallelFor( world, b3CollideTask, cpuContactCount, minRange, context, "collide" );
+	}
 
 #if defined( BOX3D_METAL )
+	world->metalContactCollisionCpuCount += (uint64_t)cpuContactCount;
+	world->metalLastContactCollisionExceptionCount =
+		context->metalCollisionExceptionsOnly ? (uint64_t)cpuContactCount : (uint64_t)contactCount;
 	for ( int i = 0; i < world->workerCount; ++i )
 	{
 		world->metalContactCollisionBypassCount += (uint64_t)world->taskContexts.data[i].metalContactCollisionBypassCount;
@@ -1250,6 +1283,7 @@ static void b3Collide( b3StepContext* context )
 	context->awakeContactIndices = NULL;
 	context->metalConvexManifolds = NULL;
 	context->metalConvexManifoldCount = 0;
+	context->metalCollisionExceptionsOnly = false;
 	contactIndices = NULL;
 
 	// Serially update contact state

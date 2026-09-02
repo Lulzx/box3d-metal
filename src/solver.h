@@ -265,6 +265,7 @@ typedef struct b3StepContext
 	int* awakeContactIndices;
 	const b3MetalConvexManifoldResult* metalConvexManifolds;
 	int metalConvexManifoldCount;
+	bool metalCollisionExceptionsOnly;
 	int metalResidentConvexContactCount;
 	int metalResidentConvexConstraintCount;
 	bool metalResidentConvexComplete;
@@ -362,7 +363,7 @@ static inline b3Softness b3MakeSoft( float hertz, float zeta, float h )
 	// In all cases:
 	// massScale + impulseScale == 1
 
-	return ( b3Softness ){
+	return (b3Softness){
 		.biasRate = omega / a1,
 		.massScale = a2 * a3,
 		.impulseScale = a3,

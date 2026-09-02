@@ -1424,6 +1424,20 @@ static void b3ExecuteMetalFinalization( b3StepContext* context, int bodyCount )
 static void b3RefreshStaleContactManifoldsAfterMetalFallback( b3StepContext* context )
 {
 	b3World* world = context->world;
+	for ( int colorIndex = 0; colorIndex < B3_GRAPH_COLOR_COUNT - 1; ++colorIndex )
+	{
+		b3GraphColor* color = context->graph->colors + colorIndex;
+		for ( int i = 0; i < color->convexContacts.count; ++i )
+		{
+			b3Contact* contact = b3Array_Get( world->contacts, color->convexContacts.data[i] );
+			if ( b3IsContactManifoldStale( world, contact ) == false )
+				continue;
+			b3Body* bodyA = b3Array_Get( world->bodies, world->shapes.data[contact->shapeIdA].bodyId );
+			b3Body* bodyB = b3Array_Get( world->bodies, world->shapes.data[contact->shapeIdB].bodyId );
+			contact->bodySimIndexA = bodyA->type == b3_staticBody ? B3_NULL_INDEX : bodyA->localIndex;
+			contact->bodySimIndexB = bodyB->type == b3_staticBody ? B3_NULL_INDEX : bodyB->localIndex;
+		}
+	}
 	if ( b3MetalSyncAllContactManifolds( world->metalContext, world ) )
 		return;
 
@@ -1438,7 +1452,7 @@ static void b3RefreshStaleContactManifoldsAfterMetalFallback( b3StepContext* con
 		{
 			int contactId = color->convexContacts.data[i];
 			b3Contact* contact = b3Array_Get( world->contacts, contactId );
-			if ( ( contact->flags & b3_simMetalManifoldStale ) == 0 )
+			if ( b3IsContactManifoldStale( world, contact ) == false )
 				continue;
 			b3Shape* shapeA = shapes + contact->shapeIdA;
 			b3Shape* shapeB = shapes + contact->shapeIdB;
@@ -1446,9 +1460,12 @@ static void b3RefreshStaleContactManifoldsAfterMetalFallback( b3StepContext* con
 			b3Body* bodyB = b3Array_Get( world->bodies, shapeB->bodyId );
 			b3BodySim* simA = b3GetBodySim( world, bodyA );
 			b3BodySim* simB = b3GetBodySim( world, bodyB );
+			contact->bodySimIndexA = bodyA->type == b3_staticBody ? B3_NULL_INDEX : bodyA->localIndex;
+			contact->bodySimIndexB = bodyB->type == b3_staticBody ? B3_NULL_INDEX : bodyB->localIndex;
 			b3UpdateContact( world, 0, contact, shapeA, simA->localCenter, simA->transform, shapeB, simB->localCenter,
 							 simB->transform, false, NULL, false, NULL, 0, NULL, false, NULL, world->taskContexts.data[0].arena );
 			contact->flags &= ~b3_simMetalManifoldStale;
+			contact->metalSyncGeneration = world->metalContactManifoldGeneration;
 			for ( int manifoldIndex = 0; manifoldIndex < contact->manifoldCount; ++manifoldIndex )
 			{
 				b3Manifold* manifold = contact->manifolds + manifoldIndex;
@@ -1976,7 +1993,10 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 				const b3Contact* contact = b3Array_Get( world->contacts, contactId );
 				bool resident = ( contact->flags & b3_simMetalManifold ) != 0;
 				residentConvexContactCount += resident;
-				residentConvexHasRestitution = residentConvexHasRestitution || ( resident && contact->restitution != 0.0f );
+				// A resident contact may have a deliberately stale CPU material mirror.
+				// Running the bounded restitution pass is conservative; the device
+				// preparation record contains the current authoritative coefficient.
+				residentConvexHasRestitution = residentConvexHasRestitution || resident;
 			}
 			colorWideContactCounts[c] = colorWideConstraintCount;
 

@@ -151,13 +151,15 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 									int* candidateCount, b3MetalDispatchStats* stats );
 
 // Batch the first common convex narrow-phase route. The returned array contains
-// only active Metal results, ordered by inputIndex; eligibleCount is its length.
+// Results are ordered by inputIndex. When residentBypassCount is non-NULL, the
+// shared result contains only CPU exceptions once stable device-owned contacts
+// exist; otherwise it contains the active Metal results used by diagnostics.
 // Result normals and anchors are oriented into world axes and relative to each
 // body's center of mass. Exact VF64 subtraction is used for double-precision
 // world translations before converting the relative displacement to float,
 // matching Box3D's scalar narrow-phase boundary.
 bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices, int contactCount,
-									const b3MetalConvexManifoldResult** results, int* eligibleCount,
+									const b3MetalConvexManifoldResult** results, int* resultCount, int* residentBypassCount,
 									b3MetalDispatchStats* stats );
 
 // Explicit diagnostic/fallback staging of the private contact-id-indexed table.

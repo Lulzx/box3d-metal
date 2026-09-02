@@ -169,7 +169,12 @@ typedef struct b3Contact
 	// This is monotonically advanced when a contact is allocated in this slot
 	// Used to check for invalid b3ContactId
 	uint32_t generation;
+
+	// Last resident manifold generation materialized into the CPU mirror.
+	uint64_t metalSyncGeneration;
 } b3Contact;
+
+bool b3IsContactManifoldStale( const b3World* world, const b3Contact* contact );
 
 // Materialize current resident geometry without requiring post-solve impulses.
 bool b3SyncContactManifold( b3World* world, b3Contact* contact );
