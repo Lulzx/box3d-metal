@@ -47,6 +47,9 @@ agreement.
 
 Exact speculative and high-aspect hull-sphere behavior still needs the general
 GJK simplex path. Hull-capsule and hull-hull need their SAT/clipping paths.
-Before broadening those routes, hull geometry and transforms should become a
-deduplicated persistent registry and manifolds should be written into resident
-storage so the new geometry streams do not become another CPU packing tax.
+The follow-on
+[`resident hull-geometry checkpoint`](m4-pro-resident-hull-geometry-2026-09-02.md)
+deduplicates and retains hull points, planes, triangles, and descriptors across
+revision-stable dispatches. Body transforms and manifold results still need
+resident ownership before the remaining CPU packing and result streams can
+disappear.

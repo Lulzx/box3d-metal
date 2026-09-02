@@ -564,6 +564,7 @@ static int MetalConvexManifoldTest( void )
 	}
 	pairOffset += parallelCapsuleCount;
 	b3BoxHull box = b3MakeBoxHull( 0.5f, 0.5f, 0.5f );
+	b3ShapeId firstHullShape = b3_nullShapeId;
 	b3Vec3 hullSpherePositions[6] = {
 		{ 0.0f, 0.72f, 0.0f },
 		{ 0.65f, 0.65f, 0.0f },
@@ -580,7 +581,8 @@ static int MetalConvexManifoldTest( void )
 		hullDef.position = (b3Pos){ base, 0.0, 4.0 * ( pairOffset + i ) };
 		hullDef.rotation = b3MakeQuatFromAxisAngle( b3Normalize( (b3Vec3){ 0.2f, 0.7f, -0.1f } ), 0.11f * (float)i );
 		b3BodyId bodyA = b3CreateBody( worldId, &hullDef );
-		b3CreateHullShape( bodyA, &shapeDef, &box.base );
+		b3ShapeId hullShape = b3CreateHullShape( bodyA, &shapeDef, &box.base );
+		if ( i == 0 ) firstHullShape = hullShape;
 		b3BodyDef sphereDef = b3DefaultBodyDef();
 		sphereDef.type = b3_dynamicBody;
 		sphereDef.position = hullDef.position;
@@ -783,11 +785,29 @@ static int MetalConvexManifoldTest( void )
 		stats.gpuMilliseconds, maxError, maxApplyError );
 	ENSURE( profile.narrowPhaseDispatchCount == 1 );
 	ENSURE( profile.narrowPhaseFallbackCount == 0 );
+	ENSURE( profile.narrowPhaseGeometryUploadCount == 1 );
+	ENSURE( profile.narrowPhaseGeometryReuseCount >= 2 );
+	ENSURE( profile.lastNarrowPhaseHullShapeCount == 8 );
+	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 1 );
+	printf( "    resident hull geometry uploads=%llu reuses=%llu shapes=%d unique=%d inputBytes=184\n",
+		(unsigned long long)profile.narrowPhaseGeometryUploadCount,
+		(unsigned long long)profile.narrowPhaseGeometryReuseCount, profile.lastNarrowPhaseHullShapeCount,
+		profile.lastNarrowPhaseUniqueHullCount );
 	ENSURE( maxApplyError <= 5.0e-5f );
 
 	free( cpuStepManifolds );
 	free( first );
 	free( contactIndices );
+	b3BoxHull replacementBox = b3MakeBoxHull( 0.55f, 0.50f, 0.50f );
+	b3Shape_SetHull( firstHullShape, &replacementBox.base );
+	b3World_Step( worldId, 0.0f, 1 );
+	profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.narrowPhaseGeometryUploadCount == 2 );
+	ENSURE( profile.lastNarrowPhaseHullShapeCount == 8 );
+	ENSURE( profile.lastNarrowPhaseUniqueHullCount == 2 );
+	printf( "    resident hull mutation uploads=%llu shapes=%d unique=%d rebuild=yes\n",
+		(unsigned long long)profile.narrowPhaseGeometryUploadCount, profile.lastNarrowPhaseHullShapeCount,
+		profile.lastNarrowPhaseUniqueHullCount );
 	b3DestroyWorld( worldId );
 	return 0;
 }

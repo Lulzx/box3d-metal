@@ -302,6 +302,10 @@ typedef struct b3World
 	uint64_t metalPairShapeRevision;
 	uint64_t metalNarrowPhaseDispatchCount;
 	uint64_t metalNarrowPhaseFallbackCount;
+	uint64_t metalNarrowPhaseGeometryUploadCount;
+	uint64_t metalNarrowPhaseGeometryReuseCount;
+	int metalLastNarrowPhaseHullShapeCount;
+	int metalLastNarrowPhaseUniqueHullCount;
 	double metalLastPositionGpuMilliseconds;
 	double metalLastUnconstrainedGpuMilliseconds;
 	double metalLastContactGpuMilliseconds;

@@ -1340,6 +1340,10 @@ b3Filter b3Shape_GetFilter( b3ShapeId shapeId )
 
 static void b3ResetProxy( b3World* world, b3Shape* shape, bool wakeBodies, bool destroyProxy )
 {
+#if defined( BOX3D_METAL )
+	b3MetalInvalidateShapeInputCache( world->metalContext );
+	world->metalPairShapeRevision += 1;
+#endif
 	b3Body* body = b3Array_Get( world->bodies, shape->bodyId );
 
 	int shapeId = shape->id;

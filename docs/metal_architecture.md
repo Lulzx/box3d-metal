@@ -160,6 +160,19 @@ above 63, shader stack overflow, changing counts, allocation failure, or more
 than 64 raw candidates per moved proxy on average fall back to the full CPU
 traversal before any partial result is consumed.
 
+The bounded hull-sphere narrow-phase route owns a separate persistent geometry
+registry indexed by Box3D shape id. On its first dispatch after shape revision,
+the CPU validates compact supported hulls, deduplicates identical `b3HullData`
+content, and writes one point, plane, and triangle stream plus a 32-byte
+descriptor for each shape slot. Stable dispatches skip world-shape traversal
+and packing. Shape creation, destruction, or geometry mutation invalidates both
+this registry and the existing pair metadata revision; filter mutation currently
+over-invalidates the geometry registry as a conservative consequence of sharing
+that revision. Allocation, count, or hull validation failure rejects the Metal
+narrow-phase dispatch before any result is consumed. The 184-byte contact input
+contains a shape id rather than per-contact hull stream offsets; the MSL kernel
+loads the descriptor and geometry directly from the persistent Metal buffers.
+
 Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 unsupported joint solution, continuous collision, events, and sleeping/island
 mutation still run on the CPU. Unsupported
@@ -176,7 +189,7 @@ paths, not yet the final performance architecture.
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 | Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
-| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere local geometry is batched on Metal; CPU applies persistence, materials, callbacks, and state transitions. High-aspect/speculative hull-sphere, other hull pairs, meshes, height fields, and compounds remain CPU |
+| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere local geometry is batched on Metal; compact hull geometry is deduplicated and retained across revision-stable dispatches. CPU applies persistence, materials, callbacks, and state transitions. High-aspect/speculative hull-sphere, other hull pairs, meshes, height fields, and compounds remain CPU |
 | Contact preparation and impulse storage | CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
@@ -254,6 +267,9 @@ The capsule extension, including two-point parallel manifolds, is recorded in
 The bounded hull-sphere extension and its explicit GJK fallback boundary are
 recorded in
 [`benchmarks/m4-pro-hull-sphere-narrow-phase-2026-09-02.md`](benchmarks/m4-pro-hull-sphere-narrow-phase-2026-09-02.md).
+The persistent deduplicated hull-geometry registry and invalidation evidence are
+recorded in
+[`benchmarks/m4-pro-resident-hull-geometry-2026-09-02.md`](benchmarks/m4-pro-resident-hull-geometry-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

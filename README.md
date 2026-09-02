@@ -45,7 +45,11 @@ filters, proxy keys, and local bounds are not repacked or recomputed. Sleep,
 wake, topology, transform, and filter changes rebuild fail-closed.
 The shape-specialized narrow-phase route batches sphere-sphere, capsule-sphere,
 capsule-capsule, and bounded compact hull-sphere manifold geometry in one Metal
-dispatch. CPU workers consume the ordered local geometry
+dispatch. Supported hulls live in a revisioned, content-deduplicated Metal
+geometry registry: unchanged dispatches reuse the same point, plane, triangle,
+and shape-descriptor buffers, while geometry and topology mutation rebuild
+fail-closed. Each 184-byte contact record now references hull geometry by shape
+id instead of duplicating it. CPU workers consume the ordered local geometry
 while retaining manifold allocation, warm-start feature matching, materials,
 pre-solve callbacks, events, and island mutation. Other shape pairs stay on the
 unchanged CPU path. High-aspect and speculative hull-sphere contacts explicitly

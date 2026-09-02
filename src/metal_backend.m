@@ -9,6 +9,7 @@
 #include "constraint_graph.h"
 #include "broad_phase.h"
 #include "contact_solver.h"
+#include "hull.h"
 #include "joint.h"
 #include "physics_world.h"
 #include "shape.h"
@@ -130,6 +131,10 @@ struct b3MetalContext
 	NSUInteger convexHullPlaneCapacity;
 	id<MTLBuffer> convexHullTriangleBuffer;
 	NSUInteger convexHullTriangleCapacity;
+	id<MTLBuffer> convexHullRecordBuffer;
+	NSUInteger convexHullRecordCapacity;
+	int convexHullRecordCount;
+	uint64_t convexHullGeometryRevision;
 	id<MTLBuffer> contactConstraintBuffer;
 	NSUInteger contactConstraintCapacity;
 	id<MTLBuffer> meshContactBuffer;
@@ -215,7 +220,7 @@ typedef struct b3MetalPairShape
 typedef struct b3MetalConvexManifoldInput
 {
 	uint32_t eligible;
-	uint32_t typeA, typeB, padding;
+	uint32_t typeA, typeB, shapeIdA;
 	float centerA1X, centerA1Y, centerA1Z, radiusA;
 	float centerA2X, centerA2Y, centerA2Z, paddingA;
 	float centerB1X, centerB1Y, centerB1Z, radiusB;
@@ -226,10 +231,6 @@ typedef struct b3MetalConvexManifoldInput
 	float positionBX, positionBY, positionBZ;
 	uint64_t positionAXBits, positionAYBits, positionAZBits;
 	uint64_t positionBXBits, positionBYBits, positionBZBits;
-	uint32_t hullPointOffset, hullPointCount;
-	uint32_t hullPlaneOffset, hullPlaneCount;
-	uint32_t hullTriangleOffset, hullTriangleCount;
-	uint32_t paddingC[2];
 } b3MetalConvexManifoldInput;
 
 typedef struct b3MetalHullTriangle
@@ -241,6 +242,14 @@ typedef struct b3MetalFloat4
 {
 	float x, y, z, w;
 } b3MetalFloat4;
+
+typedef struct b3MetalHullGeometryRecord
+{
+	uint32_t pointOffset, pointCount;
+	uint32_t planeOffset, planeCount;
+	uint32_t triangleOffset, triangleCount;
+	uint32_t supported, padding;
+} b3MetalHullGeometryRecord;
 
 _Static_assert( sizeof( b3MetalBodyProperties ) == 128, "Metal body property ABI changed" );
 _Static_assert( sizeof( b3MetalFinalizeProperties ) == 64, "Metal finalization-property ABI changed" );
@@ -258,10 +267,11 @@ _Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI 
 _Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
 _Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
 _Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed" );
-_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 216, "Metal convex-manifold input ABI changed" );
+_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 184, "Metal convex-manifold input ABI changed" );
 _Static_assert( sizeof( b3MetalConvexManifoldResult ) == 80, "Metal convex-manifold result ABI changed" );
 _Static_assert( sizeof( b3MetalHullTriangle ) == 16, "Metal hull-triangle ABI changed" );
 _Static_assert( sizeof( b3MetalFloat4 ) == 16, "Metal float4 ABI changed" );
+_Static_assert( sizeof( b3MetalHullGeometryRecord ) == 32, "Metal hull-geometry record ABI changed" );
 _Static_assert( sizeof( b3SetItem ) == 16, "Metal pair-set item ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintPointWide ) == 192, "Metal wide contact point ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintWide ) == 1696, "Metal wide contact ABI changed" );
@@ -402,15 +412,15 @@ static const char* b3_metalSource =
 	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates,shapeCount,pairCapacity,p1,p2; };\n"
 	"struct PairPrefixParams { uint moveCount,candidateCapacity,candidateLimit,padding; };\n"
 	"struct ConvexManifoldInput {\n"
-	"  uint eligible,typeA,typeB,padding; float centerA1X,centerA1Y,centerA1Z,radiusA;\n"
+	"  uint eligible,typeA,typeB,shapeIdA; float centerA1X,centerA1Y,centerA1Z,radiusA;\n"
 	"  float centerA2X,centerA2Y,centerA2Z,paddingA; float centerB1X,centerB1Y,centerB1Z,radiusB;\n"
 	"  float centerB2X,centerB2Y,centerB2Z,paddingB;\n"
 	"  float qAX,qAY,qAZ,qAW,qBX,qBY,qBZ,qBW; float positionAX,positionAY,positionAZ,positionBX,positionBY,positionBZ;\n"
 	"  ulong positionAXBits,positionAYBits,positionAZBits,positionBXBits,positionBYBits,positionBZBits;\n"
-	"  uint hullPointOffset,hullPointCount,hullPlaneOffset,hullPlaneCount;\n"
-	"  uint hullTriangleOffset,hullTriangleCount,paddingC1,paddingC2;\n"
 	"};\n"
 	"struct HullTriangle { uint index1,index2,index3,face; };\n"
+	"struct HullGeometryRecord { uint pointOffset,pointCount,planeOffset,planeCount;\n"
+	"  uint triangleOffset,triangleCount,supported,padding; };\n"
 	"struct ConvexManifoldResult { uint eligible,touching,pointCount,padding1; float nx,ny,nz,padding2;\n"
 	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,padding3,padding4; };\n"
 	"struct ConvexManifoldParams { uint contactCount; float linearSlop,speculativeDistance,padding; };\n"
@@ -852,6 +862,7 @@ static const char* b3_metalSource =
 	"                                const device float4* hullPoints [[buffer(3)]],\n"
 	"                                const device float4* hullPlanes [[buffer(4)]],\n"
 	"                                const device HullTriangle* hullTriangles [[buffer(5)]],\n"
+	"                                const device HullGeometryRecord* hullRecords [[buffer(6)]],\n"
 	"                                uint i [[thread_position_in_grid]]) {\n"
 	"  if(i>=p.contactCount)return; ConvexManifoldInput in=inputs[i]; ConvexManifoldResult out={};\n"
 	"  if(in.eligible==0u){results[i]=out;return;} out.eligible=1u;\n"
@@ -868,17 +879,18 @@ static const char* b3_metalSource =
 	"  float3 a1=float3(in.centerA1X,in.centerA1Y,in.centerA1Z),a2=float3(in.centerA2X,in.centerA2Y,in.centerA2Z);\n"
 	"  float3 b1=rotate(relativeRotation,float3(in.centerB1X,in.centerB1Y,in.centerB1Z))+relativePosition;\n"
 	"  float3 b2=rotate(relativeRotation,float3(in.centerB2X,in.centerB2Y,in.centerB2Z))+relativePosition;\n"
-	"  if(in.typeA==3u){float bestPlane=-3.40282347e+38f;float3 bestNormal=float3(0.0f,1.0f,0.0f);uint bestFace=0u;\n"
-	"    for(uint j=0u;j<in.hullPlaneCount;++j){float4 plane=hullPlanes[in.hullPlaneOffset+j];float separation=dot(plane.xyz,b1)-plane.w;\n"
+	"  if(in.typeA==3u){HullGeometryRecord hull=hullRecords[in.shapeIdA];if(hull.supported==0u){out.eligible=0u;results[i]=out;return;}\n"
+	"    float bestPlane=-3.40282347e+38f;float3 bestNormal=float3(0.0f,1.0f,0.0f);uint bestFace=0u;\n"
+	"    for(uint j=0u;j<hull.planeCount;++j){float4 plane=hullPlanes[hull.planeOffset+j];float separation=dot(plane.xyz,b1)-plane.w;\n"
 	"      if(separation>bestPlane){bestPlane=separation;bestNormal=plane.xyz;bestFace=j;}}\n"
 	"    float distance=0.0f;float3 closest=b1;float3 normal=bestNormal;\n"
 	"    if(bestPlane>0.0f){float bestDistanceSquared=3.40282347e+38f;float3 projection=b1-bestPlane*bestNormal;float faceDistanceSquared=3.40282347e+38f;\n"
-	"      for(uint j=0u;j<in.hullTriangleCount;++j){HullTriangle tri=hullTriangles[in.hullTriangleOffset+j];if(tri.face!=bestFace)continue;\n"
-	"        float3 q=closest_triangle(projection,hullPoints[in.hullPointOffset+tri.index1].xyz,hullPoints[in.hullPointOffset+tri.index2].xyz,hullPoints[in.hullPointOffset+tri.index3].xyz);\n"
+	"      for(uint j=0u;j<hull.triangleCount;++j){HullTriangle tri=hullTriangles[hull.triangleOffset+j];if(tri.face!=bestFace)continue;\n"
+	"        float3 q=closest_triangle(projection,hullPoints[hull.pointOffset+tri.index1].xyz,hullPoints[hull.pointOffset+tri.index2].xyz,hullPoints[hull.pointOffset+tri.index3].xyz);\n"
 	"        faceDistanceSquared=min(faceDistanceSquared,dot(projection-q,projection-q));}\n"
 	"      float faceTolerance=0.01f*p.linearSlop;if(faceDistanceSquared<=faceTolerance*faceTolerance){closest=projection;bestDistanceSquared=bestPlane*bestPlane;}else\n"
-	"      for(uint j=0u;j<in.hullTriangleCount;++j){HullTriangle tri=hullTriangles[in.hullTriangleOffset+j];\n"
-	"        float3 q=closest_triangle(b1,hullPoints[in.hullPointOffset+tri.index1].xyz,hullPoints[in.hullPointOffset+tri.index2].xyz,hullPoints[in.hullPointOffset+tri.index3].xyz);\n"
+	"      for(uint j=0u;j<hull.triangleCount;++j){HullTriangle tri=hullTriangles[hull.triangleOffset+j];\n"
+	"        float3 q=closest_triangle(b1,hullPoints[hull.pointOffset+tri.index1].xyz,hullPoints[hull.pointOffset+tri.index2].xyz,hullPoints[hull.pointOffset+tri.index3].xyz);\n"
 	"        float distanceSquared=dot(b1-q,b1-q);if(distanceSquared<bestDistanceSquared){bestDistanceSquared=distanceSquared;closest=q;}}\n"
 	"      distance=sqrt(bestDistanceSquared);if(distance>in.radiusB+p.speculativeDistance){results[i]=out;return;}\n"
 	"      if(distance>in.radiusB){out.eligible=0u;results[i]=out;return;}\n"
@@ -1480,6 +1492,7 @@ bool b3MetalCreateContext( b3MetalContext** contextOut, char* errorBuffer, int e
 		context->pairUpdateLeavesPipeline = pairUpdateLeavesPipeline;
 		context->pairRefitPipeline = pairRefitPipeline;
 		context->convexManifoldPipeline = convexManifoldPipeline;
+		context->convexHullGeometryRevision = UINT64_MAX;
 		context->warmStartContactsPipeline = warmStartPipeline;
 		context->solveContactsPipeline = solvePipeline;
 		context->restitutionContactsPipeline = restitutionPipeline;
@@ -1532,6 +1545,7 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->convexHullPointBuffer release];
 	[context->convexHullPlaneBuffer release];
 	[context->convexHullTriangleBuffer release];
+	[context->convexHullRecordBuffer release];
 	[context->contactConstraintBuffer release];
 	[context->meshContactBuffer release];
 	[context->meshManifoldBuffer release];
@@ -1680,8 +1694,7 @@ static bool b3MetalEnsureFinalizePropertiesCapacity( b3MetalContext* context, NS
 	return true;
 }
 
-static bool b3MetalEnsureConvexManifoldCapacity( b3MetalContext* context, NSUInteger inputBytes, NSUInteger resultBytes,
-	NSUInteger hullPointBytes, NSUInteger hullPlaneBytes, NSUInteger hullTriangleBytes )
+static bool b3MetalEnsureConvexManifoldCapacity( b3MetalContext* context, NSUInteger inputBytes, NSUInteger resultBytes )
 {
 	if ( context->convexManifoldInputCapacity < inputBytes )
 	{
@@ -1702,6 +1715,25 @@ static bool b3MetalEnsureConvexManifoldCapacity( b3MetalContext* context, NSUInt
 		[context->convexManifoldResultBuffer release];
 		context->convexManifoldResultBuffer = buffer;
 		context->convexManifoldResultCapacity = capacity;
+	}
+	return true;
+}
+
+static bool b3MetalEnsureHullGeometryCapacity( b3MetalContext* context, int recordCount, NSUInteger hullPointBytes,
+	NSUInteger hullPlaneBytes, NSUInteger hullTriangleBytes )
+{
+	if ( recordCount < 0 || (NSUInteger)recordCount > NSUIntegerMax / sizeof( b3MetalHullGeometryRecord ) ) return false;
+	NSUInteger recordBytes = (NSUInteger)recordCount * sizeof( b3MetalHullGeometryRecord );
+	recordBytes = recordBytes > sizeof( b3MetalHullGeometryRecord ) ? recordBytes : sizeof( b3MetalHullGeometryRecord );
+	if ( context->convexHullRecordCapacity < recordBytes )
+	{
+		NSUInteger capacity = context->convexHullRecordCapacity > 0 ? context->convexHullRecordCapacity : 4096;
+		while ( capacity < recordBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->convexHullRecordBuffer release];
+		context->convexHullRecordBuffer = buffer;
+		context->convexHullRecordCapacity = capacity;
 	}
 	hullPointBytes = hullPointBytes > sizeof( b3MetalFloat4 ) ? hullPointBytes : sizeof( b3MetalFloat4 );
 	hullPlaneBytes = hullPlaneBytes > sizeof( b3MetalFloat4 ) ? hullPlaneBytes : sizeof( b3MetalFloat4 );
@@ -3077,10 +3109,10 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 	}
 }
 
-static bool b3MetalSupportsHullSphere( const b3Shape* shapeA, const b3Shape* shapeB )
+static bool b3MetalSupportsHull( const b3Shape* shape )
 {
-	if ( shapeA->type != b3_hullShape || shapeB->type != b3_sphereShape || shapeA->hull == NULL ) return false;
-	const b3HullData* hull = shapeA->hull;
+	if ( shape->type != b3_hullShape || shape->hull == NULL ) return false;
+	const b3HullData* hull = shape->hull;
 	if ( hull->version != B3_HULL_VERSION || hull->vertexCount < 4 || hull->faceCount < 4 || hull->edgeCount < 12 ||
 		 b3GetHullPoints( hull ) == NULL || b3GetHullPlanes( hull ) == NULL || b3GetHullFaces( hull ) == NULL ||
 		 b3GetHullEdges( hull ) == NULL )
@@ -3093,6 +3125,161 @@ static bool b3MetalSupportsHullSphere( const b3Shape* shapeA, const b3Shape* sha
 	// Boundary-triangle closest points are stable for ordinary compact hulls.
 	// High-aspect hulls retain GJK on CPU until that exact simplex path is ported.
 	return minExtent > B3_LINEAR_SLOP && maxExtent <= 16.0f * minExtent;
+}
+
+static bool b3MetalSupportsHullSphere( const b3Shape* shapeA, const b3Shape* shapeB )
+{
+	return shapeB->type == b3_sphereShape && b3MetalSupportsHull( shapeA );
+}
+
+static bool b3MetalEnsureHullGeometryRegistry( b3MetalContext* context, const b3World* world )
+{
+	int shapeCount = world->shapes.count;
+	if ( context->convexHullGeometryRevision == world->metalPairShapeRevision &&
+		 context->convexHullRecordCount == shapeCount )
+	{
+		( (b3World*)world )->metalNarrowPhaseGeometryReuseCount += 1;
+		return true;
+	}
+
+	size_t temporaryCount = shapeCount > 0 ? (size_t)shapeCount : 1;
+	int* shapeUniqueIndices = malloc( temporaryCount * sizeof( int ) );
+	const b3HullData** uniqueHulls = malloc( temporaryCount * sizeof( const b3HullData* ) );
+	b3MetalHullGeometryRecord* uniqueRecords = calloc( temporaryCount, sizeof( b3MetalHullGeometryRecord ) );
+	if ( shapeUniqueIndices == NULL || uniqueHulls == NULL || uniqueRecords == NULL )
+	{
+		free( shapeUniqueIndices );
+		free( uniqueHulls );
+		free( uniqueRecords );
+		return false;
+	}
+	for ( int i = 0; i < shapeCount; ++i ) shapeUniqueIndices[i] = B3_NULL_INDEX;
+
+	b3HullMap hullMap;
+	b3HullMap_init( &hullMap );
+	b3HullMap_reserve( &hullMap, shapeCount );
+	int uniqueCount = 0;
+	int supportedShapeCount = 0;
+	uint64_t hullPointCount = 0;
+	uint64_t hullPlaneCount = 0;
+	uint64_t hullTriangleCount = 0;
+	bool valid = true;
+	for ( int shapeIndex = 0; shapeIndex < shapeCount; ++shapeIndex )
+	{
+		const b3Shape* shape = world->shapes.data + shapeIndex;
+		if ( shape->id != shapeIndex || b3MetalSupportsHull( shape ) == false ) continue;
+		supportedShapeCount += 1;
+		const b3HullData* hull = shape->hull;
+		b3HullMap_itr itr = b3HullMap_get_or_insert( &hullMap, hull, uniqueCount );
+		int uniqueIndex = itr.data->val;
+		shapeUniqueIndices[shapeIndex] = uniqueIndex;
+		if ( uniqueIndex != uniqueCount ) continue;
+		int triangleCount = hull->edgeCount - 2 * hull->faceCount;
+		if ( triangleCount <= 0 )
+		{
+			valid = false;
+			break;
+		}
+		uniqueHulls[uniqueCount++] = hull;
+		hullPointCount += (uint32_t)hull->vertexCount;
+		hullPlaneCount += (uint32_t)hull->faceCount;
+		hullTriangleCount += (uint32_t)triangleCount;
+		if ( hullPointCount > UINT32_MAX || hullPlaneCount > UINT32_MAX || hullTriangleCount > UINT32_MAX )
+		{
+			valid = false;
+			break;
+		}
+	}
+	b3HullMap_cleanup( &hullMap );
+
+	if ( valid && ( hullPointCount > NSUIntegerMax / sizeof( b3MetalFloat4 ) ||
+					 hullPlaneCount > NSUIntegerMax / sizeof( b3MetalFloat4 ) ||
+					 hullTriangleCount > NSUIntegerMax / sizeof( b3MetalHullTriangle ) ) )
+	{
+		valid = false;
+	}
+	NSUInteger hullPointBytes = (NSUInteger)hullPointCount * sizeof( b3MetalFloat4 );
+	NSUInteger hullPlaneBytes = (NSUInteger)hullPlaneCount * sizeof( b3MetalFloat4 );
+	NSUInteger hullTriangleBytes = (NSUInteger)hullTriangleCount * sizeof( b3MetalHullTriangle );
+	if ( valid == false || b3MetalEnsureHullGeometryCapacity( context, shapeCount, hullPointBytes, hullPlaneBytes,
+			hullTriangleBytes ) == false )
+	{
+		free( shapeUniqueIndices );
+		free( uniqueHulls );
+		free( uniqueRecords );
+		context->convexHullGeometryRevision = UINT64_MAX;
+		context->convexHullRecordCount = 0;
+		return false;
+	}
+
+	b3MetalFloat4* hullPoints = context->convexHullPointBuffer.contents;
+	b3MetalFloat4* hullPlanes = context->convexHullPlaneBuffer.contents;
+	b3MetalHullTriangle* hullTriangles = context->convexHullTriangleBuffer.contents;
+	uint32_t hullPointCursor = 0;
+	uint32_t hullPlaneCursor = 0;
+	uint32_t hullTriangleCursor = 0;
+	for ( int uniqueIndex = 0; uniqueIndex < uniqueCount; ++uniqueIndex )
+	{
+		const b3HullData* hull = uniqueHulls[uniqueIndex];
+		const b3Vec3* points = b3GetHullPoints( hull );
+		const b3Plane* planes = b3GetHullPlanes( hull );
+		const b3HullFace* faces = b3GetHullFaces( hull );
+		const b3HullHalfEdge* edges = b3GetHullEdges( hull );
+		b3MetalHullGeometryRecord* record = uniqueRecords + uniqueIndex;
+		record->pointOffset = hullPointCursor;
+		record->pointCount = (uint32_t)hull->vertexCount;
+		for ( int pointIndex = 0; pointIndex < hull->vertexCount; ++pointIndex )
+		{
+			hullPoints[hullPointCursor++] =
+				(b3MetalFloat4){ points[pointIndex].x, points[pointIndex].y, points[pointIndex].z, 0.0f };
+		}
+		record->planeOffset = hullPlaneCursor;
+		record->planeCount = (uint32_t)hull->faceCount;
+		for ( int planeIndex = 0; planeIndex < hull->faceCount; ++planeIndex )
+		{
+			hullPlanes[hullPlaneCursor++] = (b3MetalFloat4){ planes[planeIndex].normal.x, planes[planeIndex].normal.y,
+				planes[planeIndex].normal.z, planes[planeIndex].offset };
+		}
+		record->triangleOffset = hullTriangleCursor;
+		for ( int faceIndex = 0; faceIndex < hull->faceCount; ++faceIndex )
+		{
+			uint8_t startEdge = faces[faceIndex].edge;
+			uint8_t edgeIndex = edges[startEdge].next;
+			uint32_t index1 = edges[startEdge].origin;
+			uint32_t index2 = edges[edgeIndex].origin;
+			edgeIndex = edges[edgeIndex].next;
+			while ( edgeIndex != startEdge )
+			{
+				uint32_t index3 = edges[edgeIndex].origin;
+				hullTriangles[hullTriangleCursor++] =
+					(b3MetalHullTriangle){ index1, index2, index3, (uint32_t)faceIndex };
+				index2 = index3;
+				edgeIndex = edges[edgeIndex].next;
+			}
+		}
+		record->triangleCount = hullTriangleCursor - record->triangleOffset;
+		record->supported = 1;
+	}
+
+	b3MetalHullGeometryRecord* records = context->convexHullRecordBuffer.contents;
+	memset( records, 0, (size_t)shapeCount * sizeof( b3MetalHullGeometryRecord ) );
+	for ( int shapeIndex = 0; shapeIndex < shapeCount; ++shapeIndex )
+	{
+		int uniqueIndex = shapeUniqueIndices[shapeIndex];
+		if ( uniqueIndex != B3_NULL_INDEX ) records[shapeIndex] = uniqueRecords[uniqueIndex];
+	}
+	B3_ASSERT( hullPointCursor == hullPointCount );
+	B3_ASSERT( hullPlaneCursor == hullPlaneCount );
+	B3_ASSERT( hullTriangleCursor == hullTriangleCount );
+	context->convexHullRecordCount = shapeCount;
+	context->convexHullGeometryRevision = world->metalPairShapeRevision;
+	( (b3World*)world )->metalNarrowPhaseGeometryUploadCount += 1;
+	( (b3World*)world )->metalLastNarrowPhaseHullShapeCount = supportedShapeCount;
+	( (b3World*)world )->metalLastNarrowPhaseUniqueHullCount = uniqueCount;
+	free( shapeUniqueIndices );
+	free( uniqueHulls );
+	free( uniqueRecords );
+	return true;
 }
 
 bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
@@ -3117,53 +3304,14 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 	{
 		NSUInteger inputBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldInput );
 		NSUInteger resultBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldResult );
-		uint64_t hullPointCount = 0;
-		uint64_t hullPlaneCount = 0;
-		uint64_t hullTriangleCount = 0;
-		for ( int i = 0; i < contactCount; ++i )
-		{
-			int contactIndex = contactIndices[i];
-			if ( contactIndex < 0 || contactIndex >= world->contacts.count ) return false;
-			const b3Contact* contact = world->contacts.data + contactIndex;
-			if ( contact->contactId != contactIndex || contact->shapeIdA < 0 || contact->shapeIdA >= world->shapes.count ||
-				 contact->shapeIdB < 0 || contact->shapeIdB >= world->shapes.count )
-			{
-				return false;
-			}
-			const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
-			const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
-			if ( b3MetalSupportsHullSphere( shapeA, shapeB ) == false ) continue;
-			const b3HullData* hull = shapeA->hull;
-			int triangleCount = hull->edgeCount - 2 * hull->faceCount;
-			if ( triangleCount <= 0 ) return false;
-			hullPointCount += (uint32_t)hull->vertexCount;
-			hullPlaneCount += (uint32_t)hull->faceCount;
-			hullTriangleCount += (uint32_t)triangleCount;
-			if ( hullPointCount > UINT32_MAX || hullPlaneCount > UINT32_MAX || hullTriangleCount > UINT32_MAX ) return false;
-		}
-		if ( hullPointCount > NSUIntegerMax / sizeof( b3MetalFloat4 ) ||
-			 hullPlaneCount > NSUIntegerMax / sizeof( b3MetalFloat4 ) ||
-			 hullTriangleCount > NSUIntegerMax / sizeof( b3MetalHullTriangle ) )
-		{
-			return false;
-		}
-		NSUInteger hullPointBytes = (NSUInteger)hullPointCount * sizeof( b3MetalFloat4 );
-		NSUInteger hullPlaneBytes = (NSUInteger)hullPlaneCount * sizeof( b3MetalFloat4 );
-		NSUInteger hullTriangleBytes = (NSUInteger)hullTriangleCount * sizeof( b3MetalHullTriangle );
-		if ( b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes, hullPointBytes, hullPlaneBytes,
-				hullTriangleBytes ) == false )
+		if ( b3MetalEnsureHullGeometryRegistry( context, world ) == false ||
+			 b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes ) == false )
 		{
 			return false;
 		}
 		b3MetalConvexManifoldInput* inputs = context->convexManifoldInputBuffer.contents;
-		b3MetalFloat4* hullPoints = context->convexHullPointBuffer.contents;
-		b3MetalFloat4* hullPlanes = context->convexHullPlaneBuffer.contents;
-		b3MetalHullTriangle* hullTriangles = context->convexHullTriangleBuffer.contents;
 		memset( inputs, 0, inputBytes );
 		int candidateCount = 0;
-		uint32_t hullPointCursor = 0;
-		uint32_t hullPlaneCursor = 0;
-		uint32_t hullTriangleCursor = 0;
 		for ( int i = 0; i < contactCount; ++i )
 		{
 			int contactIndex = contactIndices[i];
@@ -3189,6 +3337,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 			input->eligible = 1;
 			input->typeA = (uint32_t)shapeA->type;
 			input->typeB = (uint32_t)shapeB->type;
+			input->shapeIdA = (uint32_t)contact->shapeIdA;
 			if ( shapeA->type == b3_sphereShape )
 			{
 				input->centerA1X = input->centerA2X = shapeA->sphere.center.x;
@@ -3208,43 +3357,10 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 			}
 			else
 			{
-				const b3HullData* hull = shapeA->hull;
-				const b3Vec3* points = b3GetHullPoints( hull );
-				const b3Plane* planes = b3GetHullPlanes( hull );
-				const b3HullFace* faces = b3GetHullFaces( hull );
-				const b3HullHalfEdge* edges = b3GetHullEdges( hull );
-				input->hullPointOffset = hullPointCursor;
-				input->hullPointCount = (uint32_t)hull->vertexCount;
-				for ( int pointIndex = 0; pointIndex < hull->vertexCount; ++pointIndex )
-				{
-					hullPoints[hullPointCursor++] = (b3MetalFloat4){ points[pointIndex].x, points[pointIndex].y,
-						points[pointIndex].z, 0.0f };
-				}
-				input->hullPlaneOffset = hullPlaneCursor;
-				input->hullPlaneCount = (uint32_t)hull->faceCount;
-				for ( int planeIndex = 0; planeIndex < hull->faceCount; ++planeIndex )
-				{
-					hullPlanes[hullPlaneCursor++] = (b3MetalFloat4){ planes[planeIndex].normal.x, planes[planeIndex].normal.y,
-						planes[planeIndex].normal.z, planes[planeIndex].offset };
-				}
-				input->hullTriangleOffset = hullTriangleCursor;
-				for ( int faceIndex = 0; faceIndex < hull->faceCount; ++faceIndex )
-				{
-					uint8_t startEdge = faces[faceIndex].edge;
-					uint8_t edgeIndex = edges[startEdge].next;
-					uint32_t index1 = edges[startEdge].origin;
-					uint32_t index2 = edges[edgeIndex].origin;
-					edgeIndex = edges[edgeIndex].next;
-					while ( edgeIndex != startEdge )
-					{
-						uint32_t index3 = edges[edgeIndex].origin;
-						hullTriangles[hullTriangleCursor++] =
-							(b3MetalHullTriangle){ index1, index2, index3, (uint32_t)faceIndex };
-						index2 = index3;
-						edgeIndex = edges[edgeIndex].next;
-					}
-				}
-				input->hullTriangleCount = hullTriangleCursor - input->hullTriangleOffset;
+				if ( contact->shapeIdA >= context->convexHullRecordCount ) return false;
+				const b3MetalHullGeometryRecord* records = context->convexHullRecordBuffer.contents;
+				const b3MetalHullGeometryRecord* geometry = records + contact->shapeIdA;
+				if ( geometry->supported == 0 ) return false;
 			}
 			if ( shapeB->type == b3_sphereShape )
 			{
@@ -3287,9 +3403,6 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 #endif
 			candidateCount += 1;
 		}
-		B3_ASSERT( hullPointCursor == hullPointCount );
-		B3_ASSERT( hullPlaneCursor == hullPlaneCount );
-		B3_ASSERT( hullTriangleCursor == hullTriangleCount );
 		if ( candidateCount == 0 ) return true;
 
 		struct { uint32_t contactCount; float linearSlop, speculativeDistance, padding; } params = {
@@ -3306,6 +3419,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		[encoder setBuffer:context->convexHullPointBuffer offset:0 atIndex:3];
 		[encoder setBuffer:context->convexHullPlaneBuffer offset:0 atIndex:4];
 		[encoder setBuffer:context->convexHullTriangleBuffer offset:0 atIndex:5];
+		[encoder setBuffer:context->convexHullRecordBuffer offset:0 atIndex:6];
 		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
 		[encoder endEncoding];
