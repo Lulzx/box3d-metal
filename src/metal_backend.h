@@ -100,7 +100,8 @@ typedef struct b3MetalDispatchStats
 	int treeUploadCount;
 	int metadataUploadCount;
 	int pairSetUploadCount;
-	// Non-zero when an emitted pair still needs CPU compound/custom/joint filtering.
+	int pairFilterRegistryUploadCount;
+	// Non-zero when an emitted pair still needs CPU compound/custom filtering.
 	int pairRequiresCpuFiltering;
 } b3MetalDispatchStats;
 
