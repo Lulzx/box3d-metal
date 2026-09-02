@@ -49,4 +49,4 @@ reported:
 The observed 0.263x wall-clock result is not used as performance evidence: the
 host was not established as quiet, and this 512-body run exists to prove
 transfer/traversal structure. The remaining per-step CPU work still includes
-the body finalization bookkeeping walk and solved-state readback/comparison.
+the body finalization bookkeeping walk and solved-state readback.

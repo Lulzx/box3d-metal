@@ -150,6 +150,12 @@ typedef struct b3MetalProfile
 	uint64_t bodyStateUploadCount;
 	uint64_t bodyStateReuseCount;
 	uint64_t lastBodyStateUploadBytes;
+	/// Constant-time state-residency revision checks replacing the former
+	/// whole-array CPU comparison.
+	uint64_t bodyStateRevisionCheckCount;
+	/// Solved-state bytes copied back to the CPU mirror by the latest step.
+	/// This remains non-zero until body-state queries and mutations become lazy.
+	uint64_t lastBodyStateReadbackBytes;
 	/// Cross-step 128-byte awake body-property uploads and revision-authorized
 	/// device reuses. Finalization writes the next-step quaternion, inverse
 	/// world inertia, and cleared force/torque directly into this stream.

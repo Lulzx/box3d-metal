@@ -79,6 +79,7 @@ struct b3MetalContext
 	id<MTLBuffer> bodyStateBuffer;
 	NSUInteger bodyStateCapacity;
 	int bodyStateResidentCount;
+	uint64_t bodyStateResidentRevision;
 	id<MTLBuffer> bodyPropertiesBuffer;
 	NSUInteger bodyPropertiesCapacity;
 	int bodyPropertiesResidentCount;
@@ -3373,7 +3374,11 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 			return false;
 		}
 		bool reuseBodyStates = publishBodyTransforms && context->bodyStateResidentCount == bodyCount &&
-			memcmp( context->bodyStateBuffer.contents, states, stateByteCount ) == 0;
+			context->bodyStateResidentRevision == finalizationContext->world->metalBodyStateRevision;
+		if ( finalizationContext != NULL )
+		{
+			finalizationContext->world->metalBodyStateRevisionCheckCount += publishBodyTransforms ? 1 : 0;
+		}
 		bool reuseBodyProperties = publishBodyTransforms && context->bodyPropertiesResidentCount == bodyCount &&
 			context->bodyPropertiesResidentRevision == finalizationContext->world->metalBodyPropertyRevision;
 		// A failed command must not leave the previous generation reusable.
@@ -3491,6 +3496,7 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 		if ( publishBodyTransforms )
 		{
 			b3MetalCommitBodyTransformDeviceRefresh( context, finalizationContext->world, bodyCount );
+			context->bodyStateResidentRevision = finalizationContext->world->metalBodyStateRevision;
 			context->bodyPropertiesResidentCount = bodyCount;
 			context->bodyPropertiesResidentRevision = finalizationContext->world->metalBodyPropertyRevision;
 			context->bodyMoveResultCount = bodyCount;
@@ -3505,6 +3511,10 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 		}
 
 		memcpy( states, context->bodyStateBuffer.contents, stateByteCount );
+		if ( finalizationContext != NULL )
+		{
+			finalizationContext->world->metalLastBodyStateReadbackBytes = stateByteCount;
+		}
 		if ( finalizeResults != NULL )
 		{
 			if ( omitFinalizeReadback )
@@ -4919,7 +4929,8 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		}
 
 		bool reuseBodyStates = publishBodyTransforms && context->bodyStateResidentCount == bodyCount &&
-			memcmp( context->bodyStateBuffer.contents, stepContext->states, stateBytes ) == 0;
+			context->bodyStateResidentRevision == stepContext->world->metalBodyStateRevision;
+		stepContext->world->metalBodyStateRevisionCheckCount += publishBodyTransforms ? 1 : 0;
 		bool reuseBodyProperties = publishBodyTransforms && context->bodyPropertiesResidentCount == bodyCount &&
 			context->bodyPropertiesResidentRevision == stepContext->world->metalBodyPropertyRevision;
 		// A failed command must not leave the previous generation reusable.
@@ -5389,6 +5400,7 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		if ( publishBodyTransforms )
 		{
 			b3MetalCommitBodyTransformDeviceRefresh( context, stepContext->world, bodyCount );
+			context->bodyStateResidentRevision = stepContext->world->metalBodyStateRevision;
 			context->bodyPropertiesResidentCount = bodyCount;
 			context->bodyPropertiesResidentRevision = stepContext->world->metalBodyPropertyRevision;
 			context->bodyMoveResultCount = bodyCount;
@@ -5410,6 +5422,7 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		}
 
 		memcpy( stepContext->states, context->bodyStateBuffer.contents, stateBytes );
+		stepContext->world->metalLastBodyStateReadbackBytes = stateBytes;
 		if ( finalizeBodies )
 		{
 			if ( omitFinalizeReadback )

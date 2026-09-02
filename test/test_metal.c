@@ -2467,6 +2467,8 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.bodyStateUploadCount == 1 );
 	ENSURE( profile.bodyStateReuseCount == 0 );
 	ENSURE( profile.lastBodyStateUploadBytes == (uint64_t)count * sizeof( b3BodyState ) );
+	ENSURE( profile.bodyStateRevisionCheckCount == 1 );
+	ENSURE( profile.lastBodyStateReadbackBytes == (uint64_t)count * sizeof( b3BodyState ) );
 	ENSURE( profile.bodyPropertyUploadCount == 1 );
 	ENSURE( profile.bodyPropertyReuseCount == 0 );
 	ENSURE( profile.lastBodyPropertyUploadBytes == (uint64_t)count * 128u );
@@ -2748,6 +2750,8 @@ static int MetalConvexFrictionContactTest( void )
 	ENSURE( profile.bodyStateUploadCount == 1 );
 	ENSURE( profile.bodyStateReuseCount == 9 );
 	ENSURE( profile.lastBodyStateUploadBytes == 0 );
+	ENSURE( profile.bodyStateRevisionCheckCount == 10 );
+	ENSURE( profile.lastBodyStateReadbackBytes == (uint64_t)count * sizeof( b3BodyState ) );
 	ENSURE( profile.bodyPropertyUploadCount == 1 );
 	ENSURE( profile.bodyPropertyReuseCount == 9 );
 	ENSURE( profile.lastBodyPropertyUploadBytes == 0 );
@@ -2765,7 +2769,7 @@ static int MetalConvexFrictionContactTest( void )
 	ENSURE( maxResidentTransformError <= 3.0e-5f );
 	ENSURE( maxVelocityError <= 2.0e-4f );
 
-	// A public state mutation makes the exact resident comparison fail closed
+	// A public state mutation makes the resident revision check fail closed
 	// and restores one full awake-state upload on the next step.
 	b3Body_SetLinearVelocity( gpuBodies[0], (b3Vec3){ 0.75f, -0.5f, 0.25f } );
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
@@ -2773,6 +2777,7 @@ static int MetalConvexFrictionContactTest( void )
 	ENSURE( mutationProfile.bodyStateUploadCount == 2 );
 	ENSURE( mutationProfile.bodyStateReuseCount == 9 );
 	ENSURE( mutationProfile.lastBodyStateUploadBytes == (uint64_t)count * sizeof( b3BodyState ) );
+	ENSURE( mutationProfile.bodyStateRevisionCheckCount == 11 );
 	ENSURE( mutationProfile.bodyPropertyUploadCount == 1 );
 	ENSURE( mutationProfile.bodyPropertyReuseCount == 10 );
 	ENSURE( mutationProfile.lastBodyPropertyUploadBytes == 0 );

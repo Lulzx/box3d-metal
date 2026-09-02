@@ -183,14 +183,15 @@ deltas and transient state flags after publishing their absolute transform and
 flags. The CPU bookkeeping pass reconstructs its motion metrics from the old
 CPU pose and the device-authored absolute pose, so event/debug behavior remains
 oracle-compatible even though the returned state deltas are already ready for
-the next step. Before the following solver command, an exact byte comparison
-between the resident state buffer and the CPU state mirror detects every public
-velocity, impulse, lock, wake/order, or fallback mutation. An exact match omits
-the CPU-to-device state copy; a mismatch performs the full upload. This is a
-fail-closed transitional boundary: `bodyStateUploadCount`,
-`bodyStateReuseCount`, and `lastBodyStateUploadBytes` expose it. The comparison
-still reads the CPU state array, and solved states still return to the CPU; full
-device authority requires revisioned mutators and lazy public synchronization.
+the next step. Before the following solver command, a monotonic world revision
+detects every public velocity, impulse, lock, wake/order, snapshot, explosion,
+or CPU-solver mutation. A matching count and revision omit the CPU-to-device
+state copy; a mismatch performs the full upload. This removes the former
+whole-array `memcmp` from stable steps. `bodyStateUploadCount`,
+`bodyStateReuseCount`, `lastBodyStateUploadBytes`, and
+`bodyStateRevisionCheckCount` expose the gate. Solved states still return to the
+CPU and `lastBodyStateReadbackBytes` measures that remaining copy; full device
+authority requires lazy public synchronization.
 
 The adjacent 128-byte integration-property stream is revision-resident on the
 same bounded route. Device finalization writes the absolute quaternion and

@@ -1967,6 +1967,7 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 	world->metalLastContactImpulseResultBytes = 0;
 	world->metalLastFinalizationReadbackBytes = 0;
 	world->metalLastBodyStateUploadBytes = 0;
+	world->metalLastBodyStateReadbackBytes = 0;
 #endif
 
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
@@ -2558,6 +2559,12 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 			world->metalFinalizationShapeTraversalBypassCount += 1;
 		}
 		b3ParallelFor( world, &b3FinalizeBodiesTask, awakeBodyCount, 16, stepContext, "ccd" );
+		if ( stepContext->metalBodyStatesFinalizedOnDevice == false )
+		{
+			// CPU integration/finalization changed the awake state array. Any older
+			// device generation must upload instead of passing the revision gate.
+			b3BumpMetalBodyStateRevision( world );
+		}
 		if ( stepContext->metalShapeResultCount == 0 )
 		{
 			world->metalShapeCpuBoundsStale = false;

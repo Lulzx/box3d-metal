@@ -84,6 +84,7 @@ void b3SyncBodyFlags( b3World* world, b3Body* body )
 	if ( bodyState != NULL )
 	{
 		bodyState->flags = flags;
+		b3BumpMetalBodyStateRevision( world );
 	}
 }
 
@@ -305,6 +306,7 @@ b3BodyId b3CreateBody( b3WorldId worldId, const b3BodyDef* def )
 #if defined( BOX3D_METAL )
 	world->metalBodyTransformRevision += 1;
 	b3BumpMetalBodyPropertyRevision( world );
+	b3BumpMetalBodyStateRevision( world );
 #endif
 
 	world->locked = false;
@@ -435,6 +437,7 @@ void b3DestroyBody( b3BodyId bodyId )
 #if defined( BOX3D_METAL )
 	world->metalBodyTransformRevision += 1;
 	b3BumpMetalBodyPropertyRevision( world );
+	b3BumpMetalBodyStateRevision( world );
 #endif
 
 	b3ValidateSolverSets( world );
@@ -895,6 +898,7 @@ b3BodyTOIResult b3Body_TimeOfImpactMover( b3BodyId bodyId, b3Pos origin, const b
 void b3UpdateBodyMassData( b3World* world, b3Body* body )
 {
 	b3BumpMetalBodyPropertyRevision( world );
+	b3BumpMetalBodyStateRevision( world );
 	b3BodySim* bodySim = b3GetBodySim( world, body );
 
 	// Mass is no longer dirty
@@ -1222,6 +1226,7 @@ void b3Body_SetLinearVelocity( b3BodyId bodyId, b3Vec3 linearVelocity )
 	}
 
 	state->linearVelocity = linearVelocity;
+	b3BumpMetalBodyStateRevision( world );
 }
 
 void b3Body_SetAngularVelocity( b3BodyId bodyId, b3Vec3 angularVelocity )
@@ -1257,6 +1262,7 @@ void b3Body_SetAngularVelocity( b3BodyId bodyId, b3Vec3 angularVelocity )
 	}
 
 	state->angularVelocity = w;
+	b3BumpMetalBodyStateRevision( world );
 }
 
 void b3Body_SetTargetTransform( b3BodyId bodyId, b3WorldTransform target, float timeStep, bool wake )
@@ -1329,6 +1335,7 @@ void b3Body_SetTargetTransform( b3BodyId bodyId, b3WorldTransform target, float 
 	b3BodyState* state = b3GetBodyState( world, body );
 	state->linearVelocity = linearVelocity;
 	state->angularVelocity = angularVelocity;
+	b3BumpMetalBodyStateRevision( world );
 }
 
 b3Vec3 b3Body_GetLocalPointVelocity( b3BodyId bodyId, b3Vec3 localPoint )
@@ -1470,6 +1477,7 @@ void b3Body_ApplyLinearImpulse( b3BodyId bodyId, b3Vec3 impulse, b3Pos point, bo
 
 		b3Vec3 delta = b3MulMV( bodySim->invInertiaWorld, b3Cross( b3SubPos( point, bodySim->center ), impulse ) );
 		state->angularVelocity = b3Add( state->angularVelocity, delta );
+		b3BumpMetalBodyStateRevision( world );
 	}
 }
 
@@ -1501,6 +1509,7 @@ void b3Body_ApplyLinearImpulseToCenter( b3BodyId bodyId, b3Vec3 impulse, bool wa
 		{
 			state->linearVelocity = b3MulSV( maxLinearSpeed, b3Normalize( state->linearVelocity ) );
 		}
+		b3BumpMetalBodyStateRevision( world );
 	}
 }
 
@@ -1534,6 +1543,7 @@ void b3Body_ApplyAngularImpulse( b3BodyId bodyId, b3Vec3 impulse, bool wake )
 		b3Vec3 localAngularVelocityDelta = b3MulMV( bodySim->invInertiaLocal, localImpulse );
 		state->angularVelocity =
 			b3Add( state->angularVelocity, b3RotateVector( bodySim->transform.q, localAngularVelocityDelta ) );
+		b3BumpMetalBodyStateRevision( world );
 	}
 }
 
@@ -2357,6 +2367,7 @@ void b3Body_SetMotionLocks( b3BodyId bodyId, b3MotionLocks locks )
 
 	if ( state != NULL )
 	{
+		b3BumpMetalBodyStateRevision( world );
 		if ( locks.linearX )
 		{
 			state->linearVelocity.x = 0.0f;

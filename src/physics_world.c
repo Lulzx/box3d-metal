@@ -336,6 +336,7 @@ b3WorldId b3CreateWorld( const b3WorldDef* def )
 #if defined( BOX3D_METAL )
 	world->metalContactInputRevision = 1;
 	world->metalBodyPropertyRevision = 1;
+	world->metalBodyStateRevision = 1;
 #endif
 
 	if ( def->frictionCallback == NULL )
@@ -760,6 +761,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.bodyStateUploadCount = world->metalBodyStateUploadCount;
 	profile.bodyStateReuseCount = world->metalBodyStateReuseCount;
 	profile.lastBodyStateUploadBytes = world->metalLastBodyStateUploadBytes;
+	profile.bodyStateRevisionCheckCount = world->metalBodyStateRevisionCheckCount;
+	profile.lastBodyStateReadbackBytes = world->metalLastBodyStateReadbackBytes;
 	profile.bodyPropertyUploadCount = world->metalBodyPropertyUploadCount;
 	profile.bodyPropertyReuseCount = world->metalBodyPropertyReuseCount;
 	profile.lastBodyPropertyUploadBytes = world->metalLastBodyPropertyUploadBytes;
@@ -4000,6 +4003,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
 	b3AABB aabb = b3OffsetAABB( localBox, position );
 
 	b3DynamicTree_Query( world->broadPhase.trees + b3_dynamicBody, aabb, maskBits, false, ExplosionCallback, &explosionContext );
+	b3BumpMetalBodyStateRevision( world );
 
 	world->locked = false;
 }
