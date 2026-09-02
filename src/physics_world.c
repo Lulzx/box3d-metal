@@ -694,6 +694,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.lastContactStateBitSetBytes = world->metalLastContactStateBitSetBytes;
 	profile.contactHitEventBitSetClearBypassCount = world->metalContactHitEventBitSetClearBypassCount;
 	profile.lastContactHitEventBitSetBytes = world->metalLastContactHitEventBitSetBytes;
+	profile.awakeIslandBitSetClearBypassCount = world->metalAwakeIslandBitSetClearBypassCount;
+	profile.lastAwakeIslandBitSetBytes = world->metalLastAwakeIslandBitSetBytes;
 	profile.contactManifoldSyncCount = world->metalContactManifoldSyncCount;
 	profile.contactImpulseStoreBypassCount = world->metalContactImpulseStoreBypassCount;
 	profile.contactImpulseEventSyncCount = world->metalContactImpulseEventSyncCount;

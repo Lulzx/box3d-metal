@@ -80,6 +80,12 @@ typedef struct b3MetalProfile
 	/// Hit-event bitset bytes cleared on the latest solver phase. An empty
 	/// compact resident event list reports zero unless Metal falls back.
 	uint64_t lastContactHitEventBitSetBytes;
+	/// Finalization phases that skipped all per-worker awake-island bitset
+	/// clears and writes because world sleeping was disabled.
+	uint64_t awakeIslandBitSetClearBypassCount;
+	/// Awake-island bitset bytes cleared on the latest finalization phase.
+	/// Sleep-disabled worlds report zero.
+	uint64_t lastAwakeIslandBitSetBytes;
 	/// Individual resident manifolds materialized into the CPU mirror on a
 	/// public, debug, snapshot, route-change, or solver-fallback boundary.
 	uint64_t contactManifoldSyncCount;

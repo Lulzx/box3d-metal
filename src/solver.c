@@ -684,7 +684,6 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 
 	b3TaskContext* taskContext = world->taskContexts.data + workerIndex;
 	b3BitSet* enlargedSimBitSet = &taskContext->enlargedSimBitSet;
-	b3BitSet* awakeIslandBitSet = &taskContext->awakeIslandBitSet;
 
 	const float speculativeScalar = B3_SPECULATIVE_DISTANCE;
 
@@ -820,25 +819,29 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 			sim->invInertiaWorld = b3MulMM( b3MulMM( rotationMatrix, sim->invInertiaLocal ), b3Transpose( rotationMatrix ) );
 		}
 
-		// Any single body in an island can keep it awake
-		b3Island* island = b3Array_Get( world->islands, body->islandId );
-		if ( body->sleepTime < B3_TIME_TO_SLEEP )
+		if ( enableSleep )
 		{
-			// keep island awake
-			int islandIndex = island->localIndex;
-			b3SetBit( awakeIslandBitSet, islandIndex );
-		}
-		else if ( island->constraintRemoveCount > 0 )
-		{
-			// Body wants to sleep but its island needs splitting first. Track the sleepiest candidate.
-			// Break sleep time ties using the island id to ensure determinism. The cross worker reduction
-			// breaks ties the same way.
-			if ( body->sleepTime > taskContext->splitSleepTime ||
-				 ( body->sleepTime == taskContext->splitSleepTime && body->islandId > taskContext->splitIslandId ) )
+			// Any single body in an island can keep it awake. Sleep-disabled worlds do not
+			// consume this bitset, so avoid the island lookup and cache-line write entirely.
+			b3Island* island = b3Array_Get( world->islands, body->islandId );
+			if ( body->sleepTime < B3_TIME_TO_SLEEP )
 			{
-				// pick the sleepiest candidate
-				taskContext->splitIslandId = body->islandId;
-				taskContext->splitSleepTime = body->sleepTime;
+				// keep island awake
+				int islandIndex = island->localIndex;
+				b3SetBit( &taskContext->awakeIslandBitSet, islandIndex );
+			}
+			else if ( island->constraintRemoveCount > 0 )
+			{
+				// Body wants to sleep but its island needs splitting first. Track the sleepiest candidate.
+				// Break sleep time ties using the island id to ensure determinism. The cross worker reduction
+				// breaks ties the same way.
+				if ( body->sleepTime > taskContext->splitSleepTime ||
+					 ( body->sleepTime == taskContext->splitSleepTime && body->islandId > taskContext->splitIslandId ) )
+				{
+					// pick the sleepiest candidate
+					taskContext->splitIslandId = body->islandId;
+					taskContext->splitSleepTime = body->sleepTime;
+				}
 			}
 		}
 
@@ -2453,10 +2456,29 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 			b3TaskContext* taskContext = world->taskContexts.data + i;
 			b3Array_Clear( taskContext->sensorHits );
 			b3SetBitCountAndClear( &taskContext->enlargedSimBitSet, awakeBodyCount );
-			b3SetBitCountAndClear( &taskContext->awakeIslandBitSet, awakeIslandCount );
-			taskContext->splitIslandId = B3_NULL_INDEX;
-			taskContext->splitSleepTime = 0.0f;
+			if ( world->enableSleep )
+			{
+				b3SetBitCountAndClear( &taskContext->awakeIslandBitSet, awakeIslandCount );
+				taskContext->splitIslandId = B3_NULL_INDEX;
+				taskContext->splitSleepTime = 0.0f;
+			}
 		}
+#if defined( BOX3D_METAL )
+		if ( world->metalContext != NULL )
+		{
+			if ( world->enableSleep )
+			{
+				uint64_t blockCount = ( (uint64_t)awakeIslandCount + 63u ) / 64u;
+				world->metalLastAwakeIslandBitSetBytes =
+					blockCount * sizeof( uint64_t ) * (uint64_t)world->workerCount;
+			}
+			else
+			{
+				world->metalAwakeIslandBitSetClearBypassCount += 1;
+				world->metalLastAwakeIslandBitSetBytes = 0;
+			}
+		}
+#endif
 
 		// Finalize bodies. Must happen after the constraint solver and after island splitting.
 #if defined( BOX3D_METAL )

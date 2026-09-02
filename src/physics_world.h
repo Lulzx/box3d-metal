@@ -296,6 +296,8 @@ typedef struct b3World
 	uint64_t metalLastContactStateBitSetBytes;
 	uint64_t metalContactHitEventBitSetClearBypassCount;
 	uint64_t metalLastContactHitEventBitSetBytes;
+	uint64_t metalAwakeIslandBitSetClearBypassCount;
+	uint64_t metalLastAwakeIslandBitSetBytes;
 	uint64_t metalContactManifoldSyncCount;
 	uint64_t metalContactManifoldGeneration;
 	uint64_t metalContactInputRevision;

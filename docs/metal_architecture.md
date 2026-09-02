@@ -123,6 +123,14 @@ fallback count, and last GPU execution time. `b3World_DisableMetal` releases the
 resources. `minimumBodyCount` is deliberately caller-controlled until benchmark
 coverage establishes stable defaults across Apple GPU families.
 
+Body finalization also avoids awake-island scratch traffic when world sleeping
+is disabled. In that mode no later stage consumes the per-worker island bitsets,
+so finalization neither clears them nor performs the per-body island lookup and
+bit write. `awakeIslandBitSetClearBypassCount` and
+`lastAwakeIslandBitSetBytes` expose this boundary. Sleep-enabled worlds retain
+Erin's original clear, deterministic union, split-candidate reduction, and
+reverse island traversal unchanged.
+
 An independently opt-in pair stage copies Erin's existing static, kinematic,
 and dynamic tree topology into persistent shared Metal buffers. A monotonic
 broad-phase revision lets node snapshots remain resident across pair queries.

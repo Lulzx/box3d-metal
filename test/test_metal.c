@@ -452,6 +452,33 @@ static int MetalFinalizationTest( void )
 	return 0;
 }
 
+static int MetalAwakeIslandBitSetTest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.linearVelocity = (b3Vec3){ 1.0f, 0.0f, 0.0f };
+	b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
+	ENSURE( b3Body_IsAwake( bodyId ) );
+	ENSURE( profile.awakeIslandBitSetClearBypassCount == 0 );
+	ENSURE( profile.lastAwakeIslandBitSetBytes > 0 );
+	printf( "    awake island sleepEnabled clearBytes=%llu bypasses=0\n",
+			(unsigned long long)profile.lastAwakeIslandBitSetBytes );
+
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
 static bool MetalHullSphereEligible( const b3Shape* shapeA, const b3Shape* shapeB )
 {
 	if ( shapeA->type != b3_hullShape || shapeB->type != b3_sphereShape )
@@ -1496,7 +1523,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	}
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    resident contact prepare contacts=%d dispatches=%llu deviceRefreshes=%llu collisionCpu=%llu lastExceptions=%llu "
-			"inputs=%llu/%llu/%llu coverage=%llu stateWalks=%llu/%llu hitClears=%llu/%llu schedule=%llu/%llu indexBytes=%llu "
+			"inputs=%llu/%llu/%llu coverage=%llu stateWalks=%llu/%llu hitClears=%llu/%llu awakeIslandClears=%llu/%llu "
+			"schedule=%llu/%llu indexBytes=%llu "
 			"legacyBytes=%zu "
 			"impulseBytes=%llu legacyImpulseBytes=%zu transformError=%.3g velocityError=%.3g\n",
 			count, (unsigned long long)profile.contactPrepareDispatchCount,
@@ -1508,6 +1536,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 			(unsigned long long)profile.lastContactStateBitSetBytes,
 			(unsigned long long)profile.contactHitEventBitSetClearBypassCount,
 			(unsigned long long)profile.lastContactHitEventBitSetBytes,
+			(unsigned long long)profile.awakeIslandBitSetClearBypassCount,
+			(unsigned long long)profile.lastAwakeIslandBitSetBytes,
 			(unsigned long long)profile.contactSchedulePackCount,
 			(unsigned long long)profile.contactScheduleReuseCount, (unsigned long long)profile.lastContactPrepareIndexBytes,
 			(size_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * 144,
@@ -1530,6 +1560,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.lastContactStateBitSetBytes == 0 );
 	ENSURE( profile.contactHitEventBitSetClearBypassCount == 4 );
 	ENSURE( profile.lastContactHitEventBitSetBytes == 0 );
+	ENSURE( profile.awakeIslandBitSetClearBypassCount == 4 );
+	ENSURE( profile.lastAwakeIslandBitSetBytes == 0 );
 	b3Counters cpuCounters = b3World_GetCounters( cpuWorld );
 	b3Counters gpuCounters = b3World_GetCounters( gpuWorld );
 	ENSURE( cpuCounters.satCallCount == gpuCounters.satCallCount );
@@ -3295,6 +3327,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalPositionIntegrationTest );
 	RUN_SUBTEST( MetalFusedIntegrationTest );
 	RUN_SUBTEST( MetalFinalizationTest );
+	RUN_SUBTEST( MetalAwakeIslandBitSetTest );
 	RUN_SUBTEST( MetalConvexManifoldTest );
 	RUN_SUBTEST( MetalResidentSolverOwnershipTest );
 	RUN_SUBTEST( MetalContactMaterialCallbackExceptionTest );
