@@ -52,6 +52,10 @@ before narrowing relative translations to float.
 The same scatter writes active finalized records into a private table indexed
 by Box3D contact id. This adds no steady-path readback or dispatch; explicit
 table staging exists only for validation and fallback diagnostics.
+Transient per-contact ownership now carries that authority through persistence,
+callbacks, and topology into solver setup. SIMD-wide coverage is published only
+when every colored convex contact is resident-authoritative; recycling and mixed
+CPU/GPU sets fail closed. CPU contact preparation is still active in this checkpoint.
 
 ## Quick start
 
@@ -128,6 +132,8 @@ The manifold-finalization checkpoint fuses world-axis orientation into that
 scatter, again publishing correctness rather than loaded-host timing.
 The resident manifold-table checkpoint establishes stable contact-id addressing
 under the same correctness-only timing boundary.
+The solver-ownership checkpoint establishes the fail-closed preparation gate;
+it adds no speedup claim and does not yet skip CPU preparation.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

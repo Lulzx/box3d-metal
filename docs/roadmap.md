@@ -15,7 +15,9 @@
   transforms are retained by body id with VF64 positions. Full manifold results
   are private and only active, world-oriented records return through a shared
   ordered stream. Active finalized records also live in a private table indexed
-  by contact id, ready for device-side preparation.
+  by contact id. A transient ownership marker now reaches solver setup and
+  exposes complete SIMD-wide coverage only when no CPU/recycling exception is
+  present; contact preparation itself remains CPU-side.
 - Body and awake-shape finalization have an experimental Metal path, but the CPU
   still owns topology mutation, sleeping/island
   mutation, events, and CCD. Successful resident refits now use a stable
@@ -35,9 +37,9 @@
 
 ## Evidence-led next stages
 
-1. Write compact geometry directly into resident manifold storage while
-   preserving explicit CPU exception paths for compounds, callbacks, and
-   unsupported GJK/SAT cases.
+1. Encode contact preparation from the private contact-id table behind the
+   complete resident-ownership gate, preserving explicit CPU exception paths
+   and a prepare-on-fallback recovery path.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,

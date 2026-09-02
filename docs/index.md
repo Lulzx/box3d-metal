@@ -55,6 +55,7 @@ for review.
 - [Private manifold results](benchmarks/m4-pro-private-manifold-results-2026-09-02.md)
 - [Manifold finalization](benchmarks/m4-pro-manifold-finalization-2026-09-02.md)
 - [Resident manifold table](benchmarks/m4-pro-resident-manifold-table-2026-09-02.md)
+- [Resident solver ownership](benchmarks/m4-pro-resident-solver-ownership-2026-09-02.md)
 
 ## Repository map
 

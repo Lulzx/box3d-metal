@@ -210,3 +210,12 @@ contact id so its address and identity are independent of input permutation.
 The table is exposed only through an explicit diagnostic/fallback blit; normal
 steps add no shared stream, command buffer, or wait. Entries are authoritative
 only for contacts marked eligible in the current successful dispatch.
+
+That authority now survives into solver setup explicitly. Each collision worker
+clears a transient ownership bit before overlap and recycling decisions, then
+sets it only after a resident result passes through Box3D persistence, material,
+callback, and topology handling. Solver setup counts marked contact ids in graph
+color order and exposes SIMD-wide coverage only when every colored convex contact
+is resident-table authoritative. Mixed and recycled sets therefore retain CPU
+preparation without staging the private table. This is the fail-closed gate for
+the next preparation kernel; it does not yet skip CPU preparation.
