@@ -2426,6 +2426,12 @@ static int MetalWorldIntegrationTest( void )
 		}
 	}
 
+	b3MetalProfile residentStateProfile = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( residentStateProfile.bodyStateSyncCount == 0 );
+	ENSURE( residentStateProfile.lastBodyStateReadbackBytes == 0 );
+	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodyStateCpuStale ) != 0 );
+	(void)b3Body_GetLinearVelocity( gpuBodies[0] );
+	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodyStateCpuStale ) == 0 );
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	printf( "    integrated world device=%s fusedDispatches=%llu shapeDispatches=%llu compact=%d/%d finalizeBytes=%llu/%llu "
 			"shapeWalkBypasses=%llu transformRegistry=%llu/%llu/%llu state=%llu/%llu/%llu properties=%llu/%llu/%llu "
@@ -2468,6 +2474,7 @@ static int MetalWorldIntegrationTest( void )
 	ENSURE( profile.bodyStateReuseCount == 0 );
 	ENSURE( profile.lastBodyStateUploadBytes == (uint64_t)count * sizeof( b3BodyState ) );
 	ENSURE( profile.bodyStateRevisionCheckCount == 1 );
+	ENSURE( profile.bodyStateSyncCount == 1 );
 	ENSURE( profile.lastBodyStateReadbackBytes == (uint64_t)count * sizeof( b3BodyState ) );
 	ENSURE( profile.bodyPropertyUploadCount == 1 );
 	ENSURE( profile.bodyPropertyReuseCount == 0 );
@@ -2580,9 +2587,11 @@ static int MetalUnsupportedJointFallbackTest( void )
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.gravity = b3Vec3_zero;
 	worldDef.enableSleep = false;
+	worldDef.enableContinuous = false;
 	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
 	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( gpuWorld, true ) );
 
 	b3BodyDef bodyDefA = b3DefaultBodyDef();
 	bodyDefA.type = b3_dynamicBody;
@@ -2595,6 +2604,20 @@ static int MetalUnsupportedJointFallbackTest( void )
 	b3BodyId cpuB = b3CreateBody( cpuWorld, &bodyDefB );
 	b3BodyId gpuA = b3CreateBody( gpuWorld, &bodyDefA );
 	b3BodyId gpuB = b3CreateBody( gpuWorld, &bodyDefB );
+
+	// Establish resident state first, then expand into an unsupported joint
+	// route. The next solve must materialize exactly once before CPU prep.
+	b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
+	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
+	b3World* gpuWorldInternal = b3GetWorldFromId( gpuWorld );
+	b3MetalProfile residentProfile = b3World_GetMetalProfile( gpuWorld );
+	printf( "    unsupported transition pre joint fused=%llu finalization=%llu stateReadback=%llu stale=%s\n",
+		(unsigned long long)residentProfile.unconstrainedDispatchCount,
+		(unsigned long long)residentProfile.finalizationDispatchCount,
+		(unsigned long long)residentProfile.lastBodyStateReadbackBytes,
+		b3AtomicLoadInt( &gpuWorldInternal->metalBodyStateCpuStale ) != 0 ? "yes" : "no" );
+	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodyStateCpuStale ) != 0 );
+	ENSURE( residentProfile.bodyStateSyncCount == 0 );
 
 	b3RevoluteJointDef cpuDef = b3DefaultRevoluteJointDef();
 	cpuDef.base.bodyIdA = cpuA;
@@ -2619,6 +2642,8 @@ static int MetalUnsupportedJointFallbackTest( void )
 	ENSURE( profile.jointDispatchCount == 0 );
 	ENSURE( profile.jointFallbackCount == 4 );
 	ENSURE( profile.positionDispatchCount == 4 );
+	ENSURE( profile.bodyStateSyncCount == 1 );
+	ENSURE( profile.lastBodyStateReadbackBytes == 2u * sizeof( b3BodyState ) );
 	ENSURE( maxError <= 3.0e-5f );
 
 	b3DestroyWorld( gpuWorld );
@@ -2751,6 +2776,7 @@ static int MetalConvexFrictionContactTest( void )
 	ENSURE( profile.bodyStateReuseCount == 9 );
 	ENSURE( profile.lastBodyStateUploadBytes == 0 );
 	ENSURE( profile.bodyStateRevisionCheckCount == 10 );
+	ENSURE( profile.bodyStateSyncCount == 0 );
 	ENSURE( profile.lastBodyStateReadbackBytes == (uint64_t)count * sizeof( b3BodyState ) );
 	ENSURE( profile.bodyPropertyUploadCount == 1 );
 	ENSURE( profile.bodyPropertyReuseCount == 9 );

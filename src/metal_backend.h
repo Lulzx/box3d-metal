@@ -166,6 +166,8 @@ bool b3MetalCanReuseConvexManifoldInputs( const b3MetalContext* context, const b
 // authoritative for the world's current step and revision.
 bool b3MetalReadResidentBodyTransform( const b3MetalContext* context, const b3World* world, int bodyId,
 									   b3WorldTransform* transform, int* bodySimIndex, uint32_t* stateFlags );
+// Copy the authoritative resident awake-state array into its CPU mirror.
+bool b3MetalSyncBodyStates( const b3MetalContext* context, b3World* world );
 // Materialize the private, awake-sim-ordered move-event stream at the public
 // API boundary. Double-precision positions are decoded from VF64-authored
 // binary64 bits rather than from the narrowed float compatibility fields.

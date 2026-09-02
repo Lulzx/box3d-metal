@@ -255,6 +255,9 @@ b3WorldId b3CreateWorld( const b3WorldDef* def )
 
 	b3Array_Reserve( world->manifoldAllocators, 16 );
 	world->manifoldAllocatorMutex = b3CreateMutex();
+#if defined( BOX3D_METAL )
+	world->metalBodyStateSyncMutex = b3CreateMutex();
+#endif
 
 	b3CreateBroadPhase( &world->broadPhase, &def->capacity );
 	b3CreateGraph( &world->constraintGraph, 16 );
@@ -543,6 +546,9 @@ void b3DestroyWorld( b3WorldId worldId )
 	}
 	b3Array_Destroy( world->manifoldAllocators );
 	b3DestroyMutex( world->manifoldAllocatorMutex );
+#if defined( BOX3D_METAL )
+	b3DestroyMutex( world->metalBodyStateSyncMutex );
+#endif
 
 	b3DestroyStack( &world->stack );
 
@@ -592,6 +598,8 @@ bool b3World_SetMetalFinalization( b3WorldId worldId, bool enabled )
 
 	if ( enabled == false )
 	{
+		if ( b3MaterializeBodyStates( world ) == false )
+			return false;
 		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
 			return false;
 	}
@@ -638,6 +646,28 @@ bool b3MaterializeBodyMoveEvents( b3World* world )
 	return true;
 }
 
+bool b3MaterializeBodyStates( b3World* world )
+{
+	if ( world == NULL ) return false;
+#if defined( BOX3D_METAL )
+	if ( b3AtomicLoadInt( &world->metalBodyStateCpuStale ) != 0 )
+	{
+		b3LockMutex( world->metalBodyStateSyncMutex );
+		if ( b3AtomicLoadInt( &world->metalBodyStateCpuStale ) != 0 )
+		{
+			if ( b3MetalSyncBodyStates( world->metalContext, world ) == false )
+			{
+				b3UnlockMutex( world->metalBodyStateSyncMutex );
+				return false;
+			}
+			b3AtomicStoreInt( &world->metalBodyStateCpuStale, 0 );
+		}
+		b3UnlockMutex( world->metalBodyStateSyncMutex );
+	}
+#endif
+	return true;
+}
+
 void b3World_DisableMetal( b3WorldId worldId )
 {
 	b3World* world = b3GetUnlockedWorldFromId( worldId );
@@ -648,6 +678,11 @@ void b3World_DisableMetal( b3WorldId worldId )
 	if ( b3MaterializeBodyMoveEvents( world ) == false )
 	{
 		b3Log( "Box3D Metal disable kept the context because body-move event readback failed\n" );
+		return;
+	}
+	if ( b3MaterializeBodyStates( world ) == false )
+	{
+		b3Log( "Box3D Metal disable kept the context because body-state readback failed\n" );
 		return;
 	}
 	if ( b3MetalSyncAllContactManifolds( world->metalContext, world ) == false )
@@ -762,6 +797,7 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.bodyStateReuseCount = world->metalBodyStateReuseCount;
 	profile.lastBodyStateUploadBytes = world->metalLastBodyStateUploadBytes;
 	profile.bodyStateRevisionCheckCount = world->metalBodyStateRevisionCheckCount;
+	profile.bodyStateSyncCount = world->metalBodyStateSyncCount;
 	profile.lastBodyStateReadbackBytes = world->metalLastBodyStateReadbackBytes;
 	profile.bodyPropertyUploadCount = world->metalBodyPropertyUploadCount;
 	profile.bodyPropertyReuseCount = world->metalBodyPropertyReuseCount;
@@ -1697,6 +1733,13 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 
 	if ( world->recording != NULL )
 	{
+		if ( b3MaterializeBodyStates( world ) == false )
+		{
+			b3Log( "Box3D Metal recording skipped because body-state readback failed\n" );
+			b3TracyCZoneEnd( world_step );
+			b3TracyCFrame;
+			return;
+		}
 		uint64_t hash = b3HashWorldState( world );
 		b3RecArgs_StateHash stateHash = { worldId, hash };
 		b3RecWrite_StateHash( world->recording, &stateHash );
@@ -3991,6 +4034,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
 	}
 
 	B3_REC( world, WorldExplode, worldId, *explosionDef );
+	if ( b3MaterializeBodyStates( world ) == false )
+	{
+		b3Log( "Box3D Metal explosion skipped because body-state readback failed\n" );
+		return;
+	}
 
 	// Locked due to waking
 	world->locked = true;
@@ -4189,7 +4237,15 @@ void b3ValidateSolverSets( b3World* world )
 					uint32_t syncedFlags = body->flags & ~b3_bodyTransientFlags;
 					B3_ASSERT( ( bodySim->flags & syncedFlags ) == syncedFlags );
 
-					b3BodyState* bodyState = b3GetBodyState( world, body );
+					b3BodyState* bodyState = NULL;
+					if ( body->setIndex == b3_awakeSet
+#if defined( BOX3D_METAL )
+						 && b3AtomicLoadInt( &world->metalBodyStateCpuStale ) == 0
+#endif
+					)
+					{
+						bodyState = set->bodyStates.data + body->localIndex;
+					}
 					if ( bodyState != NULL )
 					{
 						B3_ASSERT( ( bodyState->flags & syncedFlags ) == syncedFlags );

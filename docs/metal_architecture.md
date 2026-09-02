@@ -189,9 +189,17 @@ or CPU-solver mutation. A matching count and revision omit the CPU-to-device
 state copy; a mismatch performs the full upload. This removes the former
 whole-array `memcmp` from stable steps. `bodyStateUploadCount`,
 `bodyStateReuseCount`, `lastBodyStateUploadBytes`, and
-`bodyStateRevisionCheckCount` expose the gate. Solved states still return to the
-CPU and `lastBodyStateReadbackBytes` measures that remaining copy; full device
-authority requires lazy public synchronization.
+`bodyStateRevisionCheckCount` expose the gate. On the bounded unconstrained,
+sleep-disabled, non-CCD route, the CPU finalization task now consumes the shared
+Metal state array directly and leaves it authoritative across steps. Public
+velocity queries, state mutations, awake-set topology changes, recording,
+Metal shutdown, and any constrained or unsupported solver route materialize the
+full awake array under a dedicated synchronization lock. This preserves
+multithreaded read-only query safety and fail-closed fallback behavior while
+removing the unconditional solved-state copy from the steady step.
+`bodyStateSyncCount` and `lastBodyStateReadbackBytes` expose those lazy
+boundaries. Constrained Metal solves still copy solved states eagerly because
+their remaining CPU preparation stages consume the mirror.
 
 The adjacent 128-byte integration-property stream is revision-resident on the
 same bounded route. Device finalization writes the absolute quaternion and

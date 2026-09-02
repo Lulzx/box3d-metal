@@ -35,6 +35,7 @@ void b3DestroySolverSet( b3World* world, int setIndex )
 // This handles contact types 1 and 3. Type 2 doesn't need any action.
 void b3WakeSolverSet( b3World* world, int setIndex )
 {
+	if ( b3MaterializeBodyStates( world ) == false ) return;
 	B3_ASSERT( setIndex >= b3_firstSleepingSet );
 	b3SolverSet* set = b3Array_Get( world->solverSets, setIndex );
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
@@ -156,6 +157,11 @@ void b3WakeSolverSet( b3World* world, int setIndex )
 void b3TrySleepIsland( b3World* world, int islandId )
 {
 #if defined( BOX3D_METAL )
+	if ( b3MaterializeBodyStates( world ) == false )
+	{
+		b3Log( "Box3D Metal sleep skipped because body-state readback failed\n" );
+		return;
+	}
 	if ( b3MaterializeBodyMoveEvents( world ) == false )
 	{
 		// A failed lazy readback must not expose or mutate an uninitialized public
@@ -565,6 +571,11 @@ void b3MergeSolverSets( b3World* world, int setId1, int setId2 )
 void b3TransferBody( b3World* world, b3SolverSet* targetSet, b3SolverSet* sourceSet, b3Body* body )
 {
 	if ( targetSet == sourceSet )
+	{
+		return;
+	}
+	if ( ( targetSet->setIndex == b3_awakeSet || sourceSet->setIndex == b3_awakeSet ) &&
+		 b3MaterializeBodyStates( world ) == false )
 	{
 		return;
 	}

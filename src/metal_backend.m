@@ -3510,10 +3510,22 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 			context->bodyPropertiesResidentCount = 0;
 		}
 
-		memcpy( states, context->bodyStateBuffer.contents, stateByteCount );
-		if ( finalizationContext != NULL )
+		if ( publishBodyTransforms )
 		{
-			finalizationContext->world->metalLastBodyStateReadbackBytes = stateByteCount;
+			// Finalization consumes and clears delta state in-place in shared Metal
+			// storage. Keep that array authoritative until a CPU boundary asks for it.
+			finalizationContext->states = context->bodyStateBuffer.contents;
+			b3AtomicStoreInt( &finalizationContext->world->metalBodyStateCpuStale, 1 );
+			finalizationContext->world->metalLastBodyStateReadbackBytes = 0;
+		}
+		else
+		{
+			memcpy( states, context->bodyStateBuffer.contents, stateByteCount );
+			if ( finalizationContext != NULL )
+			{
+				b3AtomicStoreInt( &finalizationContext->world->metalBodyStateCpuStale, 0 );
+				finalizationContext->world->metalLastBodyStateReadbackBytes = stateByteCount;
+			}
 		}
 		if ( finalizeResults != NULL )
 		{
@@ -4258,6 +4270,21 @@ bool b3MetalReadResidentBodyTransform( const b3MetalContext* context, const b3Wo
 #endif
 	if ( bodySimIndex != NULL ) *bodySimIndex = record->index;
 	if ( stateFlags != NULL ) *stateFlags = record->flags;
+	return true;
+}
+
+bool b3MetalSyncBodyStates( const b3MetalContext* context, b3World* world )
+{
+	if ( context == NULL || world == NULL || context->bodyStateBuffer == nil ) return false;
+	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
+	int bodyCount = awakeSet->bodyStates.count;
+	if ( bodyCount < 0 || context->bodyStateResidentCount != bodyCount ) return false;
+	if ( (NSUInteger)bodyCount > NSUIntegerMax / sizeof( b3BodyState ) ) return false;
+	NSUInteger bytes = (NSUInteger)bodyCount * sizeof( b3BodyState );
+	if ( bytes > context->bodyStateCapacity ) return false;
+	if ( bytes > 0 ) memcpy( awakeSet->bodyStates.data, context->bodyStateBuffer.contents, bytes );
+	world->metalBodyStateSyncCount += 1;
+	world->metalLastBodyStateReadbackBytes = bytes;
 	return true;
 }
 
@@ -5422,6 +5449,7 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		}
 
 		memcpy( stepContext->states, context->bodyStateBuffer.contents, stateBytes );
+		b3AtomicStoreInt( &stepContext->world->metalBodyStateCpuStale, 0 );
 		stepContext->world->metalLastBodyStateReadbackBytes = stateBytes;
 		if ( finalizeBodies )
 		{

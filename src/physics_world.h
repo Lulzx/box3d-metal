@@ -10,6 +10,7 @@
 #include "constraint_graph.h"
 #include "id_pool.h"
 #include "name_cache.h"
+#include "platform.h"
 
 #include "box3d/types.h"
 
@@ -352,7 +353,10 @@ typedef struct b3World
 	uint64_t metalLastBodyStateUploadBytes;
 	uint64_t metalBodyStateRevision;
 	uint64_t metalBodyStateRevisionCheckCount;
+	uint64_t metalBodyStateSyncCount;
 	uint64_t metalLastBodyStateReadbackBytes;
+	b3AtomicInt metalBodyStateCpuStale;
+	b3Mutex* metalBodyStateSyncMutex;
 	uint64_t metalBodyPropertyRevision;
 	uint64_t metalBodyPropertyUploadCount;
 	uint64_t metalBodyPropertyReuseCount;
@@ -398,6 +402,18 @@ typedef struct b3World
 // Ensure the current public body-move array is populated before an engine
 // transition mutates an event (for example, a forced sleep after Step).
 bool b3MaterializeBodyMoveEvents( b3World* world );
+
+// Ensure the CPU awake-state array reflects the authoritative Metal shared
+// buffer before a CPU query, mutation, topology change, or fallback consumes it.
+#if defined( BOX3D_METAL )
+bool b3MaterializeBodyStates( b3World* world );
+#else
+static inline bool b3MaterializeBodyStates( b3World* world )
+{
+	B3_UNUSED( world );
+	return true;
+}
+#endif
 
 static inline void b3BumpMetalContactInputRevision( b3World* world )
 {

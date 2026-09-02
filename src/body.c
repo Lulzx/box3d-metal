@@ -65,6 +65,7 @@ b3BodyState* b3GetBodyState( b3World* world, b3Body* body )
 {
 	if ( body->setIndex == b3_awakeSet )
 	{
+		if ( b3MaterializeBodyStates( world ) == false ) return NULL;
 		b3SolverSet* set = b3Array_Get( world->solverSets, b3_awakeSet );
 		return b3Array_Get( set->bodyStates, body->localIndex );
 	}
@@ -175,6 +176,11 @@ b3BodyId b3CreateBody( b3WorldId worldId, const b3BodyDef* def )
 	}
 
 	world->locked = true;
+	if ( b3MaterializeBodyStates( world ) == false )
+	{
+		world->locked = false;
+		return b3_nullBodyId;
+	}
 
 	bool isAwake = ( def->isAwake || def->enableSleep == false ) && def->isEnabled;
 
@@ -354,6 +360,11 @@ void b3DestroyBody( b3BodyId bodyId )
 	B3_REC( world, DestroyBody, bodyId );
 
 	world->locked = true;
+	if ( b3MaterializeBodyStates( world ) == false )
+	{
+		world->locked = false;
+		return;
+	}
 
 	b3Body* body = b3GetBodyFullId( world, bodyId );
 
@@ -1462,10 +1473,8 @@ void b3Body_ApplyLinearImpulse( b3BodyId bodyId, b3Vec3 impulse, b3Pos point, bo
 
 	if ( body->setIndex == b3_awakeSet )
 	{
-		int localIndex = body->localIndex;
-		b3SolverSet* set = b3Array_Get( world->solverSets, b3_awakeSet );
-		b3BodyState* state = b3Array_Get( set->bodyStates, localIndex );
-		b3BodySim* bodySim = b3Array_Get( set->bodySims, localIndex );
+		b3BodyState* state = b3GetBodyState( world, body );
+		b3BodySim* bodySim = b3GetBodySim( world, body );
 
 		state->linearVelocity = b3MulAdd( state->linearVelocity, bodySim->invMass, impulse );
 
@@ -1498,10 +1507,8 @@ void b3Body_ApplyLinearImpulseToCenter( b3BodyId bodyId, b3Vec3 impulse, bool wa
 
 	if ( body->setIndex == b3_awakeSet )
 	{
-		int localIndex = body->localIndex;
-		b3SolverSet* set = b3Array_Get( world->solverSets, b3_awakeSet );
-		b3BodyState* state = b3Array_Get( set->bodyStates, localIndex );
-		b3BodySim* bodySim = b3Array_Get( set->bodySims, localIndex );
+		b3BodyState* state = b3GetBodyState( world, body );
+		b3BodySim* bodySim = b3GetBodySim( world, body );
 		state->linearVelocity = b3MulAdd( state->linearVelocity, bodySim->invMass, impulse );
 
 		float maxLinearSpeed = world->maxLinearSpeed;
@@ -1534,10 +1541,8 @@ void b3Body_ApplyAngularImpulse( b3BodyId bodyId, b3Vec3 impulse, bool wake )
 
 	if ( body->setIndex == b3_awakeSet )
 	{
-		int localIndex = body->localIndex;
-		b3SolverSet* set = b3Array_Get( world->solverSets, b3_awakeSet );
-		b3BodyState* state = b3Array_Get( set->bodyStates, localIndex );
-		b3BodySim* bodySim = b3Array_Get( set->bodySims, localIndex );
+		b3BodyState* state = b3GetBodyState( world, body );
+		b3BodySim* bodySim = b3GetBodySim( world, body );
 
 		b3Vec3 localImpulse = b3InvRotateVector( bodySim->transform.q, impulse );
 		b3Vec3 localAngularVelocityDelta = b3MulMV( bodySim->invInertiaLocal, localImpulse );

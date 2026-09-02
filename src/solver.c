@@ -1983,6 +1983,34 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		return;
 	}
 
+#if defined( BOX3D_METAL )
+	if ( b3AtomicLoadInt( &world->metalBodyStateCpuStale ) != 0 )
+	{
+		bool hasConstraints = false;
+		for ( int i = 0; i < B3_GRAPH_COLOR_COUNT; ++i )
+		{
+			const b3GraphColor* color = world->constraintGraph.colors + i;
+			if ( color->convexContacts.count > 0 || color->contacts.count > 0 || color->jointSims.count > 0 )
+			{
+				hasConstraints = true;
+				break;
+			}
+		}
+		bool preserveResidentState = world->metalContext != NULL && world->metalFinalizationEnabled &&
+			world->enableSleep == false && world->enableContinuous == false &&
+			awakeBodyCount >= world->metalMinimumBodyCount && hasConstraints == false;
+		if ( preserveResidentState == false )
+		{
+			if ( b3MaterializeBodyStates( world ) == false )
+			{
+				b3Log( "Box3D Metal solve skipped because body-state readback failed\n" );
+				return;
+			}
+			stepContext->states = awakeSet->bodyStates.data;
+		}
+	}
+#endif
+
 	// Solve constraints using graph coloring
 	{
 		b3TracyCZoneNC( solver_setup, "Solver Setup", b3_colorDarkOrange, true );
