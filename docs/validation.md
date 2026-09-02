@@ -19,6 +19,9 @@ Direct primitive tests separately cover packed state and integration kernels.
   id, tree type, shape id, query shape id, and six query fat-AABB bounds.
 - Shape metadata uploads once, reuses unchanged state, and refreshes exactly
   once after a filter mutation; tree bounds refresh independently.
+- A two-body lifecycle emits one new pair, suppresses it after contact creation,
+  reuses the unchanged pair set without upload, and emits it again after contact
+  destruction. Pair-set and shape-table revisions refresh independently.
 - Capacity growth requires one safe write retry; the same steady route then
   completes in one command buffer.
 - A moving 2,048-body world reuses its resident tree with zero repeat uploads;
@@ -109,6 +112,9 @@ double UndefinedBehaviorSanitizer Metal gates.
 
 The resident pair-filter checkpoint reran those same gates. Double-precision
 Metal continued through the pinned VF64 exact AABB boundary.
+
+The existing-pair checkpoint again passed the complete sanitizer/CPU matrix and
+focused float/double warning and VF64 gates after specializing CPU consumption.
 
 ## What the tests do not prove
 

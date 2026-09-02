@@ -28,7 +28,7 @@ evaluation order differs.
 
 The following remain CPU work:
 
-- broad-phase topology mutation, existing-pair/joint/custom/compound filtering,
+- broad-phase topology mutation, joint/custom/compound filtering,
   contact creation, narrow phase, and manifold generation;
 - contact and joint preparation;
 - events, islands, sleeping, and CCD;
@@ -60,7 +60,8 @@ Dynamic-tree traversal has another separately opt-in Metal path. It queries
 kinematic, static, and dynamic trees in upstream order and preserves each
 tree's DFS leaf order. Metal rejects exact moved-proxy duplicates, same-body
 pairs, sensors, and built-in group/category/mask failures from resident tables.
-The CPU still owns pair-set checks, compounds, joint overrides, custom callbacks,
+Metal also mirrors the pair set and suppresses existing non-compound contacts.
+The CPU still owns compounds, joint overrides, custom callbacks,
 deterministic contact-list construction, topology changes, and CPU fallback
 rebuilds. Excessive tree depth or candidate volume and any dispatch or
 allocation failure fall back to the complete CPU traversal for that step.

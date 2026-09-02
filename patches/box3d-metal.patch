@@ -22,10 +22,10 @@ index e5d603b5e15a38d050450891b3acbb461c0d7e0b..5545d63fe1396d21255442b6d2a8aeec
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..b02138b075abfa41b6866a5997a94924f6ccf0da 100644
+index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..9a2d58a1086a5e222521a6b3421684546c390c0e 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,80 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,81 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -44,8 +44,9 @@ index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..b02138b075abfa41b6866a5997a94924
 +body/shape finalization and traverse Erin's existing broad-phase trees on Metal
 +with deterministic on-device candidate compaction. Self/moved-proxy duplicates,
 +same-body pairs, sensors, and built-in shape filters are rejected against a
-+persistent shape-metadata table; existing contacts, joint overrides, compounds,
-+custom callbacks, and contact creation retain the CPU oracle. Tree snapshots remain in persistent Metal storage;
++persistent shape-metadata table. A revisioned mirror of Box3D's pair set also
++suppresses existing non-compound contacts; joint overrides, compounds, custom
++callbacks, and contact creation retain the CPU path. Tree snapshots remain in persistent Metal storage;
 +ordinary awake-shape motion updates leaves and refits internal bounds on-device,
 +while topology changes and unsupported CPU mutations invalidate the snapshot.
 +Enlarged proxy bookkeeping consumes a stable GPU-compacted subset rather than
@@ -1672,9 +1673,59 @@ index 0000000000000000000000000000000000000000..96eff9c159b0c1882113887c2f49f4e7
 +accepted whole-world comparison must use separate warm processes on a clean
 +host and report full applies, explicitly synchronized shape count, compacted
 +shape count, and complete `b3World_Step` time.
+diff --git a/docs/benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md b/docs/benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..5217950a7409148be6dfab70dd70cfe8f44c8b95
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md
+@@ -0,0 +1,44 @@
++# M4 Pro resident existing-pair suppression — 2026-09-02
++
++## Scope
++
++This checkpoint mirrors Erin Catto's open-addressed contact pair set into a
++persistent Metal buffer. The shader uses the same 64-bit shape-pair key, Murmur
++finalizer, power-of-two mask, and linear probing as `b3ContainsKey`. Contact
++creation, destruction, and snapshot restoration advance a revision; unchanged
++sets stay resident without another copy.
++
++Non-compound existing contacts are rejected during both the candidate count and
++write traversals. Compound parents deliberately bypass this test because their
++contact keys include child indices; they retain the complete CPU child query.
++For ordinary candidates the CPU consumer now starts at joint/custom filtering
++and deterministic move-pair append instead of repeating GPU de-duplication,
++pair-set, sensor, same-body, and built-in filter work.
++
++## Correctness gate
++
++A dedicated two-body lifecycle test first observes exactly one candidate. After
++the world creates the contact, the same moved proxies produce zero candidates
++and one pair-set upload. An unchanged repeat produces zero candidates without
++another upload. Destroying the contact through filter mutation, restoring the
++filter, and moving both proxies produces exactly one candidate again, with one
++pair-set and one shape-metadata refresh.
++
++The 620-proxy mixed differential continues to match all 1,905 CPU candidates in
++exact per-move order. Existing distance-joint/contact and ten-step convex and
++mesh worlds preserve their CPU differential tolerances. Full CPU-only,
++AddressSanitizer (`detect_leaks=0`), and float UndefinedBehaviorSanitizer suites
++passed. Focused float/double warning-as-error and double/VF64 UBSAN Metal suites
++also passed.
++
++## Performance status
++
++No timing is accepted from this checkpoint. The development host remained
++loaded by a virtual machine and other interactive workloads. The pair-set mirror
++currently copies its full retained capacity after a contact-set revision; stable
++contact worlds reuse it, while high-churn worlds need a future incremental
++device update path before a performance claim is justified.
++
++The next ownership boundary is contact creation and shape-specialized narrow
++phase. Compound child traversal, joint overrides, and user callbacks remain
++explicit CPU exception paths.
 diff --git a/docs/benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md b/docs/benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..447b98fea86da98624ebe3ea7483752ee414379a
+index 0000000000000000000000000000000000000000..582587a7e59f3d9e6cf36a4a6ebc843857ae633a
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md
 @@ -0,0 +1,54 @@
@@ -1728,10 +1779,10 @@ index 0000000000000000000000000000000000000000..447b98fea86da98624ebe3ea7483752e
 +core. The 0.8 ms values printed by the correctness test are route diagnostics,
 +not benchmark evidence.
 +
-+The next broad-phase ownership step is resident existing-pair suppression and a
-+specialized CPU consumer for the remaining compound/joint/custom cases. That
-+reduces the accepted stream before incremental contact creation and narrow
-+phase move on-device.
++Resident existing-pair suppression and the specialized ordinary-candidate CPU
++consumer followed in
++[`m4-pro-resident-existing-pairs-2026-09-02.md`](m4-pro-resident-existing-pairs-2026-09-02.md).
++The remaining boundary is incremental contact creation and narrow phase.
 diff --git a/docs/benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md b/docs/benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md
 new file mode 100644
 index 0000000000000000000000000000000000000000..3d8a6863fcd68cbe47270f40e54044d2eae201dd
@@ -1964,10 +2015,10 @@ index 0000000000000000000000000000000000000000..9e757a77d32c34c4e9f3cebdb630b2f7
 +contact creation/narrow-phase residency.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..2490de8721b894f726999801d62962737c294ca3
+index 0000000000000000000000000000000000000000..d2a3fe932c6469b4a8797036d51876b333bafcde
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,253 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -2110,7 +2161,11 @@ index 0000000000000000000000000000000000000000..2490de8721b894f726999801d6296273
 +metadata. A revisioned resident shape table rejects self/moved-proxy duplicates,
 +same-body pairs, sensors, and built-in group/category/mask filters during both
 +the count and write traversals. Shape creation, destruction, and filter mutation
-+refresh that table; unchanged steps do not repack it. When device leaf update and refit succeed, CPU proxy bookkeeping
++refresh that table; unchanged steps do not repack it. A revisioned mirror of
++Erin's 16-byte open-addressed pair-set entries runs the same key construction,
++hash finalizer, and linear probing to suppress existing non-compound contacts.
++Compound parents stay on the CPU because their contact keys include child ids.
++When device leaf update and refit succeed, CPU proxy bookkeeping
 +consumes a stable GPU-compacted 32-byte record only for each enlarged shape.
 +A 256-lane hierarchical scan preserves packed shape order across blocks. This
 +skips the full-result rescan, enlarged-body bit-set reduction, and second
@@ -2118,9 +2173,9 @@ index 0000000000000000000000000000000000000000..2490de8721b894f726999801d6296273
 +fallback safety.
 +The first unexpectedly dense call may submit one write-only retry after growing
 +the persistent candidate buffer; the steady path submits and waits once. CPU
-+consumption then reuses the complete upstream callback as a fail-closed oracle
-+and handles existing-contact suppression, compound children, joint collision
-+overrides, custom user filters, and deterministic contact creation. Unsupported
++consumption sends ordinary candidates directly to joint/custom filtering and
++move-pair append. Compound children retain the complete upstream callback.
++Deterministic contact creation remains CPU-owned. Unsupported
 +threadgroup geometry, tree heights at or
 +above 63, shader stack overflow, changing counts, allocation failure, or more
 +than 64 raw candidates per moved proxy on average fall back to the full CPU
@@ -2211,6 +2266,8 @@ index 0000000000000000000000000000000000000000..2490de8721b894f726999801d6296273
 +[`benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md`](benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md).
 +Resident moved-proxy and built-in shape filtering are recorded in
 +[`benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md`](benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md).
++Resident existing-contact suppression is recorded in
++[`benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md`](benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md).
 +Private shape results and selective synchronization are recorded in
 +[`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 +Persistent shape-input reuse is recorded in
@@ -2231,10 +2288,10 @@ index 2e8259039a9ed575b8b0e59c1ea7064245517b42..cd49acff561bfc6d9b781415209a5560
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..db9971987b84909dab57482f259ac6f10b804e43
+index 0000000000000000000000000000000000000000..de2b8fbc07a8c058d7f0be96b79c4a8ed93436fb
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,84 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2281,6 +2338,7 @@ index 0000000000000000000000000000000000000000..db9971987b84909dab57482f259ac6f1
 +	uint64_t pairFallbackCount;
 +	uint64_t pairTreeUploadCount;
 +	uint64_t pairMetadataUploadCount;
++	uint64_t pairSetUploadCount;
 +	uint64_t pairTreeRefitCount;
 +	double lastPositionGpuMilliseconds;
 +	double lastUnconstrainedGpuMilliseconds;
@@ -2304,9 +2362,10 @@ index 0000000000000000000000000000000000000000..db9971987b84909dab57482f259ac6f1
 +
 +/// Opt into experimental GPU dynamic-tree traversal for broad-phase candidate
 +/// generation. Metal also performs deterministic moved-proxy de-duplication and
-+/// built-in same-body, sensor, and shape-filter rejection. Existing contacts,
-+/// joint/custom filtering, compounds, and deterministic contact creation retain
-+/// the CPU oracle. Any unsupported tree depth, capacity, or dispatch failure
++/// built-in same-body, sensor, and shape-filter rejection. A resident mirror of
++/// the pair set suppresses existing non-compound contacts. Joint/custom filtering,
++/// compounds, and deterministic contact creation retain the CPU path. Any
++/// unsupported tree depth, capacity, or dispatch failure
 +/// falls back to the complete CPU traversal for that step.
 +B3_API bool b3World_SetMetalBroadPhase( b3WorldId worldId, bool enabled );
 +
@@ -2438,7 +2497,7 @@ index f517e7b41a6656fcba1c6a3956bd9f1341d06636..32652ac684c6c4977693d16f17a0ba01
  		if ( b3AABB_Contains( shape->fatAABB, aabb ) == false )
  		{
 diff --git a/src/broad_phase.c b/src/broad_phase.c
-index a369ca62a94d3454fb21857d98ccba4790b7b731..78f22192f36ca841f0bc59275373d97c88a6cdd1 100644
+index a369ca62a94d3454fb21857d98ccba4790b7b731..8cd5e42c1ef756ce5ccc83b563ef22f9e1af49b7 100644
 --- a/src/broad_phase.c
 +++ b/src/broad_phase.c
 @@ -12,9 +12,21 @@
@@ -2503,7 +2562,110 @@ index a369ca62a94d3454fb21857d98ccba4790b7b731..78f22192f36ca841f0bc59275373d97c
  	b3BufferMove( bp, proxyKey );
  }
  
-@@ -384,17 +401,75 @@ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void
+@@ -154,6 +171,48 @@ typedef struct b3QueryPairContext
+ 	int compoundShapeIndex;
+ } b3QueryPairContext;
+ 
++static void b3AppendMovePair( b3QueryPairContext* queryContext, b3Shape* shapeA, b3Shape* shapeB, int childIndex )
++{
++	b3World* world = queryContext->world;
++	int bodyIdA = shapeA->bodyId;
++	int bodyIdB = shapeB->bodyId;
++	b3Body* bodyA = b3Array_Get( world->bodies, bodyIdA );
++	b3Body* bodyB = b3Array_Get( world->bodies, bodyIdB );
++	if ( b3ShouldBodiesCollide( world, bodyA, bodyB ) == false )
++	{
++		return;
++	}
++
++	if ( ( shapeA->flags & b3_enableCustomFiltering ) || ( shapeB->flags & b3_enableCustomFiltering ) )
++	{
++		b3CustomFilterFcn* customFilterFcn = world->customFilterFcn;
++		if ( customFilterFcn != NULL )
++		{
++			b3ShapeId idA = { shapeA->id + 1, world->worldId, shapeA->generation };
++			b3ShapeId idB = { shapeB->id + 1, world->worldId, shapeB->generation };
++			if ( customFilterFcn( idA, idB, world->customFilterContext ) == false )
++			{
++				return;
++			}
++		}
++	}
++
++	b3BroadPhase* broadPhase = &world->broadPhase;
++	int pairIndex = b3AtomicFetchAddInt( &broadPhase->movePairIndex, 1 );
++	if ( pairIndex >= broadPhase->movePairCapacity )
++	{
++		return;
++	}
++
++	b3MovePair* pair = broadPhase->movePairs + pairIndex;
++	pair->heap = false;
++	pair->shapeIndexA = shapeA->id;
++	pair->shapeIndexB = shapeB->id;
++	pair->childIndex = childIndex;
++	pair->next = queryContext->moveResult->pairList;
++	queryContext->moveResult->pairList = pair;
++}
++
+ // This is called from b3DynamicTree::Query when we are gathering pairs.
+ static bool b3PairQueryCallback( int proxyId, uint64_t userData, void* context )
+ {
+@@ -272,52 +331,7 @@ static bool b3PairQueryCallback( int proxyId, uint64_t userData, void* context )
+ 		return true;
+ 	}
+ 
+-	// Does a joint override collision?
+-	b3Body* bodyA = b3Array_Get( world->bodies, bodyIdA );
+-	b3Body* bodyB = b3Array_Get( world->bodies, bodyIdB );
+-	if ( b3ShouldBodiesCollide( world, bodyA, bodyB ) == false )
+-	{
+-		return true;
+-	}
+-
+-	// Custom user filter
+-	if ( ( shapeA->flags & b3_enableCustomFiltering ) || ( shapeB->flags & b3_enableCustomFiltering ) )
+-	{
+-		b3CustomFilterFcn* customFilterFcn = queryContext->world->customFilterFcn;
+-		if ( customFilterFcn != NULL )
+-		{
+-			b3ShapeId idA = { shapeIdA + 1, world->worldId, shapeA->generation };
+-			b3ShapeId idB = { shapeIdB + 1, world->worldId, shapeB->generation };
+-			bool shouldCollide = customFilterFcn( idA, idB, queryContext->world->customFilterContext );
+-			if ( shouldCollide == false )
+-			{
+-				return true;
+-			}
+-		}
+-	}
+-
+-	// todo per thread to eliminate atomic?
+-	int pairIndex = b3AtomicFetchAddInt( &broadPhase->movePairIndex, 1 );
+-
+-	b3MovePair* pair;
+-	if ( pairIndex < broadPhase->movePairCapacity )
+-	{
+-		pair = broadPhase->movePairs + pairIndex;
+-		pair->heap = false;
+-	}
+-	else
+-	{
+-		// todo experimenting with ignoring this pair if we ran out of space
+-		return true;
+-		// pair = (b3MovePair*)b3Alloc( sizeof( b3MovePair ) );
+-		// pair->heap = true;
+-	}
+-
+-	pair->shapeIndexA = shapeIdA;
+-	pair->shapeIndexB = shapeIdB;
+-	pair->childIndex = childIndex;
+-	pair->next = queryContext->moveResult->pairList;
+-	queryContext->moveResult->pairList = pair;
++	b3AppendMovePair( queryContext, shapeA, shapeB, childIndex );
+ 
+ 	// continue the query
+ 	return true;
+@@ -384,17 +398,88 @@ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void
  	b3TracyCZoneEnd( pair_task );
  }
  
@@ -2517,9 +2679,9 @@ index a369ca62a94d3454fb21857d98ccba4790b7b731..78f22192f36ca841f0bc59275373d97c
 +} b3MetalFindPairsContext;
 +
 +// Implements b3ParallelForCallback. Metal has already traversed the trees and
-+// rejected exact moved-proxy duplicates plus built-in shape filters. Reusing
-+// the complete callback here is a fail-closed oracle and retains pair-set,
-+// compound, joint, custom-filter, and deterministic contact behavior.
++// rejected exact moved-proxy duplicates, existing non-compound contacts, and
++// built-in shape filters. Common candidates go directly to the remaining
++// joint/custom checks. Compounds retain the complete callback and child query.
 +static void b3FindPairsMetalTask( int startIndex, int endIndex, int workerIndex, void* context )
 +{
 +	b3TracyCZoneNC( pair_metal_consume, "Pair Metal Consume", b3_colorAquamarine, true );
@@ -2551,7 +2713,20 @@ index a369ca62a94d3454fb21857d98ccba4790b7b731..78f22192f36ca841f0bc59275373d97c
 +		{
 +			const b3MetalPairCandidate* candidate = metalContext->candidates + record->offset + candidateIndex;
 +			queryContext.queryTreeType = (b3BodyType)candidate->treeType;
-+			b3PairQueryCallback( candidate->proxyId, (uint64_t)(uint32_t)candidate->shapeIndex, &queryContext );
++			b3Shape* shapeA = b3Array_Get( world->shapes, candidate->shapeIndex );
++			if ( shapeA->type == b3_compoundShape )
++			{
++				b3PairQueryCallback( candidate->proxyId, (uint64_t)(uint32_t)candidate->shapeIndex, &queryContext );
++				continue;
++			}
++
++			b3Shape* shapeB = b3Array_Get( world->shapes, queryContext.queryShapeIndex );
++			B3_ASSERT( shapeA->id != shapeB->id );
++			B3_ASSERT( shapeA->bodyId != shapeB->bodyId );
++			B3_ASSERT( shapeA->sensorIndex == B3_NULL_INDEX && shapeB->sensorIndex == B3_NULL_INDEX );
++			B3_ASSERT( b3ShouldShapesCollide( shapeA->filter, shapeB->filter ) );
++			B3_ASSERT( b3ContainsKey( &bp->pairSet, b3ShapePairKey( shapeA->id, shapeB->id, 0 ) ) == false );
++			b3AppendMovePair( &queryContext, shapeA, shapeB, 0 );
 +		}
 +	}
 +	b3TracyCZoneEnd( pair_metal_consume );
@@ -2583,7 +2758,7 @@ index a369ca62a94d3454fb21857d98ccba4790b7b731..78f22192f36ca841f0bc59275373d97c
  void b3UpdateBroadPhasePairs( b3World* world )
  {
  	b3BroadPhase* bp = &world->broadPhase;
-@@ -423,13 +498,48 @@ void b3UpdateBroadPhasePairs( b3World* world )
+@@ -423,13 +508,49 @@ void b3UpdateBroadPhasePairs( b3World* world )
  #endif
  
  	int minRange = 64;
@@ -2605,6 +2780,7 @@ index a369ca62a94d3454fb21857d98ccba4790b7b731..78f22192f36ca841f0bc59275373d97c
 +			world->metalPairDispatchCount += 1;
 +			world->metalPairTreeUploadCount += (uint64_t)stats.treeUploadCount;
 +			world->metalPairMetadataUploadCount += (uint64_t)stats.metadataUploadCount;
++			world->metalPairSetUploadCount += (uint64_t)stats.pairSetUploadCount;
 +			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
 +			usedMetalPairs = true;
 +		}
@@ -2635,7 +2811,7 @@ index a369ca62a94d3454fb21857d98ccba4790b7b731..78f22192f36ca841f0bc59275373d97c
  		world->userTreeTask = world->enqueueTaskFcn( &b3UpdateTreesTask, world, world->userTaskContext, "rebuild tree" );
  		world->taskCount += 1;
 diff --git a/src/broad_phase.h b/src/broad_phase.h
-index dcd626b3a420e6e2eecd472931c79527eebd0d1b..dce2524ed68bb2a0af333d5b696bd4c17a3cd0eb 100644
+index dcd626b3a420e6e2eecd472931c79527eebd0d1b..a3d47a3424160019ee3ebf0d825394f8377e992b 100644
 --- a/src/broad_phase.h
 +++ b/src/broad_phase.h
 @@ -27,6 +27,9 @@ typedef struct b3World b3World;
@@ -2648,7 +2824,15 @@ index dcd626b3a420e6e2eecd472931c79527eebd0d1b..dce2524ed68bb2a0af333d5b696bd4c1
  
  	// Per body-type bit sets indexed by proxyId, marking proxies moved this step.
  	// Paired with moveArray which preserves deterministic insertion order for pair queries.
-@@ -59,6 +62,7 @@ void b3BroadPhase_EnlargeProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb );
+@@ -44,6 +47,7 @@ typedef struct b3BroadPhase
+ 	// Tracks shape pairs that have a b3Contact
+ 	// todo pairSet can grow quite large on the first time step and remain large
+ 	b3HashSet pairSet;
++	uint64_t pairSetRevision;
+ } b3BroadPhase;
+ 
+ void b3CreateBroadPhase( b3BroadPhase* bp, const b3Capacity* capacity );
+@@ -59,6 +63,7 @@ void b3BroadPhase_EnlargeProxy( b3BroadPhase* bp, int proxyKey, b3AABB aabb );
  int b3BroadPhase_GetShapeIndex( b3BroadPhase* bp, int proxyKey );
  
  void b3UpdateBroadPhasePairs( b3World* world );
@@ -2656,6 +2840,26 @@ index dcd626b3a420e6e2eecd472931c79527eebd0d1b..dce2524ed68bb2a0af333d5b696bd4c1
  bool b3BroadPhase_TestOverlap( const b3BroadPhase* bp, int proxyKeyA, int proxyKeyB );
  
  void b3ValidateBroadPhase( const b3BroadPhase* bp );
+diff --git a/src/contact.c b/src/contact.c
+index 1506bdbe563f73734e98873cf1c8e66546f3167a..f41462c44ff22289101b161da47db8d92daf2760 100644
+--- a/src/contact.c
++++ b/src/contact.c
+@@ -290,6 +290,7 @@ void b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int chil
+ 	// Add to pair set for fast lookup
+ 	uint64_t pairKey = b3ShapePairKey( shapeIdA, shapeIdB, childIndex );
+ 	b3AddKey( &world->broadPhase.pairSet, pairKey );
++	world->broadPhase.pairSetRevision += 1;
+ 
+ 	// Contacts are created as non-touching. Later if they are found to be touching
+ 	// they will link islands and be moved into the constraint graph.
+@@ -340,6 +341,7 @@ void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies )
+ 	// Remove pair from set
+ 	uint64_t pairKey = b3ShapePairKey( contact->shapeIdA, contact->shapeIdB, contact->childIndex );
+ 	b3RemoveKey( &world->broadPhase.pairSet, pairKey );
++	world->broadPhase.pairSetRevision += 1;
+ 
+ 	b3FreeManifolds( world, contact->manifolds, contact->manifoldCount );
+ 	contact->manifolds = NULL;
 diff --git a/src/contact_solver.c b/src/contact_solver.c
 index 48de409735c38bfe806ebee49eb9141229a3e114..ce69ae119a7a47b5124a76ea0604b8fc6271f9e1 100644
 --- a/src/contact_solver.c
@@ -2872,10 +3076,10 @@ index d85f2331a52e6f3e488582e33de30dd7a13e536f..ffa6859a9bc069551962a92badf88da5
  int b3GetWideContactConstraintByteCount( void );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..3d53bc7193b8338620c4f43e42a9f715d8f35bec
+index 0000000000000000000000000000000000000000..fc52ad572b76ce07d521e11813e4a32f4ad2bbad
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,115 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2920,6 +3124,7 @@ index 0000000000000000000000000000000000000000..3d53bc7193b8338620c4f43e42a9f715
 +	int commandBufferCount;
 +	int treeUploadCount;
 +	int metadataUploadCount;
++	int pairSetUploadCount;
 +} b3MetalDispatchStats;
 +
 +// Returns false when there is no usable Metal device or the shader pipeline
@@ -2992,10 +3197,10 @@ index 0000000000000000000000000000000000000000..3d53bc7193b8338620c4f43e42a9f715
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac924c51fb2
+index 0000000000000000000000000000000000000000..f21b42e8a4c4de5f0f89d3ec988d5ee0d8d740ea
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,3467 @@
+@@ -0,0 +1,3514 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -3101,6 +3306,9 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +	id<MTLBuffer> pairShapeBuffer;
 +	NSUInteger pairShapeCapacity;
 +	uint64_t pairShapeRevision;
++	id<MTLBuffer> pairSetBuffer;
++	NSUInteger pairSetCapacity;
++	uint64_t pairSetRevision;
 +	uint64_t pairTreeRevision;
 +	uint32_t pairTreeOffsets[b3_bodyTypeCount];
 +	uint32_t pairTreeNodeCounts[b3_bodyTypeCount];
@@ -3189,7 +3397,7 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +	int32_t bodyId;
 +	int32_t sensorIndex;
 +	int32_t groupIndex;
-+	uint32_t padding;
++	uint32_t type;
 +	uint64_t categoryBits;
 +	uint64_t maskBits;
 +} b3MetalPairShape;
@@ -3210,6 +3418,7 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +_Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
 +_Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
 +_Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed" );
++_Static_assert( sizeof( b3SetItem ) == 16, "Metal pair-set item ABI changed" );
 +_Static_assert( sizeof( b3ContactConstraintPointWide ) == 192, "Metal wide contact point ABI changed" );
 +_Static_assert( sizeof( b3ContactConstraintWide ) == 1696, "Metal wide contact ABI changed" );
 +_Static_assert( sizeof( b3ManifoldConstraintPoint ) == 48, "Metal mesh contact-point ABI changed" );
@@ -3342,10 +3551,11 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +	"};\n"
 +	"struct PairQueryRecord { uint count,offset,flags; int queryShapeIndex; float lx,ly,lz,ux,uy,uz; };\n"
 +	"struct PairCandidate { int proxyId,treeType,shapeIndex,padding; };\n"
-+	"struct PairShape { int bodyId,sensorIndex,groupIndex; uint padding; ulong categoryBits,maskBits; };\n"
++	"struct PairShape { int bodyId,sensorIndex,groupIndex; uint type; ulong categoryBits,maskBits; };\n"
++	"struct SetItem { ulong key; uint hash,padding; };\n"
 +	"struct PairSummary { ulong totalCount; uint flags,writeFlags; };\n"
 +	"struct PairBlock { uint sum,flags,offset,padding; };\n"
-+	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates,shapeCount,p0,p1,p2; };\n"
++	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates,shapeCount,pairCapacity,p1,p2; };\n"
 +	"struct PairPrefixParams { uint moveCount,candidateCapacity,candidateLimit,padding; };\n"
 +	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
 +	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
@@ -3664,8 +3874,21 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +	"  if(a.groupIndex==b.groupIndex&&a.groupIndex!=0)return a.groupIndex>0;\n"
 +	"  return (a.maskBits&b.categoryBits)!=0ul&&(a.categoryBits&b.maskBits)!=0ul;\n"
 +	"}\n"
++	"inline uint pair_key_hash(ulong key) {\n"
++	"  ulong h=key;h^=h>>33;h*=0xff51afd7ed558ccdul;h^=h>>33;\n"
++	"  h*=0xc4ceb9fe1a85ec53ul;h^=h>>33;return uint(h);\n"
++	"}\n"
++	"inline bool pair_set_contains(const device SetItem* items,uint capacity,uint shapeA,uint shapeB) {\n"
++	"  uint lo=min(shapeA,shapeB),hi=max(shapeA,shapeB);\n"
++	"  ulong key=(ulong(lo&0x3fffffu)<<42)|(ulong(hi&0x3fffffu)<<20);\n"
++	"  uint index=pair_key_hash(key)&(capacity-1u);\n"
++	"  for(uint probe=0u;probe<capacity;++probe){SetItem item=items[index];\n"
++	"    if(item.hash==0u)return false;if(item.key==key)return true;index=(index+1u)&(capacity-1u);}\n"
++	"  return false;\n"
++	"}\n"
 +	"inline void query_pair_tree(const device TreeNode* nodes,const device uint* moved,const device PairShape* shapes,\n"
-+	"                            uint shapeCount,PairShape queryShape,int root,uint nodeOffset,int treeType,\n"
++	"                            const device SetItem* pairSet,uint shapeCount,uint pairCapacity,uint queryShapeIndex,\n"
++	"                            PairShape queryShape,int root,uint nodeOffset,int treeType,\n"
 +	"                            int queryKey,int queryType,float3 lo,float3 hi,\n"
 +	"                            device PairCandidate* candidates,uint outputOffset,uint expected,uint writeCandidates,\n"
 +	"                            thread int* stack,thread uint& candidateCount,thread uint& queryFlags) {\n"
@@ -3678,6 +3901,7 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +	"      if((queryType==2&&treeType==2&&targetKey<queryKey&&targetMoved)||(queryType!=2&&targetMoved))continue;\n"
 +	"      uint shapeIndex=n.child1;if(shapeIndex>=shapeCount||shapes[shapeIndex].bodyId<0){queryFlags|=16u;return;}\n"
 +	"      if(!pair_shapes_collide(queryShape,shapes[shapeIndex]))continue;\n"
++	"      if(shapes[shapeIndex].type!=1u&&pair_set_contains(pairSet,pairCapacity,queryShapeIndex,shapeIndex))continue;\n"
 +	"      if(writeCandidates!=0u) { if(candidateCount>=expected) { queryFlags|=2u; return; }\n"
 +	"        PairCandidate c; c.proxyId=nodeId;c.treeType=treeType;c.shapeIndex=int(n.child1);c.padding=0;\n"
 +	"        candidates[outputOffset+candidateCount]=c; } candidateCount+=1u;\n"
@@ -3690,6 +3914,7 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +	"                               constant PairParams& p [[buffer(4)]],device PairSummary* summary [[buffer(5)]],\n"
 +	"                               const device uint* moved [[buffer(6)]],\n"
 +	"                               const device PairShape* shapes [[buffer(7)]],\n"
++	"                               const device SetItem* pairSet [[buffer(8)]],\n"
 +	"                               uint i [[thread_position_in_grid]]) {\n"
 +	"  if(i>=p.moveCount) return; int key=moves[i];int queryType=key&3;int proxyId=key>>2;\n"
 +	"  if(p.writeCandidates!=0u&&summary->flags!=0u) return;\n"
@@ -3701,10 +3926,10 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +	"  record.queryShapeIndex=int(q.child1);record.lx=q.lx;record.ly=q.ly;record.lz=q.lz;\n"
 +	"  record.ux=q.ux;record.uy=q.uy;record.uz=q.uz;\n"
 +	"  if(queryType==2) {\n"
-+	"    query_pair_tree(nodes,moved,shapes,p.shapeCount,queryShape,p.root1,p.offset1,1,key,queryType,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
-+	"    query_pair_tree(nodes,moved,shapes,p.shapeCount,queryShape,p.root0,p.offset0,0,key,queryType,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
++	"    query_pair_tree(nodes,moved,shapes,pairSet,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root1,p.offset1,1,key,queryType,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
++	"    query_pair_tree(nodes,moved,shapes,pairSet,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root0,p.offset0,0,key,queryType,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
 +	"  }\n"
-+	"  query_pair_tree(nodes,moved,shapes,p.shapeCount,queryShape,p.root2,p.offset2,2,key,queryType,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
++	"  query_pair_tree(nodes,moved,shapes,pairSet,p.shapeCount,p.pairCapacity,q.child1,queryShape,p.root2,p.offset2,2,key,queryType,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
 +	"  if(p.writeCandidates==0u) record.count=count; else if(count!=record.count) flags|=2u;\n"
 +	"  record.flags=flags;records[i]=record;\n"
 +	"  if(p.writeCandidates!=0u&&flags!=0u) atomic_fetch_or_explicit((device atomic_uint*)&summary->writeFlags,8u,memory_order_relaxed);\n"
@@ -4342,6 +4567,7 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +	[context->pairTreeBuffer release];
 +	[context->pairMovedBuffer release];
 +	[context->pairShapeBuffer release];
++	[context->pairSetBuffer release];
 +	[context->pairRecordBuffer release];
 +	[context->pairCandidateBuffer release];
 +	[context->pairSummaryBuffer release];
@@ -4560,7 +4786,8 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +}
 +
 +static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveBytes, NSUInteger treeBytes,
-+	NSUInteger movedBytes, NSUInteger shapeBytes, NSUInteger recordBytes, NSUInteger candidateBytes, NSUInteger blockBytes )
++	NSUInteger movedBytes, NSUInteger shapeBytes, NSUInteger setBytes, NSUInteger recordBytes, NSUInteger candidateBytes,
++	NSUInteger blockBytes )
 +{
 +	if ( context->pairSummaryBuffer == nil )
 +	{
@@ -4609,6 +4836,17 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +		context->pairShapeBuffer = buffer;
 +		context->pairShapeCapacity = capacity;
 +		context->pairShapeRevision = UINT64_MAX;
++	}
++	if ( context->pairSetCapacity < setBytes )
++	{
++		NSUInteger capacity = context->pairSetCapacity > 0 ? context->pairSetCapacity : 4096;
++		while ( capacity < setBytes ) capacity *= 2;
++		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
++		if ( buffer == nil ) return false;
++		[context->pairSetBuffer release];
++		context->pairSetBuffer = buffer;
++		context->pairSetCapacity = capacity;
++		context->pairSetRevision = UINT64_MAX;
 +	}
 +	if ( context->pairRecordCapacity < recordBytes )
 +	{
@@ -5612,13 +5850,17 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +		int shapeCount = world->shapes.count;
 +		if ( shapeCount <= 0 || (NSUInteger)shapeCount > NSUIntegerMax / sizeof( b3MetalPairShape ) ) return false;
 +		NSUInteger shapeBytes = (NSUInteger)shapeCount * sizeof( b3MetalPairShape );
++		uint32_t pairSetCapacity = broadPhase->pairSet.capacity;
++		if ( pairSetCapacity == 0 || ( pairSetCapacity & ( pairSetCapacity - 1 ) ) != 0 ||
++			 (NSUInteger)pairSetCapacity > NSUIntegerMax / sizeof( b3SetItem ) ) return false;
++		NSUInteger setBytes = (NSUInteger)pairSetCapacity * sizeof( b3SetItem );
 +		uint64_t candidateLimit64 = 64ull * (uint64_t)moveCount;
 +		uint32_t candidateLimit = candidateLimit64 < INT32_MAX ? (uint32_t)candidateLimit64 : INT32_MAX;
 +		uint64_t initialCandidateCount = 4ull * (uint64_t)moveCount;
 +		if ( initialCandidateCount > candidateLimit ) initialCandidateCount = candidateLimit;
 +		if ( initialCandidateCount > NSUIntegerMax / sizeof( b3MetalPairCandidate ) ) return false;
 +		NSUInteger initialCandidateBytes = (NSUInteger)initialCandidateCount * sizeof( b3MetalPairCandidate );
-+		if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, movedBytes, shapeBytes, recordBytes,
++		if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, movedBytes, shapeBytes, setBytes, recordBytes,
 +			 initialCandidateBytes, blockBytes ) == false )
 +		{
 +			return false;
@@ -5647,12 +5889,19 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +					.bodyId = shape->bodyId,
 +					.sensorIndex = shape->sensorIndex,
 +					.groupIndex = shape->filter.groupIndex,
++					.type = (uint32_t)shape->type,
 +					.categoryBits = shape->filter.categoryBits,
 +					.maskBits = shape->filter.maskBits,
 +				};
 +			}
 +			context->pairShapeRevision = world->metalPairShapeRevision;
 +			if ( stats != NULL ) stats->metadataUploadCount = 1;
++		}
++		if ( context->pairSetRevision != broadPhase->pairSetRevision )
++		{
++			memcpy( context->pairSetBuffer.contents, broadPhase->pairSet.items, setBytes );
++			context->pairSetRevision = broadPhase->pairSetRevision;
++			if ( stats != NULL ) stats->pairSetUploadCount = 1;
 +		}
 +		uint32_t* movedNodes = context->pairMovedBuffer.contents;
 +		memset( movedNodes, 0, movedBytes );
@@ -5686,10 +5935,10 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +		struct
 +		{
 +			int root0, root1, root2;
-+			uint32_t offset0, offset1, offset2, moveCount, writeCandidates, shapeCount, padding0, padding1, padding2;
++			uint32_t offset0, offset1, offset2, moveCount, writeCandidates, shapeCount, pairCapacity, padding1, padding2;
 +		} params = {
 +			broadPhase->trees[0].root, broadPhase->trees[1].root, broadPhase->trees[2].root,
-+			nodeOffsets[0], nodeOffsets[1], nodeOffsets[2], (uint32_t)moveCount, 0, (uint32_t)shapeCount, 0, 0, 0,
++			nodeOffsets[0], nodeOffsets[1], nodeOffsets[2], (uint32_t)moveCount, 0, (uint32_t)shapeCount, pairSetCapacity, 0, 0,
 +		};
 +		_Static_assert( sizeof( params ) == 48, "Metal pair parameter ABI changed" );
 +		uint64_t availableCandidateCount64 = context->pairCandidateCapacity / sizeof( b3MetalPairCandidate );
@@ -5714,6 +5963,7 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
 +		[encoder setBuffer:context->pairMovedBuffer offset:0 atIndex:6];
 +		[encoder setBuffer:context->pairShapeBuffer offset:0 atIndex:7];
++		[encoder setBuffer:context->pairSetBuffer offset:0 atIndex:8];
 +		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
 +			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
 +		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -5747,6 +5997,7 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
 +		[encoder setBuffer:context->pairMovedBuffer offset:0 atIndex:6];
 +		[encoder setBuffer:context->pairShapeBuffer offset:0 atIndex:7];
++		[encoder setBuffer:context->pairSetBuffer offset:0 atIndex:8];
 +		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
 +			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
 +		[encoder endEncoding];
@@ -5766,7 +6017,7 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +				return false;
 +			}
 +			NSUInteger candidateBytes = (NSUInteger)summary->totalCount * sizeof( b3MetalPairCandidate );
-+			if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, movedBytes, shapeBytes, recordBytes, candidateBytes,
++			if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, movedBytes, shapeBytes, setBytes, recordBytes, candidateBytes,
 +				 blockBytes ) == false ) return false;
 +			summary = context->pairSummaryBuffer.contents;
 +			summary->flags = 0;
@@ -5783,6 +6034,7 @@ index 0000000000000000000000000000000000000000..a39b13765ba739f8284a597065c06ac9
 +			[retryEncoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
 +			[retryEncoder setBuffer:context->pairMovedBuffer offset:0 atIndex:6];
 +			[retryEncoder setBuffer:context->pairShapeBuffer offset:0 atIndex:7];
++			[retryEncoder setBuffer:context->pairSetBuffer offset:0 atIndex:8];
 +			[retryEncoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
 +				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
 +			[retryEncoder endEncoding];
@@ -7604,7 +7856,7 @@ index 0000000000000000000000000000000000000000..a4424e54a1931d1ca2b31611744fa848
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..a44f0eee1be8e601b25ce648de9fca829d3146ee 100644
+index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..4c1d760f04094d35b3b9fc7b6b303f8e1d25fca7 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -7631,7 +7883,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..a44f0eee1be8e601b25ce648de9fca82
  	// Detach any recording before teardown. The user owns and frees the recording buffer.
  	b3StopRecordingInternal( world );
  
-@@ -538,6 +548,150 @@ int b3GetWorldCount( void )
+@@ -538,6 +548,151 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -7764,6 +8016,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..a44f0eee1be8e601b25ce648de9fca82
 +	profile.pairFallbackCount = world->metalPairFallbackCount;
 +	profile.pairTreeUploadCount = world->metalPairTreeUploadCount;
 +	profile.pairMetadataUploadCount = world->metalPairMetadataUploadCount;
++	profile.pairSetUploadCount = world->metalPairSetUploadCount;
 +	profile.pairTreeRefitCount = world->metalPairTreeRefitCount;
 +	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
 +	profile.lastUnconstrainedGpuMilliseconds = world->metalLastUnconstrainedGpuMilliseconds;
@@ -7782,7 +8035,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..a44f0eee1be8e601b25ce648de9fca82
  int b3GetMaxWorldCount( void )
  {
  	return b3_maxWorldCount;
-@@ -1039,6 +1193,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1194,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -7805,7 +8058,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..a44f0eee1be8e601b25ce648de9fca82
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -3473,6 +3643,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +3644,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -7818,10 +8071,10 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..a44f0eee1be8e601b25ce648de9fca82
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8656bec015b96bbfac2caacdde8013b489..8c42fa7aae8e7aa1182d7cd25391b90bcd12f49e 100644
+index 8bd3df8656bec015b96bbfac2caacdde8013b489..9c9a47f77bca7be95a9b4044d58205fa3f3ebac8 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
-@@ -266,6 +266,48 @@ typedef struct b3World
+@@ -266,6 +266,49 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
@@ -7856,6 +8109,7 @@ index 8bd3df8656bec015b96bbfac2caacdde8013b489..8c42fa7aae8e7aa1182d7cd25391b90b
 +	uint64_t metalPairFallbackCount;
 +	uint64_t metalPairTreeUploadCount;
 +	uint64_t metalPairMetadataUploadCount;
++	uint64_t metalPairSetUploadCount;
 +	uint64_t metalPairTreeRefitCount;
 +	uint64_t metalPairShapeRevision;
 +	double metalLastPositionGpuMilliseconds;
@@ -7870,7 +8124,7 @@ index 8bd3df8656bec015b96bbfac2caacdde8013b489..8c42fa7aae8e7aa1182d7cd25391b90b
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -347,4 +389,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +390,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
@@ -8915,6 +9169,18 @@ index 7c8a1c71bb148de9a736d288ead60191cbe6388c..265ce6d8bd3280fa7acbf1a0be568815
  
  	int activeColorCount;
  	int workerCount;
+diff --git a/src/world_snapshot.c b/src/world_snapshot.c
+index 9efaee9fd8d863e6f4064cc4908bc7d302a530ca..cc1bdd09473e1dd60a8a07198e8aa3c4f71e59d3 100644
+--- a/src/world_snapshot.c
++++ b/src/world_snapshot.c
+@@ -1317,6 +1317,7 @@ bool b3DeserializeIntoShell( const uint8_t* data, int size, b3World* world, b3Re
+ 		b3DesPodArray( r, bp->moveArray );
+ 
+ 		b3DesHashSet( r, &bp->pairSet );
++		bp->pairSetRevision += 1;
+ 		// Transient moveResults/movePairs stay at shell's NULL/0
+ 	}
+ 
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
 index bf561bfab824cb1b46c8acdef111f0f004cf2d76..74dbc6e6a3bea979d9ba53cd20c5ed1e6af18bc6 100644
 --- a/test/CMakeLists.txt
@@ -8956,10 +9222,10 @@ index bd00ecb5a3542c885e1212eddfa82b99852c394d..93e58e2dafcad8f8967efe2fcf4d6aff
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..958fa75d1eee71a0cb0d575e079cc3670cdd6e58
+index 0000000000000000000000000000000000000000..c33f3eddf91d6570543bd767bfc0c09203d31e55
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,1855 @@
+@@ -0,0 +1,1926 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -9018,6 +9284,11 @@ index 0000000000000000000000000000000000000000..958fa75d1eee71a0cb0d575e079cc367
 +	const b3Shape* targetShape = capture->world->shapes.data + targetShapeIndex;
 +	if ( queryShape->bodyId == targetShape->bodyId || queryShape->sensorIndex != B3_NULL_INDEX ||
 +		 targetShape->sensorIndex != B3_NULL_INDEX || b3ShouldShapesCollide( queryShape->filter, targetShape->filter ) == false )
++	{
++		return true;
++	}
++	if ( targetShape->type != b3_compoundShape &&
++		 b3ContainsKey( &capture->broadPhase->pairSet, b3ShapePairKey( targetShapeIndex, capture->queryShapeIndex, 0 ) ) )
 +	{
 +		return true;
 +	}
@@ -9455,6 +9726,7 @@ index 0000000000000000000000000000000000000000..958fa75d1eee71a0cb0d575e079cc367
 +	ENSURE( stats.commandBufferCount == 1 );
 +	ENSURE( stats.treeUploadCount == 1 );
 +	ENSURE( stats.metadataUploadCount == 1 );
++	ENSURE( stats.pairSetUploadCount == 1 );
 +	double initialGpuMilliseconds = stats.gpuMilliseconds;
 +	stats = (b3MetalDispatchStats){ 0 };
 +	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount,
@@ -9462,6 +9734,7 @@ index 0000000000000000000000000000000000000000..958fa75d1eee71a0cb0d575e079cc367
 +	ENSURE( stats.commandBufferCount == 1 );
 +	ENSURE( stats.treeUploadCount == 0 );
 +	ENSURE( stats.metadataUploadCount == 0 );
++	ENSURE( stats.pairSetUploadCount == 0 );
 +	double steadyGpuMilliseconds = stats.gpuMilliseconds;
 +
 +	int cpuCapacity = bodyCount * bodyCount;
@@ -9537,11 +9810,74 @@ index 0000000000000000000000000000000000000000..958fa75d1eee71a0cb0d575e079cc367
 +		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
 +	ENSURE( stats.treeUploadCount == 1 );
 +	ENSURE( stats.metadataUploadCount == 1 );
++	ENSURE( stats.pairSetUploadCount == 0 );
 +	ENSURE( VerifyResidentPairTraversal( world ) == 0 );
 +	printf( "    pair traversal moves=%d candidates=%d initial=%.3f ms steady=%.3f ms exactOrder=yes\n", moveCount,
 +		gpuCandidateCount, initialGpuMilliseconds, steadyGpuMilliseconds );
 +
 +	free( cpuCandidates );
++	b3DestroyWorld( worldId );
++	return 0;
++}
++
++static int MetalExistingPairFilterTest( void )
++{
++	b3WorldDef worldDef = b3DefaultWorldDef();
++	worldDef.gravity = b3Vec3_zero;
++	worldDef.enableSleep = false;
++	b3WorldId worldId = b3CreateWorld( &worldDef );
++	ENSURE( b3World_EnableMetal( worldId, 1 ) );
++	ENSURE( b3World_SetMetalBroadPhase( worldId, true ) );
++	b3ShapeDef shapeDef = b3DefaultShapeDef();
++	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
++	b3BodyDef bodyDef = b3DefaultBodyDef();
++	bodyDef.type = b3_dynamicBody;
++	bodyDef.enableSleep = false;
++	bodyDef.position = (b3Pos){ -0.25f, 0.0f, 0.0f };
++	b3BodyId bodyA = b3CreateBody( worldId, &bodyDef );
++	b3ShapeId shapeA = b3CreateSphereShape( bodyA, &shapeDef, &sphere );
++	bodyDef.position = (b3Pos){ 0.25f, 0.0f, 0.0f };
++	b3BodyId bodyB = b3CreateBody( worldId, &bodyDef );
++	b3ShapeId shapeB = b3CreateSphereShape( bodyB, &shapeDef, &sphere );
++	b3World* world = b3GetWorldFromId( worldId );
++	b3BroadPhase* broadPhase = &world->broadPhase;
++	const b3MetalPairQueryRecord* records = NULL;
++	const b3MetalPairCandidate* candidates = NULL;
++	int candidateCount = 0;
++	b3MetalDispatchStats stats = { 0 };
++	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data,
++		broadPhase->moveArray.count, &records, &candidates, &candidateCount, &stats ) );
++	ENSURE( candidateCount == 1 );
++	ENSURE( stats.pairSetUploadCount == 1 );
++
++	b3World_Step( worldId, 1.0f / 60.0f, 1 );
++	ENSURE( broadPhase->pairSet.count == 1 );
++	int shapeIndexA = shapeA.index1 - 1;
++	int shapeIndexB = shapeB.index1 - 1;
++	b3BufferMove( broadPhase, world->shapes.data[shapeIndexA].proxyKey );
++	b3BufferMove( broadPhase, world->shapes.data[shapeIndexB].proxyKey );
++	stats = (b3MetalDispatchStats){ 0 };
++	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data,
++		broadPhase->moveArray.count, &records, &candidates, &candidateCount, &stats ) );
++	ENSURE( candidateCount == 0 );
++	ENSURE( stats.pairSetUploadCount == 1 );
++	ENSURE( VerifyResidentPairTraversal( world ) == 0 );
++
++	b3Filter disabledFilter = b3DefaultFilter();
++	disabledFilter.maskBits = 0;
++	b3Shape_SetFilter( shapeB, disabledFilter, true );
++	ENSURE( broadPhase->pairSet.count == 0 );
++	b3Shape_SetFilter( shapeB, b3DefaultFilter(), false );
++	b3BufferMove( broadPhase, world->shapes.data[shapeIndexA].proxyKey );
++	b3BufferMove( broadPhase, world->shapes.data[shapeIndexB].proxyKey );
++	stats = (b3MetalDispatchStats){ 0 };
++	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data,
++		broadPhase->moveArray.count, &records, &candidates, &candidateCount, &stats ) );
++	ENSURE( candidateCount == 1 );
++	ENSURE( stats.pairSetUploadCount == 1 );
++	ENSURE( stats.metadataUploadCount == 1 );
++	printf( "    existing pair filter contacts=1 suppressed=1 restored=%d uploads=stable\n", candidateCount );
++
 +	b3DestroyWorld( worldId );
 +	return 0;
 +}
@@ -10799,6 +11135,7 @@ index 0000000000000000000000000000000000000000..958fa75d1eee71a0cb0d575e079cc367
 +	RUN_SUBTEST( MetalFusedIntegrationTest );
 +	RUN_SUBTEST( MetalFinalizationTest );
 +	RUN_SUBTEST( MetalPairTraversalTest );
++	RUN_SUBTEST( MetalExistingPairFilterTest );
 +	RUN_SUBTEST( MetalPairTraversalFallbackTest );
 +	RUN_SUBTEST( MetalShapeCompactionTest );
 +	RUN_SUBTEST( MetalShapeInputRegistryTest );

@@ -45,6 +45,7 @@ for review.
 - [GPU pair generation](benchmarks/m4-pro-pair-generation-2026-09-02.md)
 - [On-device pair compaction](benchmarks/m4-pro-pair-prefix-2026-09-02.md)
 - [Resident pair filtering](benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md)
+- [Resident existing-pair suppression](benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md)
 - [Enlarged-shape compaction](benchmarks/m4-pro-shape-compaction-2026-09-02.md)
 - [Private shape results](benchmarks/m4-pro-private-shape-results-2026-09-02.md)
 - [Persistent shape-input registry](benchmarks/m4-pro-shape-input-registry-2026-09-02.md)

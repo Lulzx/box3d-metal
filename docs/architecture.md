@@ -122,7 +122,10 @@ first call grows the buffer and submits one write-only retry. Supported moving
 worlds reuse the resident topology. A revisioned 32-byte-per-shape table rejects
 same-body pairs, sensors, and group/category/mask failures during both traversal
 passes. Creation, destruction, and filter mutation refresh it; stable steps do
-not repack it. Accepted candidates still return to the CPU.
+not repack it. A revisioned mirror of Erin's 16-byte open-addressed pair set
+uses the same key, hash finalizer, and linear probing to suppress existing
+non-compound contacts. Compound parents bypass the lookup because their keys
+include child ids. Accepted candidates still return to the CPU.
 Each per-move record carries the resident query leaf's shape id and fat
 AABB, so CPU filtering no longer dereferences the CPU tree for query metadata.
 After a successful device refit, a 256-lane hierarchical scan stably compacts
@@ -151,7 +154,6 @@ failure reject reuse. A rejected registry synchronizes stale CPU mirrors before
 repacking from the CPU oracle. `shapeInputPackCount` and
 `shapeInputReuseCount` expose the routes.
 
-Existing-contact suppression, compound child traversal, joint collision
-overrides, custom callbacks, and deterministic contact creation remain in the
-CPU callback. It deliberately repeats the GPU predicates as a fail-closed
-oracle.
+After existing-contact suppression, ordinary candidates go directly to CPU
+joint/custom checks and move-pair append. Compounds retain the complete CPU
+child callback, and deterministic contact creation remains CPU-owned.

@@ -14,8 +14,9 @@ awake-shape AABBs. A second experimental opt-in traverses Box3D's existing
 dynamic trees and performs deterministic candidate compaction on Metal,
 preserving upstream candidate order. Resident moved-proxy marks and shape
 metadata reject self/duplicate, same-body, sensor, and built-in filter pairs;
-the unchanged CPU callback remains the oracle for existing contacts, compounds,
-joints, custom filters, and contact creation. Unchanged tree snapshots remain in persistent Metal storage, while
+a revisioned mirror of Box3D's pair set suppresses existing non-compound
+contacts. Compounds, joints, custom filters, and contact creation retain the CPU
+path. Unchanged tree snapshots remain in persistent Metal storage, while
 supported shape motion now updates leaves and refits internal bounds on-device.
 Enlarged proxy bookkeeping consumes a stable GPU-compacted subset rather than
 rescanning every result or walking body shape lists again.
@@ -89,6 +90,8 @@ The persistent-input checkpoint likewise publishes route/correctness evidence
 only because the host remained loaded.
 The resident pair-filter checkpoint publishes exact-order correctness and
 metadata-residency evidence only; the host was still loaded.
+The existing-pair checkpoint likewise publishes lifecycle and residency
+evidence only, not timing from the loaded host.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.
