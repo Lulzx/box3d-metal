@@ -83,10 +83,12 @@ CPU shapes for current public-query, mesh-contact, sensor, CCD, and fallback
 consumers.
 
 The 64-byte result allocation itself is `MTLStorageModePrivate`. On the bounded
-resident route—continuous collision disabled, no sensors or existing contacts,
-and every awake shape masking out contacts—the command buffer does not encode a
-full result blit and the CPU does not execute the flat apply task. The shared
-handoff is only the stable 32-byte enlarged subset. `b3Shape_GetAABB` and
+resident route—continuous collision disabled, no sensors, and either every
+awake shape masking out contacts or the current collision phase proving complete
+zero-exception resident convex coverage with the Metal broad phase—the command
+buffer does not encode a full result blit and the CPU does not execute the flat
+apply task. The shared handoff is only the stable 32-byte enlarged subset.
+`b3Shape_GetAABB` and
 `b3Body_ComputeAABB` stage individual 64-byte records on demand. Mutation,
 fallback-route expansion, finalization/broad-phase disable, and context disable
 perform a checked bulk synchronization; a failed blit keeps the Metal context
@@ -101,9 +103,10 @@ skips each pointer-linked CPU shape list whenever Metal produced a complete
 awake-shape result set. Compatibility routes apply the flat result after body
 bookkeeping; private routes leave the CPU AABB mirror stale until a query or
 fallback explicitly synchronizes it. `finalizationShapeTraversalBypassCount`
-reports those phases. On the unconstrained, sleep-disabled, non-CCD route, the
-entire contiguous CPU body bookkeeping walk is also omitted; constrained and
-compatibility routes retain it.
+reports those phases. On the unconstrained route and the contact-only route with
+complete resident sphere/capsule/hull-sphere collision and preparation coverage,
+the entire contiguous CPU body bookkeeping walk is also omitted. Mesh, overflow,
+joint, callback, hit-event, topology-exception, sleep, and CCD routes retain it.
 
 The 72-byte shape-input records are also persistent across revision-stable
 steps. Every awake-set membership or ordering mutation advances a monotonic
@@ -151,9 +154,10 @@ continues directly into shape AABB generation and tree refit.
 `lastFinalizationReadbackBytes` reports the retained transfer and
 `finalizationReadbackBypassCount` reports successful zero-readback steps. This
 removes the 100-byte-per-body finalization stream on the bounded route. The
-unconstrained resident route also retains the finalization-property centers,
-cleared forces/torques, inverse inertia, transient flags, and absolute body
-transforms on-device, so it omits the remaining CPU body traversal as well.
+unconstrained resident route and fully resident contact-only route also retain
+the finalization-property centers, cleared forces/torques, inverse inertia,
+transient flags, and absolute body transforms on-device, so they omit the
+remaining CPU body traversal as well.
 `finalizationBodyTraversalBypassCount` reports successful omissions.
 
 The same kernel now writes a 72-byte private move-event record in deterministic
@@ -181,9 +185,13 @@ step, so the next collision pass can consume it without repacking CPU body
 sims. `narrowPhaseTransformDeviceRefreshCount` exposes the device updates.
 Explicit transforms, topology changes, unsupported routes, sleeping, and CCD
 fail closed through the existing revision/step checks. On the bounded
-unconstrained route this registry is also the authority for lazy public body
-transforms: the first CPU consumer reconstructs the awake `b3BodySim` mirror
-once, while unobserved steps perform no CPU body walk.
+unconstrained and fully resident contact-only routes this registry is also the
+authority for lazy public body transforms: the first CPU consumer reconstructs
+the awake `b3BodySim` mirror once, while unobserved steps perform no CPU body
+walk. A stable cached contact-input revision lets collision consume that registry
+without first touching the stale CPU sim array; a registry rebuild, Metal
+failure, or compacted CPU exception synchronizes body sims and shape bounds
+before Erin's collision task runs.
 
 The same bounded finalization kernel resets resident solver position/rotation
 deltas and transient state flags after publishing their absolute transform and
@@ -196,20 +204,19 @@ or CPU-solver mutation. A matching count and revision omit the CPU-to-device
 state copy; a mismatch performs the full upload. This removes the former
 whole-array `memcmp` from stable steps. `bodyStateUploadCount`,
 `bodyStateReuseCount`, `lastBodyStateUploadBytes`, and
-`bodyStateRevisionCheckCount` expose the gate. On the bounded unconstrained,
-sleep-disabled, non-CCD route, the CPU finalization task now consumes the shared
-Metal state array directly and leaves it authoritative across steps. Public
-velocity queries, state mutations, awake-set topology changes, recording,
-Metal shutdown, and any constrained or unsupported solver route materialize the
-full awake array under a dedicated synchronization lock. This preserves
-multithreaded read-only query safety and fail-closed fallback behavior while
-removing the unconditional solved-state copy from the steady step.
+`bodyStateRevisionCheckCount` expose the gate. On the bounded unconstrained and
+fully resident contact-only, sleep-disabled, non-CCD routes, the private Metal
+state array remains authoritative across steps. Public velocity queries, state
+mutations, awake-set topology changes, recording, Metal shutdown, and any CPU
+collision/solver route materialize the full awake array under a dedicated
+synchronization lock. This preserves multithreaded read-only query safety and
+fail-closed fallback behavior while removing the unconditional solved-state copy
+from the steady step.
 `bodyStateSyncCount` and `lastBodyStateReadbackBytes` expose those lazy
-boundaries. Constrained Metal solves still copy solved states eagerly because
-their remaining CPU preparation stages consume the mirror.
+boundaries. Mixed constrained Metal solves still copy solved states eagerly.
 
 The awake `b3BodySim` array follows the same ownership rule on the bounded
-unconstrained route. Device finalization advances its resident center in VF64
+unconstrained and fully resident contact-only routes. Device finalization advances its resident center in VF64
 binary64 when enabled, publishes the absolute transform and sleep metric,
 updates inverse inertia, and clears force, torque, and transient state. Public
 transform/property consumers and route changes reconstruct the full CPU mirror
@@ -557,3 +564,6 @@ loaded-host whole-world signal are recorded in
 [`benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md`](benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md).
 The follow-on removal of the steady awake-body ID scan is recorded in
 [`benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md`](benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md).
+Fully resident convex-contact state, sim, shape-bound, and body-finalization
+ownership is recorded in
+[`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).

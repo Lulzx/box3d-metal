@@ -1304,7 +1304,7 @@ static int* b3GatherAwakeContactIndices( b3World* world, int touchingCount, int 
 }
 
 // Narrow-phase collision
-static void b3Collide( b3StepContext* context )
+static bool b3Collide( b3StepContext* context )
 {
 	b3World* world = context->world;
 
@@ -1334,13 +1334,21 @@ static void b3Collide( b3StepContext* context )
 	if ( contactCount == 0 )
 	{
 		b3TracyCZoneEnd( collide );
-		return;
+		return true;
 	}
 
 	int* contactIndices = NULL;
 #if defined( BOX3D_METAL )
 	bool reuseContactInputs = world->metalContext != NULL && contactCount >= world->metalMinimumBodyCount &&
 							  b3MetalCanReuseConvexManifoldInputs( world->metalContext, world, contactCount );
+	// Packing a new manifold input registry consults the CPU body-sim mirror for
+	// fast-body eligibility. Stable resident contacts skip that pack entirely.
+	if ( reuseContactInputs == false && b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 &&
+		 b3MaterializeBodySims( world ) == false )
+	{
+		b3TracyCZoneEnd( collide );
+		return false;
+	}
 	if ( reuseContactInputs == false )
 #endif
 	{
@@ -1410,6 +1418,21 @@ static void b3Collide( b3StepContext* context )
 	int minRange = 20;
 	if ( cpuContactCount > 0 )
 	{
+#if defined( BOX3D_METAL )
+		// CPU collision reads body transforms and shape fat bounds. A resident
+		// dispatch may still emit deterministic exceptions, so materialize only
+		// after the exception count is known and before the first CPU consumer.
+		if ( b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 && b3MaterializeBodySims( world ) == false )
+		{
+			b3TracyCZoneEnd( collide );
+			return false;
+		}
+		if ( world->metalShapeCpuBoundsStale && b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
+		{
+			b3TracyCZoneEnd( collide );
+			return false;
+		}
+#endif
 		// Contact bits are indexed by id because contact pointers may move during
 		// state transitions. Defer this capacity-linear clear until CPU collision
 		// work actually exists; stable resident phases leave the stale bits
@@ -1591,12 +1614,15 @@ static void b3Collide( b3StepContext* context )
 
 #if defined( BOX3D_METAL )
 	context->metalResidentConvexCoverageProven = metalCollisionDispatched && touchingConvexCount > 0 &&
-												 metalResidentBypassCount == touchingConvexCount &&
-												 world->constraintGraph.revision == metalCollisionGraphRevision;
+											 metalResidentBypassCount == touchingConvexCount &&
+											 world->constraintGraph.revision == metalCollisionGraphRevision;
+	context->metalFullyResidentConvexContacts = context->metalResidentConvexCoverageProven && cpuContactCount == 0 &&
+										 touchingCount == touchingConvexCount;
 #endif
 
 	b3TracyCZoneEnd( contact_state );
 	b3TracyCZoneEnd( collide );
+	return true;
 }
 
 void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
@@ -1608,11 +1634,18 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	}
 
 #if defined( BOX3D_METAL )
-	if ( b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 &&
-		 ( world->metalContext == NULL || world->metalFinalizationEnabled == false || world->enableSleep ||
-		   world->enableContinuous || b3GetIdCount( &world->contactIdPool ) != 0 || world->sensors.count != 0 ||
-		   b3GetIdCount( &world->jointIdPool ) != 0 ||
-		   world->solverSets.data[b3_awakeSet].bodySims.count < world->metalMinimumBodyCount ) )
+	int residentContactCount = b3GetIdCount( &world->contactIdPool );
+	bool canReuseResidentContactInputs = world->metalContext != NULL && world->metalFinalizationEnabled &&
+		world->metalBroadPhaseEnabled && world->enableSleep == false && world->enableContinuous == false &&
+		world->sensors.count == 0 && residentContactCount > 0 &&
+		world->solverSets.data[b3_awakeSet].bodySims.count >= world->metalMinimumBodyCount &&
+		b3MetalCanReuseConvexManifoldInputs( world->metalContext, world, residentContactCount );
+	bool canPreserveUnconstrainedSims = world->metalContext != NULL && world->metalFinalizationEnabled &&
+		world->enableSleep == false && world->enableContinuous == false && residentContactCount == 0 &&
+		world->sensors.count == 0 && b3GetIdCount( &world->jointIdPool ) == 0 &&
+		world->solverSets.data[b3_awakeSet].bodySims.count >= world->metalMinimumBodyCount;
+	if ( b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 && canReuseResidentContactInputs == false &&
+		 canPreserveUnconstrainedSims == false )
 	{
 		if ( b3MaterializeBodySims( world ) == false )
 		{
@@ -1625,7 +1658,7 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	// closed before the next step can consume those mirrors.
 	if ( world->metalShapeCpuBoundsStale &&
 		 ( world->broadPhase.treeRevision != world->metalShapeCpuStaleRevision || world->enableContinuous ||
-		   world->contacts.count != 0 || world->sensors.count != 0 ) )
+		   world->sensors.count != 0 || ( world->contacts.count != 0 && canReuseResidentContactInputs == false ) ) )
 	{
 		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
 		{
@@ -1695,19 +1728,6 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 		world->profile.pairs = b3GetMilliseconds( pairTicks );
 	}
 
-#if defined( BOX3D_METAL )
-	if ( b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 &&
-		 ( b3GetIdCount( &world->contactIdPool ) != 0 || world->sensors.count != 0 ) )
-	{
-		if ( b3MaterializeBodySims( world ) == false )
-		{
-			world->locked = false;
-			b3Log( "Box3D Metal collision skipped because body-sim readback failed\n" );
-			return;
-		}
-	}
-#endif
-
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
 
 	b3StepContext context = { 0 };
@@ -1744,7 +1764,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	// Narrow phase : update contacts
 	{
 		uint64_t collideTicks = b3GetTicks();
-		b3Collide( &context );
+		if ( b3Collide( &context ) == false )
+		{
+			world->locked = false;
+			b3Log( "Box3D Metal collision skipped because resident mirror materialization failed\n" );
+			return;
+		}
 		world->profile.collide = b3GetMilliseconds( collideTicks );
 	}
 

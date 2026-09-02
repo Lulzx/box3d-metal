@@ -111,7 +111,7 @@ typedef struct b3MetalProfile
 	/// because Metal shape results covered every awake shape.
 	uint64_t finalizationShapeTraversalBypassCount;
 	/// Complete per-body CPU finalization walks omitted because Metal owns every
-	/// required output on the bounded unconstrained route.
+	/// required output on the bounded unconstrained or fully resident convex-contact route.
 	uint64_t finalizationBodyTraversalBypassCount;
 	/// Finalization phases that authored a deterministic private move-event
 	/// stream in awake-sim order.

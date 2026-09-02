@@ -36,9 +36,10 @@ and directed float AABB narrowing on Metal. Across unchanged resident steps,
 the prior Metal fat bounds are now the authoritative containment input; any
 CPU tree revision invalidates that state and reseeds it from the CPU oracle.
 The full 64-byte shape result now lives in private Metal storage. Collision-free
-non-CCD worlds with contact masks disabled do not blit or apply that stream;
-public AABB queries stage only the requested 64-byte record, while route changes
-and Metal disable synchronize the remaining results explicitly.
+non-CCD worlds with contact masks disabled, and stable fully resident convex-contact
+worlds using the Metal broad phase, do not blit or apply that stream; public AABB
+queries stage only the requested 64-byte record, while route changes and Metal
+disable synchronize the remaining results explicitly.
 Revision-stable steps also reuse the persistent 72-byte shape-input registry:
 a monotonic awake-order revision protects each cached body index in constant
 time, so stable steps neither scan body ids nor repack geometry, filters, proxy
@@ -49,14 +50,15 @@ move events into private Metal storage. Public event queries lazily materialize
 only that 72-byte-per-body stream; unqueried steps perform no move-event
 readback. VF64 builds preserve the exact device-authored binary64 translation
 through this public boundary.
-For unconstrained worlds on that same bounded route, the complete per-body CPU
-finalization walk is omitted. Absolute transforms, centers, inverse inertia,
-cleared forces/torques, transient flags, move events, shape bounds, and tree
-refit remain authoritative in Metal storage across steps. Public transform or
-body-property access, topology mutation, recording, unsupported constraints,
-sleep/CCD enablement, and Metal shutdown lazily synchronize the CPU body-sim
-mirror once. Profile counters distinguish traversal bypasses from those
-explicit synchronization boundaries.
+For unconstrained worlds and stable fully resident sphere/capsule/hull-sphere
+contact worlds on that same bounded route, the complete per-body CPU finalization
+walk is omitted. Absolute transforms, centers, inverse inertia, cleared
+forces/torques, transient flags, move events, shape bounds, and tree refit remain
+authoritative in Metal storage across steps. Public transform or body-property
+access, topology or eligibility mutation, a collision exception, recording,
+unsupported constraints, sleep/CCD enablement, and Metal shutdown lazily
+synchronize the CPU mirrors once. Profile counters distinguish traversal
+bypasses from those explicit synchronization boundaries.
 The shape-specialized narrow-phase route batches sphere-sphere, capsule-sphere,
 capsule-capsule, and bounded compact hull-sphere manifold geometry in one Metal
 dispatch. Supported spheres, capsules, and compact hulls live in a revisioned

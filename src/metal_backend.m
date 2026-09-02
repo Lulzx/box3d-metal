@@ -2993,8 +2993,9 @@ static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepC
 	{
 		stepContext->metalShapeBoundsResident = true;
 		stepContext->metalShapeFinalizationComplete = true;
-		stepContext->metalDeferShapeResultApply = world->enableContinuous == false && world->contacts.count == 0 &&
-			world->sensors.count == 0 && context->shapeInputAllMasksDisabled;
+		stepContext->metalDeferShapeResultApply = world->enableContinuous == false && world->sensors.count == 0 &&
+			( context->shapeInputAllMasksDisabled ||
+			  ( world->metalBroadPhaseEnabled && stepContext->metalFullyResidentConvexContacts ) );
 		stepContext->metalTreeRefitEligible = treeRefitEligible;
 		world->metalShapeInputReuseCount += 1;
 		return context->shapeInputCount;
@@ -3091,8 +3092,8 @@ static int b3MetalPackShapeInputs( b3MetalContext* context, b3StepContext* stepC
 	context->shapeInputAllMasksDisabled = allMasksDisabled;
 	context->shapeInputCacheValid = true;
 	stepContext->metalShapeFinalizationComplete = true;
-	stepContext->metalDeferShapeResultApply = world->enableContinuous == false && world->contacts.count == 0 &&
-		world->sensors.count == 0 && allMasksDisabled;
+	stepContext->metalDeferShapeResultApply = world->enableContinuous == false && world->sensors.count == 0 &&
+		( allMasksDisabled || ( world->metalBroadPhaseEnabled && stepContext->metalFullyResidentConvexContacts ) );
 	stepContext->metalTreeRefitEligible = treeRefitEligible;
 	world->metalShapeInputPackCount += 1;
 	return shapeCount;
@@ -5513,9 +5514,22 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 				(uint64_t)stepContext->world->metalLastResidentConvexContactCount * sizeof( b3MetalContactImpulseResult );
 		}
 
-		memcpy( stepContext->states, context->bodyStateBuffer.contents, stateBytes );
-		b3AtomicStoreInt( &stepContext->world->metalBodyStateCpuStale, 0 );
-		stepContext->world->metalLastBodyStateReadbackBytes = stateBytes;
+		bool keepBodyStatesResident = publishBodyTransforms && stepContext->metalFullyResidentConvexContacts &&
+			prepareContactsOnGpu && stepContext->contactConstraintCount == 0 &&
+			stepContext->overflowContactConstraintCount == 0 && stepContext->jointConstraintCount == 0 &&
+			stepContext->overflowJointConstraintCount == 0;
+		if ( keepBodyStatesResident )
+		{
+			stepContext->states = context->bodyStateBuffer.contents;
+			b3AtomicStoreInt( &stepContext->world->metalBodyStateCpuStale, 1 );
+			stepContext->world->metalLastBodyStateReadbackBytes = 0;
+		}
+		else
+		{
+			memcpy( stepContext->states, context->bodyStateBuffer.contents, stateBytes );
+			b3AtomicStoreInt( &stepContext->world->metalBodyStateCpuStale, 0 );
+			stepContext->world->metalLastBodyStateReadbackBytes = stateBytes;
+		}
 		if ( finalizeBodies )
 		{
 			if ( omitFinalizeReadback )

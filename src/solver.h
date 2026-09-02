@@ -283,6 +283,10 @@ typedef struct b3StepContext
 	bool metalResidentConvexComplete;
 	bool metalResidentConvexHasRestitution;
 	bool metalResidentConvexCoverageProven;
+	// Collision emitted no CPU exceptions and every touching constraint is a
+	// resident convex contact. This authorizes the bounded contact-only solver
+	// and finalization path to keep body/state/shape mirrors stale.
+	bool metalFullyResidentConvexContacts;
 	bool metalPrepareConvexOnGpu;
 	bool metalHitEventBitSetClearDeferred;
 

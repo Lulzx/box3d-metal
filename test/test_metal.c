@@ -1459,9 +1459,12 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.gravity = b3Vec3_zero;
 	worldDef.enableSleep = false;
+	worldDef.enableContinuous = false;
 	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
 	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( gpuWorld, true ) );
+	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, true ) );
 	b3World_SetContactRecycleDistance( cpuWorld, 0.0f );
 	b3World_SetContactRecycleDistance( gpuWorld, 0.0f );
 	b3ShapeDef staticShapeDef = b3DefaultShapeDef();
@@ -1511,6 +1514,28 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 		b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
 		b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
 	}
+	b3World* gpuWorldInternal = b3GetWorldFromId( gpuWorld );
+	b3MetalProfile residentProfile = b3World_GetMetalProfile( gpuWorld );
+	printf( "    full resident contact pre-query bodyWalks=%llu shapeApplies=%llu state=%llu/%llu sim=%llu stale=%d/%d\n",
+		(unsigned long long)residentProfile.finalizationBodyTraversalBypassCount,
+		(unsigned long long)residentProfile.shapeResultApplyCount,
+		(unsigned long long)residentProfile.bodyStateSyncCount,
+		(unsigned long long)residentProfile.lastBodyStateReadbackBytes,
+		(unsigned long long)residentProfile.bodySimSyncCount,
+		b3AtomicLoadInt( &gpuWorldInternal->metalBodyStateCpuStale ),
+		b3AtomicLoadInt( &gpuWorldInternal->metalBodySimCpuStale ) );
+	ENSURE( residentProfile.finalizationBodyTraversalBypassCount == 3 );
+	ENSURE( residentProfile.shapeResultApplyCount == 1 );
+	ENSURE( residentProfile.bodyStateSyncCount == 0 );
+	ENSURE( residentProfile.lastBodyStateReadbackBytes == 0 );
+	ENSURE( residentProfile.bodySimSyncCount == 0 );
+	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodyStateCpuStale ) != 0 );
+	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodySimCpuStale ) != 0 );
+	b3AABB cpuResidentAABB = b3Shape_GetAABB( cpuDynamicShapes[count - 1] );
+	b3AABB gpuResidentAABB = b3Shape_GetAABB( gpuDynamicShapes[count - 1] );
+	ENSURE( b3World_GetMetalProfile( gpuWorld ).shapeBoundsSyncCount == 1 );
+	ENSURE( b3Length( b3Sub( cpuResidentAABB.lowerBound, gpuResidentAABB.lowerBound ) ) <= 3.0e-4f );
+	ENSURE( b3Length( b3Sub( cpuResidentAABB.upperBound, gpuResidentAABB.upperBound ) ) <= 3.0e-4f );
 	float maxTransformError = 0.0f;
 	float maxVelocityError = 0.0f;
 	for ( int i = 0; i < count; ++i )
@@ -1527,6 +1552,12 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 																		  b3Body_GetAngularVelocity( gpuBodies[i] ) ) ) );
 	}
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( profile.finalizationBodyTraversalBypassCount == 3 );
+	ENSURE( profile.shapeResultApplyCount == 1 );
+	ENSURE( profile.bodyStateSyncCount == 1 );
+	ENSURE( profile.lastBodyStateReadbackBytes == (uint64_t)count * sizeof( b3BodyState ) );
+	ENSURE( profile.bodySimSyncCount == 1 );
+	ENSURE( profile.lastBodySimSyncCount == count );
 	printf( "    resident contact prepare contacts=%d dispatches=%llu deviceRefreshes=%llu collisionCpu=%llu lastExceptions=%llu "
 			"inputs=%llu/%llu/%llu coverage=%llu stateWalks=%llu/%llu hitClears=%llu/%llu awakeIslandClears=%llu/%llu "
 			"schedule=%llu/%llu indexBytes=%llu "

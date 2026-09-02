@@ -1997,9 +1997,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 				break;
 			}
 		}
+		bool residentContactOnly = stepContext->metalFullyResidentConvexContacts;
+		for ( int i = 0; residentContactOnly && i < B3_GRAPH_COLOR_COUNT; ++i )
+		{
+			const b3GraphColor* color = world->constraintGraph.colors + i;
+			residentContactOnly = color->contacts.count == 0 && color->jointSims.count == 0;
+		}
 		bool preserveResidentState = world->metalContext != NULL && world->metalFinalizationEnabled &&
 			world->enableSleep == false && world->enableContinuous == false &&
-			awakeBodyCount >= world->metalMinimumBodyCount && hasConstraints == false;
+			awakeBodyCount >= world->metalMinimumBodyCount && ( hasConstraints == false || residentContactOnly );
 		if ( preserveResidentState == false )
 		{
 			if ( b3MaterializeBodyStates( world ) == false )
@@ -2022,9 +2028,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 				break;
 			}
 		}
+		bool residentContactOnly = stepContext->metalFullyResidentConvexContacts;
+		for ( int i = 0; residentContactOnly && i < B3_GRAPH_COLOR_COUNT; ++i )
+		{
+			const b3GraphColor* color = world->constraintGraph.colors + i;
+			residentContactOnly = color->contacts.count == 0 && color->jointSims.count == 0;
+		}
 		bool preserveResidentSims = world->metalContext != NULL && world->metalFinalizationEnabled &&
 			world->enableSleep == false && world->enableContinuous == false &&
-			awakeBodyCount >= world->metalMinimumBodyCount && hasSimConstraints == false;
+			awakeBodyCount >= world->metalMinimumBodyCount && ( hasSimConstraints == false || residentContactOnly );
 		if ( preserveResidentSims == false && b3MaterializeBodySims( world ) == false )
 		{
 			b3Log( "Box3D Metal solve skipped because body-sim readback failed\n" );
@@ -2612,7 +2624,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		b3GraphColor* finalizationOverflow = world->constraintGraph.colors + B3_OVERFLOW_INDEX;
 		bool noConstraints = stepContext->activeColorCount == 0 && finalizationOverflow->convexContacts.count == 0 &&
 			finalizationOverflow->contacts.count == 0 && finalizationOverflow->jointSims.count == 0;
-		bool bypassBodyFinalization = noConstraints && world->enableSleep == false && world->enableContinuous == false &&
+		bool residentContactOnly = stepContext->metalFullyResidentConvexContacts;
+		for ( int i = 0; residentContactOnly && i < B3_GRAPH_COLOR_COUNT; ++i )
+		{
+			const b3GraphColor* color = world->constraintGraph.colors + i;
+			residentContactOnly = color->contacts.count == 0 && color->jointSims.count == 0;
+		}
+		bool bypassBodyFinalization = ( noConstraints || residentContactOnly ) && world->enableSleep == false &&
+			world->enableContinuous == false &&
 			stepContext->metalFinalizationDeviceOnly && stepContext->metalBodyStatesFinalizedOnDevice &&
 			stepContext->metalBodyMoveEventsOnDevice && stepContext->metalShapeFinalizationComplete;
 		if ( bypassBodyFinalization )
