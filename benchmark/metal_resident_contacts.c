@@ -94,7 +94,8 @@ int main( void )
 			"sim_syncs,last_sim_count,shape_syncs,"
 			"schedule_packs,schedule_reuses,store_bypasses,event_syncs,public_syncs,index_bytes,prior_stream_bytes,impulse_bytes,"
 			"prior_impulse_bytes,resident_pair_moves,enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,"
-			"last_pair_move_upload_bytes,pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,"
+			"last_pair_move_upload_bytes,last_pair_tree_upload_bytes,last_pair_tree_private_bytes,"
+			"pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,"
 			"last_pair_cpu_filter_candidates,last_pair_direct_create_candidates,pair_contact_seed_dispatches,"
 			"pair_record_traversal_bypasses,last_pair_contact_seed_count,last_pair_contact_seed_bytes,"
 			"pair_private_scratch_dispatches,last_pair_raw_shared_bytes\n" );
@@ -121,46 +122,54 @@ int main( void )
 		b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
 		uint64_t priorImpulseBytes = (uint64_t)profile.lastResidentConvexConstraintCount * 1696;
-		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%"
-				"llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%d,%d,%llu,%llu,%d,%d,%d,%llu,%llu,%d,%llu,%llu,%llu\n",
-				contactCount, repeats, cpuMs, gpuMs, cpuMs / gpuMs, (unsigned long long)profile.contactPrepareDispatchCount,
-				(unsigned long long)profile.contactPrepareDeviceRefreshCount,
-				(unsigned long long)profile.contactCollisionBypassCount, (unsigned long long)profile.contactCollisionCpuCount,
-				(unsigned long long)profile.lastContactCollisionExceptionCount,
-				(unsigned long long)profile.lastNarrowPhaseResultBytes, (unsigned long long)profile.contactInputPackCount,
-				(unsigned long long)profile.contactInputReuseCount, (unsigned long long)profile.lastContactInputBytes,
-				(unsigned long long)profile.contactCoverageBypassCount,
-				(unsigned long long)profile.contactStateTraversalBypassCount,
-				(unsigned long long)profile.lastContactStateBitSetBytes,
-				(unsigned long long)profile.contactHitEventBitSetClearBypassCount,
-				(unsigned long long)profile.lastContactHitEventBitSetBytes,
-				(unsigned long long)profile.awakeIslandBitSetClearBypassCount,
-				(unsigned long long)profile.lastAwakeIslandBitSetBytes,
-				(unsigned long long)profile.contactManifoldSyncCount,
-				(unsigned long long)profile.finalizationBodyTraversalBypassCount,
-				(unsigned long long)profile.shapeResultApplyCount,
-				(unsigned long long)profile.bodyStateSyncCount,
-				(unsigned long long)profile.lastBodyStateReadbackBytes,
-				(unsigned long long)profile.bodySimSyncCount,
-				(unsigned long long)profile.lastBodySimSyncCount,
-				(unsigned long long)profile.shapeBoundsSyncCount,
-				(unsigned long long)profile.contactSchedulePackCount, (unsigned long long)profile.contactScheduleReuseCount,
-				(unsigned long long)profile.contactImpulseStoreBypassCount,
-				(unsigned long long)profile.contactImpulseEventSyncCount, (unsigned long long)profile.contactImpulseSyncCount,
-				(unsigned long long)profile.lastContactPrepareIndexBytes, (unsigned long long)priorBytes,
-				(unsigned long long)profile.lastContactImpulseResultBytes, (unsigned long long)priorImpulseBytes,
-				(unsigned long long)profile.residentPairMoveDispatchCount,
-				(unsigned long long)profile.enlargedShapeTraversalBypassCount,
-				profile.lastPairMoveCount, profile.lastPairCandidateCount,
-				(unsigned long long)profile.lastPairMoveUploadBytes,
-				(unsigned long long)profile.pairCpuCandidateTraversalBypassCount,
-				profile.lastPairCpuFilterMoveCount, profile.lastPairCpuFilterCandidateCount,
-				profile.lastPairDirectCreateCount,
-				(unsigned long long)profile.pairContactSeedDispatchCount,
-				(unsigned long long)profile.pairRecordTraversalBypassCount,
-				profile.lastPairContactSeedCount, (unsigned long long)profile.lastPairContactSeedBytes,
-				(unsigned long long)profile.pairPrivateScratchDispatchCount,
-				(unsigned long long)profile.lastPairRawSharedBytes );
+		printf( "%d,%d,%.6f,%.6f,%.3f", contactCount, repeats, cpuMs, gpuMs, cpuMs / gpuMs );
+		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+			(unsigned long long)profile.contactPrepareDispatchCount,
+			(unsigned long long)profile.contactPrepareDeviceRefreshCount,
+			(unsigned long long)profile.contactCollisionBypassCount, (unsigned long long)profile.contactCollisionCpuCount,
+			(unsigned long long)profile.lastContactCollisionExceptionCount,
+			(unsigned long long)profile.lastNarrowPhaseResultBytes, (unsigned long long)profile.contactInputPackCount,
+			(unsigned long long)profile.contactInputReuseCount, (unsigned long long)profile.lastContactInputBytes,
+			(unsigned long long)profile.contactCoverageBypassCount );
+		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+			(unsigned long long)profile.contactStateTraversalBypassCount,
+			(unsigned long long)profile.lastContactStateBitSetBytes,
+			(unsigned long long)profile.contactHitEventBitSetClearBypassCount,
+			(unsigned long long)profile.lastContactHitEventBitSetBytes,
+			(unsigned long long)profile.awakeIslandBitSetClearBypassCount,
+			(unsigned long long)profile.lastAwakeIslandBitSetBytes,
+			(unsigned long long)profile.contactManifoldSyncCount,
+			(unsigned long long)profile.finalizationBodyTraversalBypassCount,
+			(unsigned long long)profile.shapeResultApplyCount,
+			(unsigned long long)profile.bodyStateSyncCount );
+		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+			(unsigned long long)profile.lastBodyStateReadbackBytes,
+			(unsigned long long)profile.bodySimSyncCount,
+			(unsigned long long)profile.lastBodySimSyncCount,
+			(unsigned long long)profile.shapeBoundsSyncCount,
+			(unsigned long long)profile.contactSchedulePackCount, (unsigned long long)profile.contactScheduleReuseCount,
+			(unsigned long long)profile.contactImpulseStoreBypassCount,
+			(unsigned long long)profile.contactImpulseEventSyncCount, (unsigned long long)profile.contactImpulseSyncCount,
+			(unsigned long long)profile.lastContactPrepareIndexBytes );
+		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+			(unsigned long long)priorBytes, (unsigned long long)profile.lastContactImpulseResultBytes,
+			(unsigned long long)priorImpulseBytes, (unsigned long long)profile.residentPairMoveDispatchCount,
+			(unsigned long long)profile.enlargedShapeTraversalBypassCount,
+			(unsigned long long)profile.lastPairMoveCount, (unsigned long long)profile.lastPairCandidateCount,
+			(unsigned long long)profile.lastPairMoveUploadBytes,
+			(unsigned long long)profile.lastPairTreeUploadBytes,
+			(unsigned long long)profile.lastPairTreePrivateBytes );
+		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n",
+			(unsigned long long)profile.pairCpuCandidateTraversalBypassCount,
+			(unsigned long long)profile.lastPairCpuFilterMoveCount,
+			(unsigned long long)profile.lastPairCpuFilterCandidateCount,
+			(unsigned long long)profile.lastPairDirectCreateCount,
+			(unsigned long long)profile.pairContactSeedDispatchCount,
+			(unsigned long long)profile.pairRecordTraversalBypassCount,
+			(unsigned long long)profile.lastPairContactSeedCount,
+			(unsigned long long)profile.lastPairContactSeedBytes,
+			(unsigned long long)profile.pairPrivateScratchDispatchCount,
+			(unsigned long long)profile.lastPairRawSharedBytes );
 		b3DestroyWorld( gpuWorld );
 	}
 	return 0;
