@@ -12,15 +12,16 @@ Direct primitive tests separately cover packed state and integration kernels.
 - Position integration across 16,384 randomized states and flags.
 - Fused velocity/position integration across 8,192 bodies.
 - Body-finalization arithmetic across 4,096 randomized states and all 25 result floats.
-- Batched sphere/capsule geometry over 58 float contacts: 57 eligible records
-  cover 32 sphere-sphere, eight capsule-sphere, one authoritative separated
-  capsule-sphere, eight crossed one-point capsule-capsule, and eight parallel
-  two-point capsule-capsule contacts alongside one ineligible hull. Direct
-  CPU-oracle and end-to-end applied-manifold errors are `1.19e-7`; point count,
-  feature ids, and order match, and unchanged repeated output is byte-identical.
-- The double/VF64 route covers five eligible sphere/capsule records at a `1e12`
-  origin plus one ineligible hull. Direct error is `5.96e-8` and applied-manifold
-  error is `6.01e-8`.
+- Batched sphere/capsule/compact-hull geometry over 65 float contacts: 62 GPU
+  records cover the prior sphere/capsule routes plus compact hull-sphere face,
+  edge, corner, deep-overlap, and authoritative-separated cases. A compact
+  speculative hull-sphere, a high-aspect hull-sphere, and a hull-hull record
+  remain CPU-owned in the same batch. Direct CPU-oracle error is `1.79e-7`;
+  end-to-end applied-manifold error is `2.34e-7`; point count, feature ids, and
+  order match, and unchanged repeated output is byte-identical.
+- The double/VF64 route covers ten GPU records out of 13 contacts at a `1e12`
+  origin with the same fallback classes. Direct error is `1.79e-7` and
+  applied-manifold error is `2.19e-7`.
 - Integrated unconstrained worlds with 2,048 moving sphere, capsule, and hull AABBs.
 - Exact filtered pair traversal over 607 mixed bodies and 620 proxies, including
   same-body overlaps, sensors, zero masks, and equal positive/negative groups.
@@ -82,8 +83,8 @@ Direct primitive tests separately cover packed state and integration kernels.
 | Awake-shape AABBs | 3.81e-6 across all bound components |
 | VF64 far-world AABB containment | zero inward error across 2,048 mixed shapes |
 | Filtered pair candidates | 1,905/1,905 exact, including order |
-| Sphere/capsule manifold geometry | 1.19e-7 float; 5.96e-8 VF64 double |
-| End-to-end applied sphere/capsule manifold | 1.19e-7 float; 6.01e-8 VF64 double |
+| Sphere/capsule/compact-hull manifold geometry | 1.79e-7 float and VF64 double |
+| End-to-end applied manifold | 2.34e-7 float; 2.19e-7 VF64 double |
 | Distance joint plus contacts | 4.66e-10 |
 | Convex friction contacts | 4.77e-7 transform, 3.98e-6 velocity |
 | Convex restitution | 1.19e-7 transform, 2.38e-7 velocity |
@@ -127,10 +128,11 @@ Metal continued through the pinned VF64 exact AABB boundary.
 The existing-pair checkpoint again passed the complete sanitizer/CPU matrix and
 focused float/double warning and VF64 gates after specializing CPU consumption.
 
-The capsule narrow-phase checkpoint again passed full CPU-only,
+The bounded hull-sphere checkpoint again passed full CPU-only,
 AddressSanitizer, and float UndefinedBehaviorSanitizer suites, plus focused
 float/double warning-as-error and double/VF64 UndefinedBehaviorSanitizer Metal
-gates.
+gates. The existing high-aspect ground restitution test remains unchanged and
+passes through CPU GJK fallback.
 
 ## What the tests do not prove
 

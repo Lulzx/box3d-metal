@@ -23,13 +23,16 @@ evaluation order differs.
 | Supported contact/joint overflow | Serial GPU execution in deterministic upstream order |
 | Mixed distance/parallel colors and overflow | Supported with type-dense buffers and ordered descriptors |
 | Experimental broad phase | Resident leaf update/refit plus built-in filtered candidates in exact CPU visitation order |
+| Experimental narrow phase | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere local geometry |
 
 ## Explicit CPU boundary
 
 The following remain CPU work:
 
-- broad-phase topology mutation, joint/custom/compound filtering,
-  contact creation, narrow phase, and manifold generation;
+- broad-phase topology mutation, joint/custom/compound filtering, and contact
+  creation;
+- unsupported narrow-phase pairs, speculative/high-aspect hull-sphere GJK, and
+  manifold state application;
 - contact and joint preparation;
 - events, islands, sleeping, and CCD;
 - recording, queries, topology mutation, and public API calls;

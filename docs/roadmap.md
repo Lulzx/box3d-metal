@@ -6,9 +6,10 @@
   built-in same-body/sensor/shape filtering, and existing non-compound pair
   suppression have an experimental Metal path,
   but CPU topology, joint/custom/compound filtering, and contact creation remain.
-- Sphere-sphere, capsule-sphere, and capsule-capsule local manifold geometry has
-  a batched Metal path. Hulls, meshes, height fields, compounds, manifold state
-  application, and constraint preparation remain CPU-side.
+- Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact
+  hull-sphere local manifold geometry has a batched Metal path. Speculative and
+  high-aspect hull-sphere, other hull pairs, meshes, height fields, compounds,
+  manifold state application, and constraint preparation remain CPU-side.
 - Body and awake-shape finalization have an experimental Metal path, but the CPU
   still owns topology mutation, sleeping/island
   mutation, events, and CCD. Successful resident refits now use a stable
@@ -28,9 +29,9 @@
 
 ## Evidence-led next stages
 
-1. Extend the shape-specialized path through hull pairs, then retain
-   transform/shape inputs and manifolds across steps while preserving explicit
-   CPU exception paths for compounds and callbacks.
+1. Deduplicate and retain hull/shape geometry and transforms across steps, then
+   write manifolds into resident storage while preserving explicit CPU
+   exception paths for compounds, callbacks, and unsupported GJK/SAT cases.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,
