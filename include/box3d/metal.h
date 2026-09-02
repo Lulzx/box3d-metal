@@ -141,6 +141,9 @@ typedef struct b3MetalProfile
 	uint64_t pairFallbackCount;
 	uint64_t pairTreeUploadCount;
 	uint64_t pairMetadataUploadCount;
+	/// Exact blocked joint-body pair registry uploads caused by joint topology or
+	/// collide-connected changes.
+	uint64_t pairFilterRegistryUploadCount;
 	uint64_t pairSetUploadCount;
 	uint64_t pairTreeRefitCount;
 	/// Pair queries that consumed the prior shape-finalization move list directly

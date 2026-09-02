@@ -1509,8 +1509,9 @@ static int MetalFinalPairFilterExceptionTest( void )
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorldId );
 	ENSURE( profile.pairCpuCandidateTraversalBypassCount == 1 );
 	ENSURE( profile.lastPairDirectCreateCount == 1 );
-	ENSURE( profile.lastPairCpuFilterMoveCount == 4 );
-	ENSURE( profile.lastPairCpuFilterCandidateCount == 4 );
+	ENSURE( profile.lastPairCpuFilterMoveCount == 3 );
+	ENSURE( profile.lastPairCpuFilterCandidateCount == 3 );
+	ENSURE( profile.pairFilterRegistryUploadCount == 1 );
 
 	b3Joint_SetCollideConnected( cpuJoint, true );
 	b3Joint_SetCollideConnected( gpuJoint, true );
@@ -1519,16 +1520,124 @@ static int MetalFinalPairFilterExceptionTest( void )
 	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
 	ENSURE( cpu->broadPhase.pairSet.count == 5 );
 	profile = b3World_GetMetalProfile( gpuWorldId );
-	ENSURE( profile.pairMetadataUploadCount == 2 );
-	ENSURE( profile.lastPairCpuFilterMoveCount == 1 );
-	ENSURE( profile.lastPairCpuFilterCandidateCount == 1 );
-	ENSURE( profile.lastPairDirectCreateCount == 0 );
-	printf( "    final pair exceptions direct=1 filtered=4 callbacks=%d compoundChildren=2 jointMutation=exact\n",
+	ENSURE( profile.pairMetadataUploadCount == 1 );
+	ENSURE( profile.pairFilterRegistryUploadCount == 2 );
+	ENSURE( profile.lastPairCpuFilterMoveCount == 0 );
+	ENSURE( profile.lastPairCpuFilterCandidateCount == 0 );
+	ENSURE( profile.lastPairDirectCreateCount == 1 );
+	printf( "    final pair exceptions direct=1 filtered=3 callbacks=%d compoundChildren=2 jointMutation=device\n",
 			cpuCapture.count );
 
 	b3DestroyWorld( gpuWorldId );
 	b3DestroyWorld( cpuWorldId );
 	b3DestroyCompound( compound );
+	return 0;
+}
+
+typedef struct b3JointPairRegistryScene
+{
+	b3BodyId bodies[2];
+	b3JointId joints[2];
+} b3JointPairRegistryScene;
+
+static b3JointPairRegistryScene CreateJointPairRegistryScene( b3WorldId worldId )
+{
+	b3JointPairRegistryScene scene = { 0 };
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.enableSleep = false;
+	for ( int i = 0; i < 2; ++i )
+	{
+		bodyDef.position = (b3Pos){ 0.25f * (float)i, 0.0f, 0.0f };
+		scene.bodies[i] = b3CreateBody( worldId, &bodyDef );
+		b3CreateSphereShape( scene.bodies[i], &shapeDef, &sphere );
+	}
+
+	b3DistanceJointDef jointDef = b3DefaultDistanceJointDef();
+	jointDef.base.bodyIdA = scene.bodies[0];
+	jointDef.base.bodyIdB = scene.bodies[1];
+	jointDef.base.collideConnected = false;
+	jointDef.length = 0.25f;
+	scene.joints[0] = b3CreateDistanceJoint( worldId, &jointDef );
+	jointDef.base.collideConnected = true;
+	scene.joints[1] = b3CreateDistanceJoint( worldId, &jointDef );
+	return scene;
+}
+
+static int MetalJointPairRegistryTest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	b3WorldId cpuWorldId = b3CreateWorld( &worldDef );
+	b3WorldId gpuWorldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( gpuWorldId, 1 ) );
+	ENSURE( b3World_SetMetalBroadPhase( gpuWorldId, true ) );
+	b3JointPairRegistryScene cpuScene = CreateJointPairRegistryScene( cpuWorldId );
+	b3JointPairRegistryScene gpuScene = CreateJointPairRegistryScene( gpuWorldId );
+	b3World* cpu = b3GetWorldFromId( cpuWorldId );
+	b3World* gpu = b3GetWorldFromId( gpuWorldId );
+
+	// A false and a true parallel joint must remain blocked. The duplicate body
+	// pair is represented once in the device hash set and never becomes a CPU
+	// filter exception.
+	b3UpdateBroadPhasePairs( cpu );
+	b3UpdateBroadPhasePairs( gpu );
+	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
+	ENSURE( cpu->broadPhase.pairSet.count == 0 );
+	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( profile.pairFilterRegistryUploadCount == 1 );
+	ENSURE( profile.lastPairCpuFilterMoveCount == 0 );
+
+	// Removing the last false edge buffers the pair and makes it a direct GPU
+	// plan; adding it back destroys the contact exactly like the CPU oracle.
+	b3Joint_SetCollideConnected( cpuScene.joints[0], true );
+	b3Joint_SetCollideConnected( gpuScene.joints[0], true );
+	b3UpdateBroadPhasePairs( cpu );
+	b3UpdateBroadPhasePairs( gpu );
+	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
+	ENSURE( cpu->broadPhase.pairSet.count == 1 );
+	profile = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( profile.pairFilterRegistryUploadCount == 2 );
+	ENSURE( profile.lastPairDirectCreateCount == 1 );
+
+	b3Joint_SetCollideConnected( cpuScene.joints[0], false );
+	b3Joint_SetCollideConnected( gpuScene.joints[0], false );
+	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
+	ENSURE( cpu->broadPhase.pairSet.count == 0 );
+	b3Joint_SetCollideConnected( cpuScene.joints[1], false );
+	b3Joint_SetCollideConnected( gpuScene.joints[1], false );
+	b3Joint_SetCollideConnected( cpuScene.joints[0], true );
+	b3Joint_SetCollideConnected( gpuScene.joints[0], true );
+	b3UpdateBroadPhasePairs( cpu );
+	b3UpdateBroadPhasePairs( gpu );
+	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
+	ENSURE( cpu->broadPhase.pairSet.count == 0 );
+	profile = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( profile.pairFilterRegistryUploadCount == 3 );
+	ENSURE( profile.lastPairCpuFilterMoveCount == 0 );
+
+	// Destroying the sole remaining false joint must rebuild away the old key.
+	// Rebuffering a still-overlapping transform exercises joint-slot
+	// reuse/stale-key safety while retaining identical contact topology.
+	b3DestroyJoint( cpuScene.joints[1], true );
+	b3DestroyJoint( gpuScene.joints[1], true );
+	b3Body_SetTransform( cpuScene.bodies[0], (b3Pos){ -0.5f, 0.0f, 0.0f }, b3Quat_identity );
+	b3Body_SetTransform( gpuScene.bodies[0], (b3Pos){ -0.5f, 0.0f, 0.0f }, b3Quat_identity );
+	b3UpdateBroadPhasePairs( cpu );
+	b3UpdateBroadPhasePairs( gpu );
+	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
+	ENSURE( cpu->broadPhase.pairSet.count == 1 );
+	profile = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( profile.pairFilterRegistryUploadCount == 4 );
+	ENSURE( profile.lastPairDirectCreateCount == 1 );
+	printf( "    joint pair registry parallel=exact toggles=exact destroy=exact uploads=%llu cpuFilters=0\n",
+			(unsigned long long)profile.pairFilterRegistryUploadCount );
+
+	b3DestroyWorld( gpuWorldId );
+	b3DestroyWorld( cpuWorldId );
 	return 0;
 }
 
@@ -4112,6 +4221,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalFinalPairPlanOrderTest );
 	RUN_SUBTEST( MetalFinalPairRandomDifferentialTest );
 	RUN_SUBTEST( MetalFinalPairFilterExceptionTest );
+	RUN_SUBTEST( MetalJointPairRegistryTest );
 	RUN_SUBTEST( MetalExistingPairFilterTest );
 	RUN_SUBTEST( MetalPairTraversalFallbackTest );
 	RUN_SUBTEST( MetalShapeCompactionTest );
