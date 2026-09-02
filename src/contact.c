@@ -497,7 +497,14 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 	if ( precomputedConvexManifold != NULL )
 	{
 		B3_ASSERT( ( typeA == b3_sphereShape && typeB == b3_sphereShape ) ||
-			( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) ) );
+			( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) ) ||
+			( typeA == b3_hullShape && typeB == b3_sphereShape ) );
+		if ( typeA == b3_hullShape )
+		{
+			// The specialized hull-point route does not consume or emit GJK
+			// simplexes. Keep a valid cold cache if this contact later falls back.
+			cache->simplexCache = b3_emptyDistanceCache;
+		}
 		geomManifold = *precomputedConvexManifold;
 		geomManifold.points = pointBuffer;
 		B3_ASSERT( 0 <= precomputedConvexManifold->pointCount && precomputedConvexManifold->pointCount <= 2 );

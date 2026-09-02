@@ -452,6 +452,15 @@ static int MetalFinalizationTest( void )
 	return 0;
 }
 
+static bool MetalHullSphereEligible( const b3Shape* shapeA, const b3Shape* shapeB )
+{
+	if ( shapeA->type != b3_hullShape || shapeB->type != b3_sphereShape ) return false;
+	b3Vec3 extent = b3Sub( shapeA->hull->aabb.upperBound, shapeA->hull->aabb.lowerBound );
+	float minExtent = b3MinFloat( extent.x, b3MinFloat( extent.y, extent.z ) );
+	float maxExtent = b3MaxFloat( extent.x, b3MaxFloat( extent.y, extent.z ) );
+	return minExtent > B3_LINEAR_SLOP && maxExtent <= 16.0f * minExtent;
+}
+
 static int MetalConvexManifoldTest( void )
 {
 #if defined( BOX3D_DOUBLE_PRECISION )
@@ -462,12 +471,14 @@ static int MetalConvexManifoldTest( void )
 	const int separatedCapsuleSphereCount = 1;
 	const int crossedCapsuleCount = 1;
 	const int parallelCapsuleCount = 1;
+	const int hullSphereCount = 6;
 #else
 	const int pairCount = 32;
 	const int capsuleSphereCount = 8;
 	const int separatedCapsuleSphereCount = 1;
 	const int crossedCapsuleCount = 8;
 	const int parallelCapsuleCount = 8;
+	const int hullSphereCount = 6;
 #endif
 	b3WorldDef worldDef = b3DefaultWorldDef();
 	worldDef.gravity = b3Vec3_zero;
@@ -552,10 +563,50 @@ static int MetalConvexManifoldTest( void )
 		b3CreateCapsuleShape( bodyB, &shapeDef, &capsuleA );
 	}
 	pairOffset += parallelCapsuleCount;
-
-	// One unsupported hull contact proves that eligibility is per record and
-	// the ordinary CPU path remains available in the same narrow-phase batch.
 	b3BoxHull box = b3MakeBoxHull( 0.5f, 0.5f, 0.5f );
+	b3Vec3 hullSpherePositions[6] = {
+		{ 0.0f, 0.72f, 0.0f },
+		{ 0.65f, 0.65f, 0.0f },
+		{ 0.62f, 0.62f, 0.62f },
+		{ 0.10f, 0.20f, 0.10f },
+		{ 0.0f, 0.81f, 0.0f },
+		{ 0.0f, 0.84f, 0.0f },
+	};
+	b3Sphere hullSphere = { .center = { 0.0f, 0.0f, 0.0f }, .radius = 0.30f };
+	for ( int i = 0; i < hullSphereCount; ++i )
+	{
+		b3BodyDef hullDef = b3DefaultBodyDef();
+		hullDef.type = b3_staticBody;
+		hullDef.position = (b3Pos){ base, 0.0, 4.0 * ( pairOffset + i ) };
+		hullDef.rotation = b3MakeQuatFromAxisAngle( b3Normalize( (b3Vec3){ 0.2f, 0.7f, -0.1f } ), 0.11f * (float)i );
+		b3BodyId bodyA = b3CreateBody( worldId, &hullDef );
+		b3CreateHullShape( bodyA, &shapeDef, &box.base );
+		b3BodyDef sphereDef = b3DefaultBodyDef();
+		sphereDef.type = b3_dynamicBody;
+		sphereDef.position = hullDef.position;
+		b3Vec3 worldOffset = b3RotateVector( hullDef.rotation, hullSpherePositions[i] );
+		sphereDef.position.x += worldOffset.x;
+		sphereDef.position.y += worldOffset.y;
+		sphereDef.position.z += worldOffset.z;
+		b3BodyId bodyB = b3CreateBody( worldId, &sphereDef );
+		b3CreateSphereShape( bodyB, &shapeDef, &hullSphere );
+	}
+	pairOffset += hullSphereCount;
+	b3BoxHull highAspectBox = b3MakeBoxHull( 20.0f, 0.5f, 0.5f );
+	b3BodyDef highAspectDef = b3DefaultBodyDef();
+	highAspectDef.type = b3_staticBody;
+	highAspectDef.position = (b3Pos){ base, 0.0, 4.0 * pairOffset };
+	b3BodyId highAspectA = b3CreateBody( worldId, &highAspectDef );
+	b3CreateHullShape( highAspectA, &shapeDef, &highAspectBox.base );
+	highAspectDef.type = b3_dynamicBody;
+	highAspectDef.position.y = 0.72;
+	b3BodyId highAspectB = b3CreateBody( worldId, &highAspectDef );
+	b3CreateSphereShape( highAspectB, &shapeDef, &hullSphere );
+	pairOffset += 1;
+
+	// A high-aspect hull-sphere contact and a hull-hull contact prove that
+	// eligibility is per record and the ordinary CPU path remains available in
+	// the same narrow-phase batch.
 	b3BodyDef bodyDef = b3DefaultBodyDef();
 	bodyDef.type = b3_staticBody;
 	bodyDef.position = (b3Pos){ base, 0.0, 4.0 * pairOffset };
@@ -572,8 +623,8 @@ static int MetalConvexManifoldTest( void )
 	b3World* world = b3GetWorldFromId( worldId );
 	int contactCount = b3GetIdCount( &world->contactIdPool );
 	int expectedEligibleCount = pairCount + capsuleSphereCount + separatedCapsuleSphereCount + crossedCapsuleCount +
-		parallelCapsuleCount;
-	ENSURE( contactCount == expectedEligibleCount + 1 );
+		parallelCapsuleCount + hullSphereCount;
+	ENSURE( contactCount == expectedEligibleCount + 2 );
 	int* contactIndices = malloc( (size_t)contactCount * sizeof( int ) );
 	ENSURE( contactIndices != NULL );
 	int cursor = 0;
@@ -590,7 +641,8 @@ static int MetalConvexManifoldTest( void )
 		b3ShapeType typeA = world->shapes.data[contact->shapeIdA].type;
 		b3ShapeType typeB = world->shapes.data[contact->shapeIdB].type;
 		bool eligible = ( typeA == b3_sphereShape && typeB == b3_sphereShape ) ||
-			( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) );
+			( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) ) ||
+			MetalHullSphereEligible( world->shapes.data + contact->shapeIdA, world->shapes.data + contact->shapeIdB );
 		if ( eligible )
 		{
 			ENSURE( contact->manifoldCount == 0 || contact->manifoldCount == 1 );
@@ -603,7 +655,7 @@ static int MetalConvexManifoldTest( void )
 	b3MetalDispatchStats stats = { 0 };
 	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &gpu,
 		&eligibleCount, &stats ) );
-	ENSURE( eligibleCount == expectedEligibleCount );
+	ENSURE( eligibleCount == expectedEligibleCount - 1 );
 	ENSURE( stats.commandBufferCount == 1 );
 	float maxError = 0.0f;
 	int ineligibleCount = 0;
@@ -616,7 +668,8 @@ static int MetalConvexManifoldTest( void )
 		const b3Shape* shape2 = world->shapes.data + contact->shapeIdB;
 		bool eligible = ( shape1->type == b3_sphereShape && shape2->type == b3_sphereShape ) ||
 			( shape1->type == b3_capsuleShape &&
-			  ( shape2->type == b3_sphereShape || shape2->type == b3_capsuleShape ) );
+			  ( shape2->type == b3_sphereShape || shape2->type == b3_capsuleShape ) ) ||
+			MetalHullSphereEligible( shape1, shape2 );
 		if ( eligible == false )
 		{
 			ENSURE( gpu[i].eligible == 0 );
@@ -633,13 +686,26 @@ static int MetalConvexManifoldTest( void )
 		{
 			b3CollideSpheres( &reference, 2, &shape1->sphere, &shape2->sphere, relative );
 		}
-		else if ( shape2->type == b3_sphereShape )
+		else if ( shape1->type == b3_capsuleShape && shape2->type == b3_sphereShape )
 		{
 			b3CollideCapsuleAndSphere( &reference, 2, &shape1->capsule, &shape2->sphere, relative );
 		}
-		else
+		else if ( shape1->type == b3_capsuleShape && shape2->type == b3_capsuleShape )
 		{
 			b3CollideCapsules( &reference, 2, &shape1->capsule, &shape2->capsule, relative );
+		}
+		else
+		{
+			b3SimplexCache cache = { 0 };
+			b3CollideHullAndSphere( &reference, 2, shape1->hull, &shape2->sphere, relative, &cache );
+		}
+		if ( shape1->type == b3_hullShape && reference.pointCount == 1 && points[0].separation > 0.0f )
+		{
+			// Compact hull-sphere speculative contacts remain on CPU until the
+			// exact GJK normal path is available.
+			ENSURE( gpu[i].eligible == 0 );
+			ineligibleCount += 1;
+			continue;
 		}
 		ENSURE( gpu[i].eligible == 1 );
 		ENSURE( gpu[i].touching == (uint32_t)( reference.pointCount > 0 ) );
@@ -666,9 +732,9 @@ static int MetalConvexManifoldTest( void )
 			}
 		}
 	}
-	ENSURE( ineligibleCount == 1 );
+	ENSURE( ineligibleCount == 3 );
 	ENSURE( twoPointCount == parallelCapsuleCount );
-	ENSURE( separatedCount == separatedCapsuleSphereCount );
+	ENSURE( separatedCount == separatedCapsuleSphereCount + 1 );
 	ENSURE( maxError <= 3.0e-5f );
 
 	b3MetalConvexManifoldResult* first = malloc( (size_t)contactCount * sizeof( b3MetalConvexManifoldResult ) );
@@ -687,7 +753,8 @@ static int MetalConvexManifoldTest( void )
 		b3ShapeType typeA = world->shapes.data[contact->shapeIdA].type;
 		b3ShapeType typeB = world->shapes.data[contact->shapeIdB].type;
 		bool eligible = ( typeA == b3_sphereShape && typeB == b3_sphereShape ) ||
-			( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) );
+			( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) ) ||
+			MetalHullSphereEligible( world->shapes.data + contact->shapeIdA, world->shapes.data + contact->shapeIdB );
 		if ( eligible == false ) continue;
 		const b3Manifold* cpu = cpuStepManifolds + i;
 		ENSURE( contact->manifoldCount == ( cpu->pointCount > 0 ? 1 : 0 ) );

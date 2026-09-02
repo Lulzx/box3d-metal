@@ -42,7 +42,7 @@ checkpoint.
 
 ## Remaining boundary
 
-The kernel still consumes CPU-packed 184-byte contact inputs and exposes a
-shared 80-byte result per contact. The next meaningful shape slice is
-hull-sphere, followed by resident convex geometry/transform inputs and direct
-manifold storage to remove both streams.
+At this checkpoint the kernel still consumed CPU-packed 184-byte contact inputs
+and exposed a shared 80-byte result per contact. A bounded hull-sphere slice
+followed. Resident convex geometry/transform inputs and direct manifold storage
+are still needed to remove both streams.

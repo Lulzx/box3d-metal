@@ -35,9 +35,9 @@ typedef struct b3MetalPairCandidate
 	int padding;
 } b3MetalPairCandidate;
 
-// Local sphere/capsule geometry in shape A's body frame. The record array is
-// indexed exactly like the narrow-phase contact-index array. eligible == 0
-// means the CPU path owns that contact; eligible != 0 is authoritative even
+// Local sphere/capsule/compact-hull geometry in shape A's body frame. The
+// record array is indexed exactly like the narrow-phase contact-index array.
+// eligible == 0 means the CPU path owns that contact; eligible != 0 is authoritative even
 // when touching == 0.
 typedef struct b3MetalConvexManifoldResult
 {

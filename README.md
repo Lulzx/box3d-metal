@@ -44,11 +44,12 @@ an exact awake-body id sequence protects each cached body index, so geometry,
 filters, proxy keys, and local bounds are not repacked or recomputed. Sleep,
 wake, topology, transform, and filter changes rebuild fail-closed.
 The shape-specialized narrow-phase route batches sphere-sphere, capsule-sphere,
-and capsule-capsule manifold geometry in one Metal dispatch. CPU workers
-consume the ordered local geometry
+capsule-capsule, and bounded compact hull-sphere manifold geometry in one Metal
+dispatch. CPU workers consume the ordered local geometry
 while retaining manifold allocation, warm-start feature matching, materials,
 pre-solve callbacks, events, and island mutation. Other shape pairs stay on the
-unchanged CPU path. Double worlds use VF64 exact subtraction before narrowing
+unchanged CPU path. High-aspect and speculative hull-sphere contacts explicitly
+retain CPU GJK. Double worlds use VF64 exact subtraction before narrowing
 relative translations to the float convex-collision boundary.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
