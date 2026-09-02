@@ -44,7 +44,8 @@ UndefinedBehaviorSanitizer Metal suite also pass.
 ## Remaining ownership boundary
 
 The CPU still validates and writes one 16-byte input per awake contact, waits
-for narrow phase, and converts compact local geometry into Box3D manifolds.
-Manifold persistence, materials, callbacks, events, contact creation, and
-topology remain CPU-owned. Direct writes into persistent manifold storage, or a
-device-resident contact preparation boundary, are the next narrow-phase cut.
+for narrow phase, and converts compact geometry into Box3D manifolds. Manifold
+persistence, materials, callbacks, events, contact creation, and topology remain
+CPU-owned. The follow-on
+[`manifold-finalization checkpoint`](m4-pro-manifold-finalization-2026-09-02.md)
+fuses world-axis orientation into the compact scatter.

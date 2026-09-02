@@ -13,7 +13,8 @@
 - Supported sphere/capsule records and content-deduplicated compact hull geometry
   are retained across revision-stable dispatches. Static/awake/sleeping body
   transforms are retained by body id with VF64 positions. Full manifold results
-  are private and only active records return through a shared ordered stream.
+  are private and only active, world-oriented records return through a shared
+  ordered stream.
 - Body and awake-shape finalization have an experimental Metal path, but the CPU
   still owns topology mutation, sleeping/island
   mutation, events, and CCD. Successful resident refits now use a stable

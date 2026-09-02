@@ -53,6 +53,7 @@ for review.
 - [Persistent shape-geometry registry](benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md)
 - [Persistent body-transform registry](benchmarks/m4-pro-resident-body-transforms-2026-09-02.md)
 - [Private manifold results](benchmarks/m4-pro-private-manifold-results-2026-09-02.md)
+- [Manifold finalization](benchmarks/m4-pro-manifold-finalization-2026-09-02.md)
 
 ## Repository map
 

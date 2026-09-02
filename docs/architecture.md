@@ -197,3 +197,7 @@ buffer. Each compact record carries its original contact index and remains
 ordered. CPU workers lower-bound once per parallel range and then walk the
 compact stream linearly, without a dense lookup allocation. CPU contact
 validation and manifold application remain.
+The scatter also rotates active normals and frame-A points with the resident
+body quaternion. CPU application skips matrix construction and local-to-world
+vector transforms. Points remain relative to body A's origin so exact far-world
+anchor construction and center-of-mass adjustment retain CPU semantics.

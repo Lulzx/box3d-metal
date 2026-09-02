@@ -22,10 +22,10 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..3e41316 100644
+index cfe16e4..7a38079 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,98 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,100 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -74,7 +74,9 @@ index cfe16e4..3e41316 100644
 +16-byte contact record now carries only eligibility and two shape ids. Full
 +80-byte outputs stay in private Metal storage; a stable scan/prefix/scatter pass
 +returns only active results, tagged by original contact index, in the same
-+command buffer. CPU workers lower-bound once per range and consume the compact ordered local geometry
++command buffer. The scatter also rotates normals and points into world axes,
++so CPU workers lower-bound once per range and consume geometry already finalized
++for Box3D manifold persistence
 +while retaining manifold allocation, warm-start feature matching, materials,
 +pre-solve callbacks, events, and island mutation. Other shape pairs stay on the
 +unchanged CPU path. High-aspect and speculative hull-sphere contacts explicitly
@@ -1454,6 +1456,53 @@ index 0000000..2cb0b15
 +revision-stable dispatches. Body transforms and manifold results still need
 +resident ownership before the remaining CPU packing and result streams can
 +disappear.
+diff --git a/docs/benchmarks/m4-pro-manifold-finalization-2026-09-02.md b/docs/benchmarks/m4-pro-manifold-finalization-2026-09-02.md
+new file mode 100644
+index 0000000..ab00a6b
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-manifold-finalization-2026-09-02.md
+@@ -0,0 +1,41 @@
++# M4 Pro manifold-finalization checkpoint — 2026-09-02
++
++This checkpoint moves the first persistent-manifold finalization arithmetic
++off CPU workers. It is ownership and differential correctness evidence, not an
++accepted whole-world performance result.
++
++## Ownership cut
++
++The active-result scatter now uses the resident body-A quaternion to rotate the
++local contact normal and each frame-A point into world axes before writing the
++compact shared record. This is fused into the existing compaction scatter: it
++adds no kernel, command buffer, wait, or intermediate shared stream.
++
++Points remain relative to body A's origin. The CPU therefore retains exact
++large-world body-origin subtraction, center-of-mass adjustment, manifold
++allocation, feature-id persistence, materials, pre-solve callbacks, events,
++and graph/island transitions. Unsupported records continue through the
++unmodified scalar collision and finalization path.
++
++## Differential evidence
++
++The float mixed batch still compacts 65 inputs to 62 strictly ordered records.
++The records are byte-identical across repeated dispatches, direct world-oriented
++geometry error is `1.79e-7`, and end-to-end applied error is `2.33e-7`.
++
++The double/VF64 batch still compacts 13 inputs to ten records at a `1e12`
++origin. Exact VF64 relative translation remains before float convex collision;
++only the local-vector quaternion rotation moves to the GPU. Direct error remains
++`1.79e-7` and applied error is `1.94e-7`.
++
++Float and double warning-as-error focused Metal suites pass. The full CPU suite,
++full AddressSanitizer suite with Metal-runtime leak detection disabled, full
++float UndefinedBehaviorSanitizer suite, and focused double/VF64
++UndefinedBehaviorSanitizer Metal suite also pass.
++
++## Remaining ownership boundary
++
++The CPU still walks every active compact record and materializes persistent
++`b3Manifold` objects. The next cut is a stable contact-id-indexed manifold table
++that can feed Metal contact preparation directly while exposing only callback,
++event, topology-transition, and unsupported-geometry exceptions to the CPU.
 diff --git a/docs/benchmarks/m4-pro-mesh-contacts-2026-09-01.md b/docs/benchmarks/m4-pro-mesh-contacts-2026-09-01.md
 new file mode 100644
 index 0000000..4daca2b
@@ -1751,10 +1800,10 @@ index 0000000..ba2190a
 +```
 diff --git a/docs/benchmarks/m4-pro-private-manifold-results-2026-09-02.md b/docs/benchmarks/m4-pro-private-manifold-results-2026-09-02.md
 new file mode 100644
-index 0000000..54f51ca
+index 0000000..f9a8282
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-private-manifold-results-2026-09-02.md
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,51 @@
 +# M4 Pro private manifold-result checkpoint — 2026-09-02
 +
 +This checkpoint removes the dense shared narrow-phase result stream. It is
@@ -1801,10 +1850,11 @@ index 0000000..54f51ca
 +## Remaining ownership boundary
 +
 +The CPU still validates and writes one 16-byte input per awake contact, waits
-+for narrow phase, and converts compact local geometry into Box3D manifolds.
-+Manifold persistence, materials, callbacks, events, contact creation, and
-+topology remain CPU-owned. Direct writes into persistent manifold storage, or a
-+device-resident contact preparation boundary, are the next narrow-phase cut.
++for narrow phase, and converts compact geometry into Box3D manifolds. Manifold
++persistence, materials, callbacks, events, contact creation, and topology remain
++CPU-owned. The follow-on
++[`manifold-finalization checkpoint`](m4-pro-manifold-finalization-2026-09-02.md)
++fuses world-axis orientation into the compact scatter.
 diff --git a/docs/benchmarks/m4-pro-private-shape-results-2026-09-02.md b/docs/benchmarks/m4-pro-private-shape-results-2026-09-02.md
 new file mode 100644
 index 0000000..96eff9c
@@ -2458,10 +2508,10 @@ index 0000000..1e74458
 +needed before the shared narrow-phase streams can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..21f183b
+index 0000000..2f8ae86
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,307 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -2652,6 +2702,11 @@ index 0000000..21f183b
 +collision workers use one lower-bound search per parallel range followed by a
 +linear walk; no dense result-to-contact map is allocated. Unsupported records
 +and explicit per-record CPU fallbacks do not enter the shared payload.
++The scatter pass also rotates active normals and frame-A points with the
++resident body quaternion. CPU application therefore skips matrix construction
++and local-to-world vector transforms; points remain relative to body A's origin
++so exact far-world anchor construction and center-of-mass adjustment retain the
++existing CPU semantics.
 +
 +Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 +unsupported joint solution, continuous collision, events, and sleeping/island
@@ -2758,6 +2813,8 @@ index 0000000..21f183b
 +Private full manifold results and active-only deterministic readback are
 +recorded in
 +[`benchmarks/m4-pro-private-manifold-results-2026-09-02.md`](benchmarks/m4-pro-private-manifold-results-2026-09-02.md).
++Fused manifold orientation finalization is recorded in
++[`benchmarks/m4-pro-manifold-finalization-2026-09-02.md`](benchmarks/m4-pro-manifold-finalization-2026-09-02.md).
 +Private shape results and selective synchronization are recorded in
 +[`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 +Persistent shape-input reuse is recorded in
@@ -3368,7 +3425,7 @@ index dcd626b..a3d47a3 100644
  
  void b3ValidateBroadPhase( const b3BroadPhase* bp );
 diff --git a/src/contact.c b/src/contact.c
-index 1506bdb..6b35230 100644
+index 1506bdb..8bae6db 100644
 --- a/src/contact.c
 +++ b/src/contact.c
 @@ -290,6 +290,7 @@ void b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int chil
@@ -3387,17 +3444,22 @@ index 1506bdb..6b35230 100644
  
  	b3FreeManifolds( world, contact->manifolds, contact->manifoldCount );
  	contact->manifolds = NULL;
-@@ -478,7 +480,8 @@ void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies )
+@@ -478,10 +480,13 @@ void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies )
  }
  
  static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact* contact, const b3Shape* shapeA,
 -									 b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB, b3Arena arena )
 +									 b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB,
-+									 const b3LocalManifold* precomputedConvexManifold, b3Arena arena )
++									 const b3LocalManifold* precomputedConvexManifold, bool precomputedWorldOriented,
++									 b3Arena arena )
  {
  	b3ShapeType typeA = shapeA->type;
  	b3ShapeType typeB = shapeB->type;
-@@ -491,45 +494,67 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
++	B3_ASSERT( precomputedWorldOriented == false || precomputedConvexManifold != NULL );
+ 
+ 	b3ContactCache* cache = &contact->convexContact.cache;
+ 
+@@ -491,45 +496,67 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
  	b3LocalManifold geomManifold = { 0 };
  	geomManifold.points = pointBuffer;
  
@@ -3489,81 +3551,110 @@ index 1506bdb..6b35230 100644
  		}
  	}
  
-@@ -613,10 +638,12 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
+@@ -562,8 +589,16 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
+ 	b3Manifold* manifold = contact->manifolds;
+ 	manifold->pointCount = geomManifold.pointCount;
+ 
+-	b3Matrix3 matrixA = b3MakeMatrixFromQuat( xfA.q );
+-	manifold->normal = b3MulMV( matrixA, geomManifold.normal );
++	b3Matrix3 matrixA;
++	if ( precomputedWorldOriented )
++	{
++		manifold->normal = geomManifold.normal;
++	}
++	else
++	{
++		matrixA = b3MakeMatrixFromQuat( xfA.q );
++		manifold->normal = b3MulMV( matrixA, geomManifold.normal );
++	}
+ 
+ 	// Store point data in contact
+ 	for ( int i = 0; i < geomManifold.pointCount; ++i )
+@@ -572,7 +607,7 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
+ 		b3ManifoldPoint* target = manifold->points + i;
+ 
+ 		// Contact points are computed in frame A
+-		target->anchorA = b3MulMV( matrixA, source->point );
++		target->anchorA = precomputedWorldOriented ? source->point : b3MulMV( matrixA, source->point );
+ 		target->anchorB = b3Add( target->anchorA, b3SubPos( xfA.p, xfB.p ) );
+ 		target->separation = source->separation;
+ 		target->featureId = b3MakeFeatureId( source->pair );
+@@ -613,10 +648,13 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
  }
  
  static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* contact, b3Shape* shapeA, b3WorldTransform xfA,
 -								   b3Shape* shapeB, b3WorldTransform xfB, bool flip, b3Arena arena )
 +								   b3Shape* shapeB, b3WorldTransform xfB, bool flip,
-+								   const b3LocalManifold* precomputedConvexManifold, b3Arena arena )
++								   const b3LocalManifold* precomputedConvexManifold, bool precomputedWorldOriented,
++								   b3Arena arena )
  {
  	// Compute new manifold
 -	bool touching = b3ComputeConvexManifold( world, workerIndex, contact, shapeA, xfA, shapeB, xfB, arena );
 +	bool touching = b3ComputeConvexManifold( world, workerIndex, contact, shapeA, xfA, shapeB, xfB,
-+		precomputedConvexManifold, arena );
++		precomputedConvexManifold, precomputedWorldOriented, arena );
  
  	if ( touching == false )
  	{
-@@ -728,7 +755,7 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
+@@ -728,7 +766,7 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
  // Note: do not assume the shape AABBs are overlapping or are valid.
  bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Shape* shapeA, b3Vec3 localCenterA,
  					  b3WorldTransform xfA, b3Shape* shapeB, b3Vec3 localCenterB, b3WorldTransform xfB, bool isFast,
 -					  b3Arena arena )
-+					  const b3LocalManifold* precomputedConvexManifold, b3Arena arena )
++					  const b3LocalManifold* precomputedConvexManifold, bool precomputedWorldOriented, b3Arena arena )
  {
  	bool touching;
  
-@@ -762,12 +789,12 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
+@@ -762,12 +800,12 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
  			{
  				// Flip
  				bool flip = true;
 -				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, arena );
-+				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, NULL, arena );
++				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, NULL, false, arena );
  			}
  			else
  			{
  				bool flip = false;
 -				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, arena );
-+				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, NULL, arena );
++				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, NULL, false, arena );
  			}
  		}
  		else if ( child.type == b3_hullShape )
-@@ -775,7 +802,7 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
+@@ -775,7 +813,7 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
  			childShapeA.hull = child.hull;
  			b3WorldTransform xfChild = b3MulWorldTransforms( xfA, child.transform );
  			bool flip = false;
 -			touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfChild, shapeB, xfB, flip, arena );
-+			touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfChild, shapeB, xfB, flip, NULL, arena );
++			touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfChild, shapeB, xfB, flip, NULL, false, arena );
  		}
  		else if ( child.type == b3_meshShape )
  		{
-@@ -806,12 +833,12 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
+@@ -806,12 +844,12 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
  			{
  				// Flip
  				bool flip = true;
 -				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, arena );
-+				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, NULL, arena );
++				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, NULL, false, arena );
  			}
  			else
  			{
  				bool flip = false;
 -				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, arena );
-+				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, NULL, arena );
++				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, NULL, false, arena );
  			}
  		}
  
-@@ -852,7 +879,8 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
+@@ -852,7 +890,8 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
  	{
  		// Convex-vs-convex
  		bool flip = false;
 -		touching = b3UpdateConvexContact( world, workerIndex, contact, shapeA, xfA, shapeB, xfB, flip, arena );
 +		touching = b3UpdateConvexContact( world, workerIndex, contact, shapeA, xfA, shapeB, xfB, flip,
-+			precomputedConvexManifold, arena );
++			precomputedConvexManifold, precomputedWorldOriented, arena );
  	}
  
  	if ( touching )
 diff --git a/src/contact.h b/src/contact.h
-index ad9fa74..adb8dc3 100644
+index ad9fa74..860b2e8 100644
 --- a/src/contact.h
 +++ b/src/contact.h
 @@ -177,7 +177,8 @@ void b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int chil
@@ -3572,7 +3663,7 @@ index ad9fa74..adb8dc3 100644
  bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Shape* shapeA, b3Vec3 localCenterA, b3WorldTransform xfA,
 -					  b3Shape* shapeB, b3Vec3 localCenterB, b3WorldTransform xfB, bool isFast, b3Arena arena );
 +					  b3Shape* shapeB, b3Vec3 localCenterB, b3WorldTransform xfB, bool isFast,
-+					  const b3LocalManifold* precomputedConvexManifold, b3Arena arena );
++					  const b3LocalManifold* precomputedConvexManifold, bool precomputedWorldOriented, b3Arena arena );
  
  bool b3ComputeMeshManifolds( b3World* world, int workerIndex, b3Contact* contact, const b3Shape* shapeA, const int* materialMap,
  							 b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB, bool isFast, b3Arena arena );
@@ -3792,10 +3883,10 @@ index d85f233..ffa6859 100644
  int b3GetWideContactConstraintByteCount( void );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000..45f75e9
+index 0000000..8cbc95a
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,142 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -3921,9 +4012,10 @@ index 0000000..45f75e9
 +
 +// Batch the first common convex narrow-phase route. The returned array contains
 +// only active Metal results, ordered by inputIndex; eligibleCount is its length.
-+// Exact VF64 subtraction is used for double-precision world translations before
-+// converting the relative displacement to float, matching Box3D's scalar
-+// narrow-phase boundary.
++// Result normals and points are oriented into world axes, while points remain
++// relative to body A's origin. Exact VF64 subtraction is used for double-precision
++// world translations before converting the relative displacement to float,
++// matching Box3D's scalar narrow-phase boundary.
 +bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
 +	int contactCount, const b3MetalConvexManifoldResult** results, int* eligibleCount, b3MetalDispatchStats* stats );
 +
@@ -3939,10 +4031,10 @@ index 0000000..45f75e9
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..f609724
+index 0000000..0822de6
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,4301 @@
+@@ -0,0 +1,4311 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -4900,8 +4992,15 @@ index 0000000..f609724
 +	"  constant ManifoldCompactParams& p [[buffer(2)]]){uint total=0u;for(uint i=0u;i<p.blockCount;++i){PairBlock b=blocks[i];\n"
 +	"    b.offset=total;blocks[i]=b;total+=b.sum;}summary->totalCount=ulong(total);summary->flags=0u;summary->writeFlags=0u;}\n"
 +	"kernel void b3_manifold_scatter(const device ConvexManifoldResult* results [[buffer(0)]],const device PairBlock* blocks [[buffer(1)]],\n"
-+	"  device ConvexManifoldResult* compact [[buffer(2)]],constant ManifoldCompactParams& p [[buffer(3)]],uint i [[thread_position_in_grid]]){\n"
-+	"  if(i>=p.contactCount)return;ConvexManifoldResult r=results[i];if(r.eligible==0u)return;uint output=blocks[i/256u].offset+r.padding3;\n"
++	"  device ConvexManifoldResult* compact [[buffer(2)]],const device ConvexManifoldInput* inputs [[buffer(3)]],\n"
++	"  const device ShapeGeometry* shapeGeometry [[buffer(4)]],const device BodyTransform* bodyTransforms [[buffer(5)]],\n"
++	"  constant ManifoldCompactParams& p [[buffer(6)]],uint i [[thread_position_in_grid]]){\n"
++	"  if(i>=p.contactCount)return;ConvexManifoldResult r=results[i];if(r.eligible==0u)return;ShapeGeometry geometryA=shapeGeometry[inputs[i].shapeIdA];\n"
++	"  BodyTransform transformA=bodyTransforms[geometryA.bodyId];float4 q=float4(transformA.qx,transformA.qy,transformA.qz,transformA.qw);\n"
++	"  if(r.pointCount>0u){float3 n=rotate(q,float3(r.nx,r.ny,r.nz));float3 p1=rotate(q,float3(r.p1x,r.p1y,r.p1z));\n"
++	"    r.nx=n.x;r.ny=n.y;r.nz=n.z;r.p1x=p1.x;r.p1y=p1.y;r.p1z=p1.z;}\n"
++	"  if(r.pointCount>1u){float3 p2=rotate(q,float3(r.p2x,r.p2y,r.p2z));r.p2x=p2.x;r.p2y=p2.y;r.p2z=p2.z;}\n"
++	"  uint output=blocks[i/256u].offset+r.padding3;\n"
 +	"  r.inputIndex=i;r.padding3=0u;compact[output]=r;}\n";
 +#pragma clang diagnostic pop
 +
@@ -7556,7 +7655,10 @@ index 0000000..f609724
 +		[encoder setBuffer:context->convexManifoldResultBuffer offset:0 atIndex:0];
 +		[encoder setBuffer:context->convexManifoldBlockBuffer offset:0 atIndex:1];
 +		[encoder setBuffer:context->convexManifoldCompactBuffer offset:0 atIndex:2];
-+		[encoder setBytes:&compactParams length:sizeof( compactParams ) atIndex:3];
++		[encoder setBuffer:context->convexManifoldInputBuffer offset:0 atIndex:3];
++		[encoder setBuffer:context->convexShapeGeometryBuffer offset:0 atIndex:4];
++		[encoder setBuffer:context->convexBodyTransformBuffer offset:0 atIndex:5];
++		[encoder setBytes:&compactParams length:sizeof( compactParams ) atIndex:6];
 +		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
 +			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
 +		[encoder endEncoding];
@@ -9385,7 +9487,7 @@ index 0000000..a4424e5
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..e44c7d9 100644
+index 29c13c7..6403345 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -9613,14 +9715,14 @@ index 29c13c7..e44c7d9 100644
  		if ( i < prefetchEnd )
  		{
  			b3PrefetchContact( contacts + contactIndices[i + contactPrefetchDistance] );
-@@ -741,9 +936,44 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -741,9 +936,45 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
  		contact->flags |= b3_relativeTransformValid;
  
 -		// This updates solid contacts
-+		// This updates solid contacts. Metal convex results contain only local
-+		// geometry; the CPU still owns material callbacks, manifold persistence,
-+		// events, recycling, and graph/island transitions.
++		// This updates solid contacts. Metal convex results contain world-oriented
++		// geometry relative to body A; the CPU still owns material callbacks,
++		// manifold persistence, events, recycling, and graph/island transitions.
 +		const b3LocalManifold* precomputedConvexManifold = NULL;
 +#if defined( BOX3D_METAL )
 +		b3LocalManifold localConvexManifold = { 0 };
@@ -9656,11 +9758,12 @@ index 29c13c7..e44c7d9 100644
  		bool touching = b3UpdateContact( world, workerIndex, contact, shapeA, bodySimA->localCenter, transformA, shapeB,
 -										 bodySimB->localCenter, transformB, isFast, taskContext->arena );
 +										 bodySimB->localCenter, transformB, isFast, precomputedConvexManifold,
++										 precomputedConvexManifold != NULL,
 +										 taskContext->arena );
  
  		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
  		if ( bucketIndex > 0 )
-@@ -873,6 +1103,8 @@ static void b3Collide( b3StepContext* context )
+@@ -873,6 +1104,8 @@ static void b3Collide( b3StepContext* context )
  	}
  
  	context->awakeContactIndices = contactIndices;
@@ -9669,7 +9772,7 @@ index 29c13c7..e44c7d9 100644
  
  	// Contact bit set on ids because contact pointers are unstable as they move between touching and not touching.
  	int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
-@@ -886,12 +1118,39 @@ static void b3Collide( b3StepContext* context )
+@@ -886,12 +1119,39 @@ static void b3Collide( b3StepContext* context )
  		memset( taskContext->manifoldCounts, 0, sizeof( taskContext->manifoldCounts ) );
  	}
  
@@ -9709,7 +9812,7 @@ index 29c13c7..e44c7d9 100644
  	contactIndices = NULL;
  
  	// Serially update contact state
-@@ -1039,6 +1298,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1299,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -9732,7 +9835,7 @@ index 29c13c7..e44c7d9 100644
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -3473,6 +3748,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +3749,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -10946,10 +11049,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..1a7f75e
+index 0000000..62001f8
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,2344 @@
+@@ -0,0 +1,2353 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -11686,6 +11789,15 @@ index 0000000..1a7f75e
 +			ENSURE( result == NULL );
 +			ineligibleCount += 1;
 +			continue;
++		}
++		if ( reference.pointCount > 0 )
++		{
++			b3Matrix3 matrixA = b3MakeMatrixFromQuat( b3GetBodyTransformQuick( world, body1 ).q );
++			reference.normal = b3MulMV( matrixA, reference.normal );
++			for ( int pointIndex = 0; pointIndex < reference.pointCount; ++pointIndex )
++			{
++				points[pointIndex].point = b3MulMV( matrixA, points[pointIndex].point );
++			}
 +		}
 +		ENSURE( result != NULL );
 +		ENSURE( result->eligible == 1 );
