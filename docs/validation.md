@@ -23,6 +23,9 @@ Direct primitive tests separately cover packed state and integration kernels.
 - A sparse 1,024-shape world compacts exactly 512 alternating enlarged shapes
   across four scan blocks; compact order and the resulting move array match the
   upstream shape order exactly.
+- The same sparse world poisons all 512 moving CPU fat-AABB mirrors between
+  steps and still emits the exact resident compact stream. A subsequent public
+  body transform changes the tree revision and prevents stale resident reuse.
 - A ten-step contact world records one initial tree upload and ten device refits.
 - At `(+1e8, -1e8)`, every VF64 AABB contains a fresh CPU oracle AABB computed
   from the same Metal-world transform; maximum inward error is zero.

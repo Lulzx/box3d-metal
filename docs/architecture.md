@@ -124,3 +124,10 @@ deterministic subset, skipping the full-result rescan, enlarged-body bit-set
 merge, and second body/shape-list walk. The CPU still applies the complete
 64-byte result in parallel for public AABBs and fallback safety, so this remains
 a measured step toward residency, not yet a device-resident broad phase.
+
+On an unchanged subsequent step, shape finalization reads the previous Metal
+fat bounds as its containment oracle. Double builds therefore retain the
+conservative VF64 result across steps rather than repacking a rounded CPU
+mirror. Reuse requires an identical shape count and broad-phase revision;
+buffer growth, topology changes, explicit moves, and rebuilds force a CPU-oracle
+reseed. `shapeBoundsResidentDispatchCount` reports successful resident reuse.

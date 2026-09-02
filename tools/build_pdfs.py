@@ -329,7 +329,7 @@ def compatibility_story():
         table(["Scenario", "Transform", "Velocity"], errors, [65 * mm, 48 * mm, 49 * mm]),
         p("Acceptance matrix", "h2"),
         p("Float and double full suites; CPU-only Release; far-world VF64 containment; AddressSanitizer and UndefinedBehaviorSanitizer; float/double warning-as-error builds; shared dylib demo; install audit; and clean-clone reconstruction."),
-        p("At (+1e8, -1e8), all 2,048 mixed-shape GPU AABBs contained the same-world CPU oracle. One upload plus ten resident refits was observed across ten contact steps.", "callout"),
+        p("At (+1e8, -1e8), all 2,048 mixed-shape GPU AABBs contained the same-world CPU oracle. A poisoned CPU fat-AABB mirror test proves revision-stable steps reuse the prior Metal bounds; public mutation forces reseeding.", "callout"),
         p("<b>Failure semantics.</b> Initialization failure returns false and leaves the world usable. Unsupported work increments fallback counters. Disabling Metal releases resources without destroying the world.", "callout"),
     ]
 
@@ -379,7 +379,7 @@ def performance_story():
         p("Run each complete executable in at least three separate processes and compare medians. Do not use GPU kernel time alone as a whole-world claim.", "callout"),
         p("Next performance work", "h2"),
         *bullets([
-            "Make resident shape bounds authoritative and replace flat CPU bookkeeping with selective synchronization.",
+            "Make the full shape result private and replace its unconditional CPU apply with selective synchronization.",
             "Retain state across steps and add joint types only with mode matrices and whole-world evidence.",
         ]),
     ]

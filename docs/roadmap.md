@@ -10,7 +10,9 @@
   still consumes flat shape results and owns tree mutation, sleeping/island
   mutation, events, and CCD. Successful resident refits now use a stable
   enlarged-only GPU stream and bypass the full-result rescan, CPU enlarged-body
-  reduction, and body/shape-list traversal during proxy bookkeeping.
+  reduction, and body/shape-list traversal during proxy bookkeeping. Prior
+  Metal fat bounds are authoritative across revision-stable steps, but the full
+  result is still CPU-applied for downstream consumers.
 - Only distance and parallel joints stay in the GPU-resident constraint graph.
 - Constraint joint records are packed/unpacked each step.
 - Body state crosses the CPU/GPU ownership boundary once per world step.
@@ -19,9 +21,10 @@
 
 ## Evidence-led next stages
 
-1. Make resident shape bounds authoritative for downstream GPU work and replace
-   the flat per-shape CPU bookkeeping stream with selective synchronization.
-   Leaf update, internal refit, stable prefixing, and compaction are on-device.
+1. Make the full shape result private and replace its unconditional CPU apply
+   with selective synchronization for queries, mesh contacts, sensors, CCD,
+   fallback, and mutations. Resident containment, leaf update, internal refit,
+   stable prefixing, and compaction are already on-device.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,

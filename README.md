@@ -19,7 +19,10 @@ Enlarged proxy bookkeeping consumes a stable GPU-compacted subset rather than
 rescanning every result or walking body shape lists again.
 Topology changes and unsupported CPU mutations invalidate the snapshot.
 Double-precision worlds use VF64 exact software binary64 translation and
-directed float narrowing for conservative far-world AABBs. Both stages remain
+directed float narrowing for conservative far-world AABBs. On unchanged
+resident steps, the prior Metal fat bounds—not the CPU mirror—are the next
+dispatch's containment input; tree revisions fail closed to a CPU reseed.
+Both stages remain
 off by default while the CPU still owns topology and consumes shared result
 streams.
 

@@ -22,10 +22,10 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..2712608 100644
+index cfe16e4..f7da22c 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,67 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,70 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -49,7 +49,10 @@ index cfe16e4..2712608 100644
 +Enlarged proxy bookkeeping consumes a stable GPU-compacted subset rather than
 +rescanning every shape result or walking body shape lists again.
 +Double-precision worlds use VF64 software binary64 for exact world translation
-+and directed float AABB narrowing on Metal. The stages remain off by default;
++and directed float AABB narrowing on Metal. Across unchanged resident steps,
++the prior Metal fat bounds are now the authoritative containment input; any
++CPU tree revision invalidates that state and reseeds it from the CPU oracle.
++The stages remain off by default;
 +CPU shape bookkeeping/readback is still a regression, while GPU tree traversal
 +crosses over only in large measured worlds.
 +See [the architecture and compatibility contract](docs/metal_architecture.md)
@@ -1670,10 +1673,10 @@ index 0000000..3d8a686
 +not simply deleting the readback.
 diff --git a/docs/benchmarks/m4-pro-shape-compaction-2026-09-02.md b/docs/benchmarks/m4-pro-shape-compaction-2026-09-02.md
 new file mode 100644
-index 0000000..cacc69c
+index 0000000..f10988c
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-shape-compaction-2026-09-02.md
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,46 @@
 +# M4 Pro enlarged-shape compaction - 2026-09-02
 +
 +## Scope
@@ -1690,12 +1693,23 @@ index 0000000..cacc69c
 +state current. This is therefore an intermediate ownership cut, not evidence
 +that shape bounds are fully device-authoritative.
 +
++The follow-on resident-bounds change makes the previous Metal fat bounds the
++containment oracle on an unchanged second step. Float builds reuse the prior
++Metal result; double builds reuse the conservative bound produced by
++VF64-metal's exact additions and directed narrowing. Shape count and the
++monotonic broad-phase revision guard reuse, so external CPU mutations reseed
++from the CPU state.
++
 +## Correctness evidence
 +
 +- A sparse 1,024-shape world alternates moving and stationary awake bodies.
 +  Metal reports exactly 512 compacted records across four scan blocks.
 +- Every compacted proxy matches upstream deterministic shape order.
 +- The compact count exactly matches the CPU move array produced from it.
++- The sparse world deliberately poisons all 512 moving shapes' CPU fat-AABB
++  mirrors after its first step. Its second step still emits exactly the same
++  512 records from resident bounds. A subsequent public body transform changes
++  the tree revision and demonstrably prevents resident reuse.
 +- A 2,048-shape mixed sphere/capsule/hull world compacts all 2,048 moving
 +  shapes, reuses the resident tree, and preserves exact raw pair traversal.
 +- Float, double-precision VF64, warning-as-error, ASAN, UBSAN, and CPU-only
@@ -1769,10 +1783,10 @@ index 0000000..21b7859
 +```
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..d6bc70b
+index 0000000..55af618
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,199 @@
+@@ -0,0 +1,210 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -1844,6 +1858,17 @@ index 0000000..d6bc70b
 +because reading one 64-byte result per awake shape has not demonstrated a
 +whole-world win; the remaining boundary is removal of that CPU bookkeeping
 +stream once all downstream consumers can use resident bounds.
++
++After the first successful resident refit, the next shape dispatch reads its
++previous fat bounds directly from the Metal result buffer rather than trusting
++the CPU mirror packed into `ShapeInput`. The state is accepted only when both
++the shape count and broad-phase revision still match. Buffer growth, proxy
++creation/destruction, explicit movement, and tree rebuilds fail closed by
++forcing a CPU-oracle reseed. `shapeBoundsResidentDispatchCount` exposes this
++transition. This makes the VF64-produced bounds authoritative between eligible
++steps, but the buffer is still shared and the full result is still applied to
++CPU shapes for current public-query, mesh-contact, sensor, CCD, and fallback
++consumers.
 +
 +Enable it with:
 +
@@ -1988,10 +2013,10 @@ index 2e82590..cd49acf 100644
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000..3814ecb
+index 0000000..fcc4ef2
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,75 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2027,6 +2052,7 @@ index 0000000..3814ecb
 +	uint64_t shapeDispatchCount;
 +	uint64_t shapeFallbackCount;
 +	uint64_t shapeCompactDispatchCount;
++	uint64_t shapeBoundsResidentDispatchCount;
 +	int lastShapeResultCount;
 +	int lastEnlargedShapeResultCount;
 +	uint64_t pairDispatchCount;
@@ -2655,10 +2681,10 @@ index 0000000..0d44142
 +void b3MetalCommitPairTreeRefit( b3MetalContext* context, const b3BroadPhase* broadPhase );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..d34992e
+index 0000000..77b9234
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,3124 @@
+@@ -0,0 +1,3140 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2739,6 +2765,8 @@ index 0000000..d34992e
 +	NSUInteger shapeInputCapacity;
 +	id<MTLBuffer> shapeResultBuffer;
 +	NSUInteger shapeResultCapacity;
++	uint64_t shapeBoundsRevision;
++	int shapeBoundsCount;
 +	id<MTLBuffer> shapeCompactBuffer;
 +	NSUInteger shapeCompactCapacity;
 +	id<MTLBuffer> shapeBlockBuffer;
@@ -2985,7 +3013,7 @@ index 0000000..d34992e
 +	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
 +	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
 +	"struct FinalizeParams { uint bodyCount; float invTimeStep; uint p0; uint p1; };\n"
-+	"struct ShapeParams { uint shapeCount; float extra; uint p0; uint p1; };\n"
++	"struct ShapeParams { uint shapeCount; float extra; uint useResidentBounds; uint p1; };\n"
 +	"struct ShapeCompactParams { uint shapeCount,blockCount,p0,p1; };\n"
 +	"struct FusedParams {\n"
 +	"  uint bodyCount; float h; float maxLinearSpeed; float maxAngularSpeed;\n"
@@ -3236,7 +3264,9 @@ index 0000000..d34992e
 +	"  float3 position=float3(b.positionX,b.positionY,b.positionZ);\n"
 +	"  float3 lo=position+localLo, hi=position+localHi;\n"
 +	"#endif\n"
-+	"  float3 oldLo=float3(in.oldLx,in.oldLy,in.oldLz), oldHi=float3(in.oldUx,in.oldUy,in.oldUz);\n"
++	"  float3 oldLo,oldHi;if(p.useResidentBounds!=0u){ShapeResult previous=results[i];\n"
++	"    oldLo=float3(previous.flx,previous.fly,previous.flz);oldHi=float3(previous.fux,previous.fuy,previous.fuz);\n"
++	"  }else{oldLo=float3(in.oldLx,in.oldLy,in.oldLz);oldHi=float3(in.oldUx,in.oldUy,in.oldUz);}\n"
 +	"  bool enlarged=any(oldLo>lo)||any(hi>oldHi); float3 fatLo=oldLo, fatHi=oldHi;\n"
 +	"  if (enlarged) { fatLo=lo-float3(in.margin); fatHi=hi+float3(in.margin); }\n"
 +	"  ShapeResult out; out.shapeId=in.shapeId; out.bodyIndex=in.bodyIndex; out.enlarged=enlarged?1u:0u; out.padding=0;\n"
@@ -4133,6 +4163,8 @@ index 0000000..d34992e
 +		[context->shapeResultBuffer release];
 +		context->shapeResultBuffer = buffer;
 +		context->shapeResultCapacity = capacity;
++		context->shapeBoundsRevision = 0;
++		context->shapeBoundsCount = 0;
 +	}
 +	NSUInteger shapeCount = resultBytes / sizeof( b3MetalShapeAABBResult );
 +	NSUInteger compactBytes = shapeCount * sizeof( b3MetalEnlargedShapeResult );
@@ -4533,6 +4565,7 @@ index 0000000..d34992e
 +	stepContext->metalShapeResultCount = 0;
 +	stepContext->metalEnlargedShapeResults = NULL;
 +	stepContext->metalEnlargedShapeResultCount = 0;
++	stepContext->metalShapeBoundsResident = false;
 +	stepContext->metalTreeRefitEligible = false;
 +	stepContext->metalTreeRefit = false;
 +	b3World* world = stepContext->world;
@@ -4611,16 +4644,19 @@ index 0000000..d34992e
 +		}
 +	}
 +	B3_ASSERT( outputIndex == shapeCount );
++	stepContext->metalShapeBoundsResident = context->shapeBoundsRevision == world->broadPhase.treeRevision &&
++		context->shapeBoundsCount == shapeCount;
 +	stepContext->metalTreeRefitEligible = treeRefitEligible;
 +	return shapeCount;
 +}
 +
 +static void b3MetalEncodeShapeFinalization( b3MetalContext* context, id<MTLComputeCommandEncoder> encoder,
-+	int shapeCount )
++	b3StepContext* stepContext, int shapeCount )
 +{
 +	if ( shapeCount == 0 ) return;
 +	struct { uint32_t shapeCount; float extra; uint32_t padding[2]; } params =
-+		{ (uint32_t)shapeCount, B3_SPECULATIVE_DISTANCE, { 0, 0 } };
++		{ (uint32_t)shapeCount, B3_SPECULATIVE_DISTANCE,
++		  { stepContext != NULL && stepContext->metalShapeBoundsResident ? 1u : 0u, 0 } };
 +	id<MTLComputePipelineState> pipeline = context->finalizeShapesPipeline;
 +	[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
 +	[encoder setComputePipelineState:pipeline];
@@ -4899,7 +4935,7 @@ index 0000000..d34992e
 +			[encoder setBytes:&finalizeParams length:sizeof( finalizeParams ) atIndex:4];
 +			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
 +				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
-+			b3MetalEncodeShapeFinalization( context, encoder, shapeCount );
++			b3MetalEncodeShapeFinalization( context, encoder, finalizationContext, shapeCount );
 +			treeRefitEncoded = b3MetalEncodePairTreeRefit( context, encoder, finalizationContext, shapeCount );
 +		}
 +		[encoder endEncoding];
@@ -4917,6 +4953,9 @@ index 0000000..d34992e
 +		}
 +		if ( finalizationContext != NULL && shapeCount > 0 )
 +		{
++			context->shapeBoundsCount = shapeCount;
++			finalizationContext->world->metalShapeBoundsResidentDispatchCount +=
++				finalizationContext->metalShapeBoundsResident ? 1 : 0;
 +			finalizationContext->metalShapeResults = context->shapeResultBuffer.contents;
 +			finalizationContext->metalShapeResultCount = shapeCount;
 +			finalizationContext->world->metalLastShapeResultCount = shapeCount;
@@ -5234,6 +5273,7 @@ index 0000000..d34992e
 +{
 +	if ( context == NULL || broadPhase == NULL || context->pairTreeBuffer == nil ) return;
 +	context->pairTreeRevision = broadPhase->treeRevision;
++	context->shapeBoundsRevision = broadPhase->treeRevision;
 +}
 +
 +bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepContext,
@@ -5684,7 +5724,7 @@ index 0000000..d34992e
 +			[encoder setBytes:&finalizeParams length:sizeof( finalizeParams ) atIndex:4];
 +			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)bodyCount, 1, 1 )
 +				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( finalizePipeline ), 1, 1 )];
-+			b3MetalEncodeShapeFinalization( context, encoder, shapeCount );
++			b3MetalEncodeShapeFinalization( context, encoder, stepContext, shapeCount );
 +			treeRefitEncoded = b3MetalEncodePairTreeRefit( context, encoder, stepContext, shapeCount );
 +		}
 +
@@ -5700,6 +5740,8 @@ index 0000000..d34992e
 +		stepContext->metalFinalizeResults = finalizeBodies ? context->finalizeResultBuffer.contents : NULL;
 +		if ( shapeCount > 0 )
 +		{
++			context->shapeBoundsCount = shapeCount;
++			stepContext->world->metalShapeBoundsResidentDispatchCount += stepContext->metalShapeBoundsResident ? 1 : 0;
 +			stepContext->metalShapeResults = context->shapeResultBuffer.contents;
 +			stepContext->metalShapeResultCount = shapeCount;
 +			stepContext->world->metalLastShapeResultCount = shapeCount;
@@ -6924,7 +6966,7 @@ index 0000000..a4424e5
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..d483d9c 100644
+index 29c13c7..6ab1436 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -6951,7 +6993,7 @@ index 29c13c7..d483d9c 100644
  	// Detach any recording before teardown. The user owns and frees the recording buffer.
  	b3StopRecordingInternal( world );
  
-@@ -538,6 +548,126 @@ int b3GetWorldCount( void )
+@@ -538,6 +548,127 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -7055,6 +7097,7 @@ index 29c13c7..d483d9c 100644
 +	profile.shapeDispatchCount = world->metalShapeDispatchCount;
 +	profile.shapeFallbackCount = world->metalShapeFallbackCount;
 +	profile.shapeCompactDispatchCount = world->metalShapeCompactDispatchCount;
++	profile.shapeBoundsResidentDispatchCount = world->metalShapeBoundsResidentDispatchCount;
 +	profile.lastShapeResultCount = world->metalLastShapeResultCount;
 +	profile.lastEnlargedShapeResultCount = world->metalLastEnlargedShapeResultCount;
 +	profile.pairDispatchCount = world->metalPairDispatchCount;
@@ -7078,7 +7121,7 @@ index 29c13c7..d483d9c 100644
  int b3GetMaxWorldCount( void )
  {
  	return b3_maxWorldCount;
-@@ -3473,6 +3603,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +3604,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -7091,10 +7134,10 @@ index 29c13c7..d483d9c 100644
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8..fe0ee14 100644
+index 8bd3df8..487f787 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
-@@ -266,6 +266,38 @@ typedef struct b3World
+@@ -266,6 +266,39 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
@@ -7115,6 +7158,7 @@ index 8bd3df8..fe0ee14 100644
 +	uint64_t metalShapeDispatchCount;
 +	uint64_t metalShapeFallbackCount;
 +	uint64_t metalShapeCompactDispatchCount;
++	uint64_t metalShapeBoundsResidentDispatchCount;
 +	int metalLastShapeResultCount;
 +	int metalLastEnlargedShapeResultCount;
 +	uint64_t metalPairDispatchCount;
@@ -7133,13 +7177,13 @@ index 8bd3df8..fe0ee14 100644
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -347,4 +379,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +380,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
 -
 diff --git a/src/solver.c b/src/solver.c
-index d8aace0..4d9ba4c 100644
+index d8aace0..81a167d 100644
 --- a/src/solver.c
 +++ b/src/solver.c
 @@ -19,6 +19,9 @@
@@ -7698,7 +7742,7 @@ index d8aace0..4d9ba4c 100644
  		return;
  	}
  
-@@ -1462,6 +1805,12 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1462,6 +1805,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  		stepContext->sims = awakeSet->bodySims.data;
  		stepContext->states = awakeSet->bodyStates.data;
@@ -7708,10 +7752,11 @@ index d8aace0..4d9ba4c 100644
 +		stepContext->metalEnlargedShapeResults = NULL;
 +		stepContext->metalEnlargedShapeResultCount = 0;
 +		stepContext->metalStatesResident = false;
++		stepContext->metalShapeBoundsResident = false;
  
  		// count contacts, joints, and colors
  		int activeColorCount = 0;
-@@ -1557,13 +1906,20 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1557,13 +1907,20 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3BlockDim jointPrepareDim = b3ComputeBlockCount( jointCount, minJointsPerBlock, maxBlockCount );
  
  		int wideContactByteCount = b3GetWideContactConstraintByteCount();
@@ -7739,7 +7784,7 @@ index d8aace0..4d9ba4c 100644
  		b3GraphColor* overflow = colors + B3_OVERFLOW_INDEX;
  		int overflowCount = overflow->contacts.count;
  		int overflowManifoldCount = 0;
-@@ -1573,10 +1929,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1573,10 +1930,38 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			overflowManifoldCount += overflow->contacts.data[i].manifoldCount;
  		}
  
@@ -7782,7 +7827,7 @@ index d8aace0..4d9ba4c 100644
  
  		// Build the span table for the flat prepare/store parallel-for while I slice the
  		// wide constraint buffer across colors. One entry per active color plus a sentinel
-@@ -1798,9 +2182,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1798,9 +2183,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		stepContext->wideContactCount = wideContactCount;
  		stepContext->manifoldConstraints = manifoldConstraints;
  		stepContext->contactConstraints = contactConstraints;
@@ -7798,7 +7843,7 @@ index d8aace0..4d9ba4c 100644
  		b3AtomicStoreU32( &stepContext->atomicSyncBits, 0 );
  		b3AtomicStoreInt( &stepContext->mainClaimed, 0 );
  
-@@ -1884,7 +2274,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1884,7 +2275,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		}
  
  		// Finalize bodies. Must happen after the constraint solver and after island splitting.
@@ -7814,7 +7859,7 @@ index d8aace0..4d9ba4c 100644
  
  		// Free in reverse order
  		b3StackFree( &world->stack, graphBlocks );
-@@ -1893,11 +2291,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -1893,11 +2292,17 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3StackFree( &world->stack, convexBlocks );
  		b3StackFree( &world->stack, bodyBlocks );
  		b3StackFree( &world->stack, stages );
@@ -7837,7 +7882,7 @@ index d8aace0..4d9ba4c 100644
  
  		world->profile.transforms = b3GetMilliseconds( transformTicks );
  		b3TracyCZoneEnd( update_transforms );
-@@ -2083,25 +2487,50 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2083,25 +2488,50 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			world->activeTaskCount -= 1;
  		}
  
@@ -7900,7 +7945,7 @@ index d8aace0..4d9ba4c 100644
  			b3Body* bodyArray = world->bodies.data;
  			b3BodySim* bodySimArray = awakeSet->bodySims.data;
  			b3Shape* shapeArray = world->shapes.data;
-@@ -2113,24 +2542,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2113,24 +2543,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  				{
  					uint32_t ctz = b3CTZ64( word );
  					uint32_t bodySimIndex = 64 * k + ctz;
@@ -7925,7 +7970,7 @@ index d8aace0..4d9ba4c 100644
  							shapeId = shape->nextShapeId;
  						}
  					}
-@@ -2139,21 +2559,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2139,21 +2560,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  						while ( shapeId != B3_NULL_INDEX )
  						{
  							b3Shape* shape = shapeArray + shapeId;
@@ -7947,7 +7992,7 @@ index d8aace0..4d9ba4c 100644
  					word = word & ( word - 1 );
  				}
  			}
-@@ -2178,7 +2591,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2178,7 +2592,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  		// Serially enlarge broad-phase proxies for bullet shapes
  		b3BroadPhase* broadPhase = &world->broadPhase;
@@ -7955,7 +8000,7 @@ index d8aace0..4d9ba4c 100644
  
  		// Fast array access is important here
  		b3Body* bodyArray = world->bodies.data;
-@@ -2219,12 +2631,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2219,12 +2632,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  				int proxyKey = shape->proxyKey;
  				int proxyId = B3_PROXY_ID( proxyKey );
@@ -7970,7 +8015,7 @@ index d8aace0..4d9ba4c 100644
  
  				shapeId = shape->nextShapeId;
  			}
-@@ -2234,6 +2647,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2234,6 +2648,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3TracyCZoneEnd( bullets );
  	}
  
@@ -7985,7 +8030,7 @@ index d8aace0..4d9ba4c 100644
  	stepContext->bulletBodies = NULL;
  	b3AtomicStoreInt( &stepContext->bulletBodyCount, 0 );
 diff --git a/src/solver.h b/src/solver.h
-index 7c8a1c7..ca7d60c 100644
+index 7c8a1c7..fd1f711 100644
 --- a/src/solver.h
 +++ b/src/solver.h
 @@ -137,6 +137,42 @@ typedef struct b3SolverStage
@@ -8031,7 +8076,7 @@ index 7c8a1c7..ca7d60c 100644
  // Constraint softness
  typedef struct b3Softness
  {
-@@ -201,6 +237,17 @@ typedef struct b3StepContext
+@@ -201,6 +237,18 @@ typedef struct b3StepContext
  	// shortcut to body sims from awake set
  	b3BodySim* sims;
  
@@ -8043,13 +8088,14 @@ index 7c8a1c7..ca7d60c 100644
 +	const b3MetalEnlargedShapeResult* metalEnlargedShapeResults;
 +	int metalEnlargedShapeResultCount;
 +	bool metalStatesResident;
++	bool metalShapeBoundsResident;
 +	bool metalTreeRefitEligible;
 +	bool metalTreeRefit;
 +
  	// array of all shape ids for shapes that have enlarged AABBs
  	int* enlargedShapes;
  	int enlargedShapeCount;
-@@ -224,9 +271,15 @@ typedef struct b3StepContext
+@@ -224,9 +272,15 @@ typedef struct b3StepContext
  	// Similar for mesh/overflow contact constraints
  	struct b3ManifoldConstraint* manifoldConstraints;
  	struct b3ContactConstraint* contactConstraints;
@@ -8106,10 +8152,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..286bc05
+index 0000000..45367f4
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,1679 @@
+@@ -0,0 +1,1700 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -8698,7 +8744,9 @@ index 0000000..286bc05
 +	shapeDef.invokeContactCreation = false;
 +	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.2f };
 +	int* movingProxyKeys = malloc( (size_t)( bodyCount / 2 ) * sizeof( int ) );
-+	ENSURE( movingProxyKeys != NULL );
++	b3ShapeId* movingShapeIds = malloc( (size_t)( bodyCount / 2 ) * sizeof( b3ShapeId ) );
++	b3BodyId mutationBodyId = { 0 };
++	ENSURE( movingProxyKeys != NULL && movingShapeIds != NULL );
 +	for ( int i = 0; i < bodyCount; ++i )
 +	{
 +		b3BodyDef bodyDef = b3DefaultBodyDef();
@@ -8707,18 +8755,29 @@ index 0000000..286bc05
 +		bodyDef.position = (b3Pos){ 3.0f * (float)i, 0.0f, 0.0f };
 +		bodyDef.linearVelocity = i % 2 == 0 ? (b3Vec3){ 20.0f, 0.0f, 0.0f } : b3Vec3_zero;
 +		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
++		if ( i == 1 ) mutationBodyId = bodyId;
 +		b3ShapeId shapeId = b3CreateSphereShape( bodyId, &shapeDef, &sphere );
 +		if ( i % 2 == 0 )
 +		{
 +			b3World* world = b3GetWorldFromId( worldId );
 +			movingProxyKeys[i / 2] = world->shapes.data[shapeId.index1 - 1].proxyKey;
++			movingShapeIds[i / 2] = shapeId;
 +		}
 +	}
 +
 +	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 +	b3World* world = b3GetWorldFromId( worldId );
++	// Poison the CPU mirror without changing the broad-phase revision. The next
++	// dispatch must use its prior resident fat bounds, not these packed values.
++	for ( int i = 0; i < bodyCount / 2; ++i )
++	{
++		b3Shape* shape = world->shapes.data + movingShapeIds[i].index1 - 1;
++		shape->fatAABB = (b3AABB){ { -1.0e6f, -1.0e6f, -1.0e6f }, { 1.0e6f, 1.0e6f, 1.0e6f } };
++	}
++	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 +	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
-+	ENSURE( profile.shapeCompactDispatchCount == 1 );
++	ENSURE( profile.shapeCompactDispatchCount == 2 );
++	ENSURE( profile.shapeBoundsResidentDispatchCount == 1 );
 +	ENSURE( profile.lastShapeResultCount == bodyCount );
 +	ENSURE( profile.lastEnlargedShapeResultCount == bodyCount / 2 );
 +	ENSURE( world->broadPhase.moveArray.count == bodyCount / 2 );
@@ -8726,9 +8785,17 @@ index 0000000..286bc05
 +	{
 +		ENSURE( world->broadPhase.moveArray.data[i] == movingProxyKeys[i] );
 +	}
-+	printf( "    shape compaction enlarged=%d/%d stableOrder=yes\n", profile.lastEnlargedShapeResultCount,
-+		profile.lastShapeResultCount );
++	// A public mutation increments the tree revision, so the following dispatch
++	// must reseed from CPU bounds instead of trusting the old resident layout.
++	b3Body_SetTransform( mutationBodyId, (b3Pos){ 3.0f, 2.0f, 0.0f }, b3Quat_identity );
++	b3World_Step( worldId, 1.0f / 60.0f, 1 );
++	profile = b3World_GetMetalProfile( worldId );
++	ENSURE( profile.shapeBoundsResidentDispatchCount == 1 );
++	printf( "    shape compaction enlarged=%d/%d stableOrder=yes residentBounds=%llu\n",
++		profile.lastEnlargedShapeResultCount, profile.lastShapeResultCount,
++		(unsigned long long)profile.shapeBoundsResidentDispatchCount );
 +
++	free( movingShapeIds );
 +	free( movingProxyKeys );
 +	b3DestroyWorld( worldId );
 +	return 0;
