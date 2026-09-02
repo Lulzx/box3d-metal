@@ -581,7 +581,8 @@ bool b3World_SetMetalFinalization( b3WorldId worldId, bool enabled )
 
 	if ( enabled == false )
 	{
-		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false ) return false;
+		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
+			return false;
 	}
 	world->metalFinalizationEnabled = enabled;
 	return true;
@@ -597,7 +598,8 @@ bool b3World_SetMetalBroadPhase( b3WorldId worldId, bool enabled )
 
 	if ( world->metalBroadPhaseEnabled && enabled == false )
 	{
-		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false ) return false;
+		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
+			return false;
 		// Metal pair traversal deliberately retains enlarged CPU tree nodes while
 		// its resident snapshot is refit on-device. Restore the ordinary CPU tree
 		// invariant before returning control to the CPU broad-phase.
@@ -665,6 +667,7 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.lastContactImpulseResultBytes = world->metalLastContactImpulseResultBytes;
 	profile.contactSchedulePackCount = world->metalContactSchedulePackCount;
 	profile.contactScheduleReuseCount = world->metalContactScheduleReuseCount;
+	profile.contactPersistenceMatchCount = world->metalContactPersistenceMatchCount;
 	profile.contactImpulseStoreBypassCount = world->metalContactImpulseStoreBypassCount;
 	profile.contactImpulseEventSyncCount = world->metalContactImpulseEventSyncCount;
 	profile.contactImpulseSyncCount = world->metalContactImpulseSyncCount;
@@ -770,8 +773,10 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 		while ( low < high )
 		{
 			int middle = low + ( high - low ) / 2;
-			if ( metalResults[middle].inputIndex < (uint32_t)startIndex ) low = middle + 1;
-			else high = middle;
+			if ( metalResults[middle].inputIndex < (uint32_t)startIndex )
+				low = middle + 1;
+			else
+				high = middle;
 		}
 		metalResultIndex = low;
 	}
@@ -950,12 +955,20 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 		contact->flags |= b3_relativeTransformValid;
 
 		// This updates solid contacts. Metal convex results contain world-oriented
-		// geometry relative to body A; the CPU still owns material callbacks,
-		// manifold persistence, events, recycling, and graph/island transitions.
+		// center-of-mass-relative anchors and default material mixing; the CPU
+		// still owns custom callbacks, events, recycling, and graph/island transitions.
 		const b3LocalManifold* precomputedConvexManifold = NULL;
+		const float* precomputedNormalImpulses = NULL;
+		uint32_t precomputedPersistedBits = 0;
+		const b3Vec3* precomputedAnchorBs = NULL;
+		bool precomputedAnchorsRelativeToCenter = false;
+		const b3PrecomputedContactMaterial* precomputedMaterial = NULL;
 #if defined( BOX3D_METAL )
 		b3LocalManifold localConvexManifold = { 0 };
 		b3LocalManifoldPoint localConvexPoints[2] = { 0 };
+		float localNormalImpulses[2] = { 0.0f, 0.0f };
+		b3Vec3 localAnchorBs[2] = { b3Vec3_zero, b3Vec3_zero };
+		b3PrecomputedContactMaterial localMaterial = { 0 };
 		if ( metalResult != NULL )
 		{
 			const b3MetalConvexManifoldResult* result = metalResult;
@@ -980,14 +993,31 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 						.index2 = (uint8_t)featureId,
 					};
 				}
+				localNormalImpulses[0] = result->normalImpulse1;
+				localNormalImpulses[1] = result->normalImpulse2;
+				precomputedNormalImpulses = localNormalImpulses;
+				precomputedPersistedBits = result->persistedBits;
+				localAnchorBs[0] = (b3Vec3){ result->anchorB1X, result->anchorB1Y, result->anchorB1Z };
+				localAnchorBs[1] = (b3Vec3){ result->anchorB2X, result->anchorB2Y, result->anchorB2Z };
+				precomputedAnchorBs = localAnchorBs;
+				precomputedAnchorsRelativeToCenter = true;
+				localMaterial.friction = result->friction;
+				localMaterial.restitution = result->restitution;
+				localMaterial.rollingResistance = result->rollingResistance;
+				localMaterial.tangentVelocity =
+					(b3Vec3){ result->tangentVelocityX, result->tangentVelocityY, result->tangentVelocityZ };
+				localMaterial.useFriction = world->frictionCallback == b3DefaultFrictionCallback;
+				localMaterial.useRestitution = world->restitutionCallback == b3DefaultRestitutionCallback;
+				precomputedMaterial = &localMaterial;
 				precomputedConvexManifold = &localConvexManifold;
 			}
 		}
 #endif
-		bool touching = b3UpdateContact( world, workerIndex, contact, shapeA, bodySimA->localCenter, transformA, shapeB,
-										 bodySimB->localCenter, transformB, isFast, precomputedConvexManifold,
-										 precomputedConvexManifold != NULL,
-										 taskContext->arena );
+		bool touching =
+			b3UpdateContact( world, workerIndex, contact, shapeA, bodySimA->localCenter, transformA, shapeB,
+							 bodySimB->localCenter, transformB, isFast, precomputedConvexManifold,
+							 precomputedConvexManifold != NULL, precomputedNormalImpulses, precomputedPersistedBits,
+							 precomputedAnchorBs, precomputedAnchorsRelativeToCenter, precomputedMaterial, taskContext->arena );
 #if defined( BOX3D_METAL )
 		if ( precomputedConvexManifold != NULL && ( contact->flags & b3_simEnablePreSolveEvents ) == 0 &&
 			 b3MetalStageResidentContactPrepare( world->metalContext, contact ) )
@@ -1146,7 +1176,7 @@ static void b3Collide( b3StepContext* context )
 		int eligibleCount = 0;
 		b3MetalDispatchStats stats = { 0 };
 		if ( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &convexResults,
-			&eligibleCount, &stats ) )
+											&eligibleCount, &stats ) )
 		{
 			if ( eligibleCount > 0 )
 			{
@@ -1324,8 +1354,8 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	// current shape AABBs resident. Any route expansion or CPU mutation fails
 	// closed before the next step can consume those mirrors.
 	if ( world->metalShapeCpuBoundsStale &&
-		( world->broadPhase.treeRevision != world->metalShapeCpuStaleRevision || world->enableContinuous ||
-		  world->contacts.count != 0 || world->sensors.count != 0 ) )
+		 ( world->broadPhase.treeRevision != world->metalShapeCpuStaleRevision || world->enableContinuous ||
+		   world->contacts.count != 0 || world->sensors.count != 0 ) )
 	{
 		if ( b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
 		{
@@ -1736,7 +1766,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
 				b3WorldTransform transform = { bodySim->center, bodySim->transform.q };
 				draw->DrawTransformFcn( transform, draw->context );
 
-				if (body->type == b3_dynamicBody)
+				if ( body->type == b3_dynamicBody )
 				{
 					b3Vec3 offset = { 0.05f, 0.05f, 0.05f };
 					b3Pos p = b3TransformWorldPoint( transform, offset );

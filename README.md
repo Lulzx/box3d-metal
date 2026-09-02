@@ -50,27 +50,28 @@ Metal geometry registry: unchanged dispatches reuse primitive endpoints, radii,
 hull points, planes, triangles, and shape descriptors, while geometry and
 topology mutation rebuild fail-closed. Identical hull streams remain
 content-deduplicated. A second body-id registry retains static and awake body
-rotations plus VF64-capable world translations for the collision step. Each
-16-byte contact record now carries only eligibility and two shape ids. Full
-80-byte outputs stay in private Metal storage; a stable scan/prefix/scatter pass
+rotations, local centers, and VF64-capable world translations for the collision
+step. Each 32-byte contact record carries eligibility, shape/contact identity,
+and contact generation. Full 160-byte outputs stay in private Metal storage; a stable scan/prefix/scatter pass
 returns only active results, tagged by original contact index, in the same
-command buffer. The scatter also rotates normals and points into world axes,
-so CPU workers lower-bound once per range and consume geometry already finalized
-for Box3D manifold persistence
-while retaining manifold allocation, warm-start feature matching, materials,
+command buffer. The scatter rotates normals into world axes, produces both
+center-of-mass-relative anchors with VF64 translation subtraction, mixes default
+friction/restitution/rolling parameters and tangent velocity, and feature-matches
+warm starts against the prior GPU result. CPU workers consume this finalized
+state while retaining manifold allocation, custom material callbacks,
 pre-solve callbacks, events, and island mutation. Other shape pairs stay on the
 unchanged CPU path. High-aspect and speculative hull-sphere contacts explicitly
 retain CPU GJK. Double worlds use VF64 exact subtraction before narrowing
 relative translations to the float convex-collision boundary.
 The same scatter writes each active finalized record into a private table
-indexed by Box3D contact id. The existing 16-byte input uses its former padding
-word for that id. This adds no steady-path readback or dispatch; explicit table
+indexed by Box3D contact id. This adds no steady-path readback or dispatch; explicit table
 staging exists only for validation and fallback diagnostics.
 When every colored convex contact remains authoritative after persistence and
 callback processing, a Metal preparation kernel now builds Erin's SIMD-wide
-contact constraints from that table in the solver command buffer. The CPU still
-owns persistence and material resolution, but writes the resulting 152-byte
-record once into a generation-tagged contact-ID table during that existing pass.
+contact constraints from that table in the solver command buffer. The CPU writes
+the remaining body indices, manifold identity, callback results, and finalized
+contact state into a 152-byte generation-tagged contact-ID table during the
+existing topology pass.
 Solver submission bulk-copies only a deterministic four-byte contact-ID schedule
 per SIMD lane; it no longer walks and dereferences every contact to repack the
 records. Normal and identity remain private on-device. Mixed, recycled, callback,
@@ -90,9 +91,10 @@ contact-ID lane schedule remains in its Metal buffer while that revision and its
 exact wide/contact counts are unchanged; contact or joint insertion/removal
 invalidates it before the next solver submission.
 The post-solve table also retains contact generation and per-point feature IDs.
-On the next fresh supported collision pass, matching features restore normal,
-friction, twist, and rolling warm-start impulses from GPU-authored state before
-preparation metadata is staged. Contact-slot reuse cannot consume stale state.
+On the next fresh supported collision pass, the scatter kernel matches features
+and emits point persistence plus normal warm-start impulses; contact-scope
+friction, twist, and rolling terms remain resident through preparation staging.
+Contact-slot reuse cannot consume stale state.
 The 81-contact differential now performs four store bypasses and zero CPU
 manifold synchronizations; the hit-event differential synchronizes exactly one
 exception contact.

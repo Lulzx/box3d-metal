@@ -501,7 +501,8 @@ void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies )
 static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact* contact, const b3Shape* shapeA,
 									 b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB,
 									 const b3LocalManifold* precomputedConvexManifold, bool precomputedWorldOriented,
-									 b3Arena arena )
+									 const float* precomputedNormalImpulses, uint32_t precomputedPersistedBits,
+									 const b3Vec3* precomputedAnchorBs, b3Arena arena )
 {
 	b3ShapeType typeA = shapeA->type;
 	b3ShapeType typeB = shapeB->type;
@@ -509,8 +510,12 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 
 	b3ContactCache* cache = &contact->convexContact.cache;
 
-	int pointCapacity = 32;
-	b3LocalManifoldPoint* pointBuffer = (b3LocalManifoldPoint*)b3Bump( &arena, pointCapacity * sizeof( b3LocalManifoldPoint ) );
+	b3LocalManifoldPoint precomputedPointBuffer[2];
+	int pointCapacity = precomputedConvexManifold != NULL ? 2 : 32;
+	b3LocalManifoldPoint* pointBuffer =
+		precomputedConvexManifold != NULL
+			? precomputedPointBuffer
+			: (b3LocalManifoldPoint*)b3Bump( &arena, pointCapacity * sizeof( b3LocalManifoldPoint ) );
 
 	b3LocalManifold geomManifold = { 0 };
 	geomManifold.points = pointBuffer;
@@ -518,8 +523,8 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 	if ( precomputedConvexManifold != NULL )
 	{
 		B3_ASSERT( ( typeA == b3_sphereShape && typeB == b3_sphereShape ) ||
-			( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) ) ||
-			( typeA == b3_hullShape && typeB == b3_sphereShape ) );
+				   ( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) ) ||
+				   ( typeA == b3_hullShape && typeB == b3_sphereShape ) );
 		if ( typeA == b3_hullShape )
 		{
 			// The specialized hull-point route does not consume or emit GJK
@@ -599,7 +604,7 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 		contact->manifolds = b3AllocateManifolds( world, 1 );
 		contact->manifoldCount = 1;
 	}
-	else
+	else if ( precomputedNormalImpulses == NULL )
 	{
 		oldCount = contact->manifolds[0].pointCount;
 		memcpy( oldPoints, contact->manifolds[0].points, oldCount * sizeof( b3ManifoldPoint ) );
@@ -627,7 +632,8 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 
 		// Contact points are computed in frame A
 		target->anchorA = precomputedWorldOriented ? source->point : b3MulMV( matrixA, source->point );
-		target->anchorB = b3Add( target->anchorA, b3SubPos( xfA.p, xfB.p ) );
+		target->anchorB =
+			precomputedAnchorBs != NULL ? precomputedAnchorBs[i] : b3Add( target->anchorA, b3SubPos( xfA.p, xfB.p ) );
 		target->separation = source->separation;
 		target->featureId = b3MakeFeatureId( source->pair );
 		target->triangleIndex = B3_NULL_INDEX;
@@ -639,9 +645,10 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 	{
 		b3ManifoldPoint* pt2 = manifold->points + i;
 		pt2->totalNormalImpulse = 0.0f;
-		pt2->persisted = false;
+		pt2->persisted = precomputedNormalImpulses != NULL && ( precomputedPersistedBits & ( 1u << i ) ) != 0;
+		pt2->normalImpulse = precomputedNormalImpulses != NULL ? precomputedNormalImpulses[i] : 0.0f;
 
-		for ( int j = 0; j < oldCount; ++j )
+		for ( int j = 0; precomputedNormalImpulses == NULL && j < oldCount; ++j )
 		{
 			b3ManifoldPoint* pt1 = oldPoints + j;
 
@@ -669,11 +676,14 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* contact, b3Shape* shapeA, b3WorldTransform xfA,
 								   b3Shape* shapeB, b3WorldTransform xfB, bool flip,
 								   const b3LocalManifold* precomputedConvexManifold, bool precomputedWorldOriented,
+								   const float* precomputedNormalImpulses, uint32_t precomputedPersistedBits,
+								   const b3Vec3* precomputedAnchorBs, const b3PrecomputedContactMaterial* precomputedMaterial,
 								   b3Arena arena )
 {
 	// Compute new manifold
-	bool touching = b3ComputeConvexManifold( world, workerIndex, contact, shapeA, xfA, shapeB, xfB,
-		precomputedConvexManifold, precomputedWorldOriented, arena );
+	bool touching = b3ComputeConvexManifold( world, workerIndex, contact, shapeA, xfA, shapeB, xfB, precomputedConvexManifold,
+											 precomputedWorldOriented, precomputedNormalImpulses, precomputedPersistedBits,
+											 precomputedAnchorBs, arena );
 
 	if ( touching == false )
 	{
@@ -700,12 +710,21 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
 	const b3SurfaceMaterial* materialB = b3GetShapeMaterials( shapeB );
 
 	// Keep these updated in case the values on the shapes are modified
-	contact->friction =
-		world->frictionCallback( materialA->friction, materialA->userMaterialId, materialB->friction, materialB->userMaterialId );
-	contact->restitution = world->restitutionCallback( materialA->restitution, materialA->userMaterialId, materialB->restitution,
+	contact->friction = precomputedMaterial != NULL && precomputedMaterial->useFriction
+							? precomputedMaterial->friction
+							: world->frictionCallback( materialA->friction, materialA->userMaterialId, materialB->friction,
 													   materialB->userMaterialId );
+	contact->restitution = precomputedMaterial != NULL && precomputedMaterial->useRestitution
+							   ? precomputedMaterial->restitution
+							   : world->restitutionCallback( materialA->restitution, materialA->userMaterialId,
+															 materialB->restitution, materialB->userMaterialId );
 
-	if ( materialA->rollingResistance > 0.0f || materialB->rollingResistance > 0.0f )
+	if ( precomputedMaterial != NULL )
+	{
+		contact->rollingResistance = precomputedMaterial->rollingResistance;
+		contact->tangentVelocity = precomputedMaterial->tangentVelocity;
+	}
+	else if ( materialA->rollingResistance > 0.0f || materialB->rollingResistance > 0.0f )
 	{
 		b3ShapeType typeA = shapeA->type;
 		b3ShapeType typeB = shapeB->type;
@@ -746,9 +765,12 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
 		contact->rollingResistance = 0.0f;
 	}
 
-	b3Vec3 tangentVelocityA = b3RotateVector( xfA.q, materialA->tangentVelocity );
-	b3Vec3 tangentVelocityB = b3RotateVector( xfB.q, materialB->tangentVelocity );
-	contact->tangentVelocity = b3Sub( tangentVelocityA, tangentVelocityB );
+	if ( precomputedMaterial == NULL )
+	{
+		b3Vec3 tangentVelocityA = b3RotateVector( xfA.q, materialA->tangentVelocity );
+		b3Vec3 tangentVelocityB = b3RotateVector( xfB.q, materialB->tangentVelocity );
+		contact->tangentVelocity = b3Sub( tangentVelocityA, tangentVelocityB );
+	}
 
 	if ( world->preSolveFcn && ( contact->flags & b3_simEnablePreSolveEvents ) != 0 )
 	{
@@ -785,7 +807,10 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
 // Note: do not assume the shape AABBs are overlapping or are valid.
 bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Shape* shapeA, b3Vec3 localCenterA,
 					  b3WorldTransform xfA, b3Shape* shapeB, b3Vec3 localCenterB, b3WorldTransform xfB, bool isFast,
-					  const b3LocalManifold* precomputedConvexManifold, bool precomputedWorldOriented, b3Arena arena )
+					  const b3LocalManifold* precomputedConvexManifold, bool precomputedWorldOriented,
+					  const float* precomputedNormalImpulses, uint32_t precomputedPersistedBits,
+					  const b3Vec3* precomputedAnchorBs, bool precomputedAnchorsRelativeToCenter,
+					  const b3PrecomputedContactMaterial* precomputedMaterial, b3Arena arena )
 {
 	bool touching;
 
@@ -819,12 +844,14 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
 			{
 				// Flip
 				bool flip = true;
-				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, NULL, false, arena );
+				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, NULL, false,
+												  NULL, 0, NULL, NULL, arena );
 			}
 			else
 			{
 				bool flip = false;
-				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, NULL, false, arena );
+				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, NULL, false,
+												  NULL, 0, NULL, NULL, arena );
 			}
 		}
 		else if ( child.type == b3_hullShape )
@@ -832,7 +859,8 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
 			childShapeA.hull = child.hull;
 			b3WorldTransform xfChild = b3MulWorldTransforms( xfA, child.transform );
 			bool flip = false;
-			touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfChild, shapeB, xfB, flip, NULL, false, arena );
+			touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfChild, shapeB, xfB, flip, NULL, false,
+											  NULL, 0, NULL, NULL, arena );
 		}
 		else if ( child.type == b3_meshShape )
 		{
@@ -863,12 +891,14 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
 			{
 				// Flip
 				bool flip = true;
-				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, NULL, false, arena );
+				touching = b3UpdateConvexContact( world, workerIndex, contact, shapeB, xfB, &childShapeA, xfA, flip, NULL, false,
+												  NULL, 0, NULL, NULL, arena );
 			}
 			else
 			{
 				bool flip = false;
-				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, NULL, false, arena );
+				touching = b3UpdateConvexContact( world, workerIndex, contact, &childShapeA, xfA, shapeB, xfB, flip, NULL, false,
+												  NULL, 0, NULL, NULL, arena );
 			}
 		}
 
@@ -909,8 +939,9 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
 	{
 		// Convex-vs-convex
 		bool flip = false;
-		touching = b3UpdateConvexContact( world, workerIndex, contact, shapeA, xfA, shapeB, xfB, flip,
-			precomputedConvexManifold, precomputedWorldOriented, arena );
+		touching = b3UpdateConvexContact( world, workerIndex, contact, shapeA, xfA, shapeB, xfB, flip, precomputedConvexManifold,
+										  precomputedWorldOriented, precomputedNormalImpulses, precomputedPersistedBits,
+										  precomputedAnchorBs, precomputedMaterial, arena );
 	}
 
 	if ( touching )
@@ -919,7 +950,7 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
 		b3Vec3 centerB = b3RotateVector( xfB.q, localCenterB );
 
 		// Adjust anchors to be relative to center of mass
-		for ( int i = 0; i < contact->manifoldCount; ++i )
+		for ( int i = 0; precomputedAnchorsRelativeToCenter == false && i < contact->manifoldCount; ++i )
 		{
 			b3Manifold* manifold = contact->manifolds + i;
 			for ( int j = 0; j < manifold->pointCount; ++j )

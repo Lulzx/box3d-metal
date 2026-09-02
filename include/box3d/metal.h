@@ -43,6 +43,9 @@ typedef struct b3MetalProfile
 	uint64_t contactSchedulePackCount;
 	/// Successful solver steps that reused the resident contact-ID schedule.
 	uint64_t contactScheduleReuseCount;
+	/// Contact points whose warm-start impulse and persistence flag were matched
+	/// by the Metal manifold-finalization kernel.
+	uint64_t contactPersistenceMatchCount;
 	/// Resident convex steps that skipped the all-contact CPU impulse-store walk.
 	uint64_t contactImpulseStoreBypassCount;
 	/// Hit-event exception contacts synchronized during the compact store path.

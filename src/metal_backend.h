@@ -36,8 +36,10 @@ typedef struct b3MetalPairCandidate
 	int padding;
 } b3MetalPairCandidate;
 
-// Finalized sphere/capsule/compact-hull geometry in world axes, with points
-// relative to body A's origin. Compact records preserve input order.
+// Finalized sphere/capsule/compact-hull geometry in world axes, with point
+// anchors relative to each body's center of mass. The record also carries GPU-authored point
+// persistence and warm-start impulses matched against the prior resident solve.
+// Compact records preserve input order.
 // eligible == 0 means the CPU path owns that contact; eligible != 0 is authoritative even
 // when touching == 0.
 typedef struct b3MetalConvexManifoldResult
@@ -53,6 +55,13 @@ typedef struct b3MetalConvexManifoldResult
 	uint32_t featureId1, featureId2;
 	uint32_t scanOffset;
 	uint32_t contactId;
+	float normalImpulse1, normalImpulse2;
+	uint32_t persistedBits;
+	uint32_t previousResultMatched;
+	float friction, restitution, rollingResistance, materialPadding;
+	float tangentVelocityX, tangentVelocityY, tangentVelocityZ, tangentVelocityPadding;
+	float anchorB1X, anchorB1Y, anchorB1Z, anchorB1Padding;
+	float anchorB2X, anchorB2Y, anchorB2Z, anchorB2Padding;
 } b3MetalConvexManifoldResult;
 
 // Compact post-solve state written by Metal and indexed by contact id. This is
@@ -102,58 +111,58 @@ b3ManifoldConstraint* b3MetalGetMeshManifoldStorage( b3MetalContext* context, in
 // Integrates the complete awake-state array in one compute dispatch. The
 // backend owns a persistent shared buffer so Apple unified memory is used and
 // allocations are amortized across steps.
-bool b3MetalIntegratePositions( b3MetalContext* context, b3BodyState* states, int bodyCount, float h,
-								float maxLinearSpeed, float maxAngularSpeed, b3MetalDispatchStats* stats );
+bool b3MetalIntegratePositions( b3MetalContext* context, b3BodyState* states, int bodyCount, float h, float maxLinearSpeed,
+								float maxAngularSpeed, b3MetalDispatchStats* stats );
 
 // Fused velocity and position integration for worlds with no active contacts
 // or joints. Body properties are uploaded once and both stages execute in one
 // dispatch, avoiding an intermediate CPU/GPU synchronization point.
-bool b3MetalIntegrateUnconstrained( b3MetalContext* context, b3BodyState* states, const b3BodySim* sims, int bodyCount,
-									float h, b3Vec3 gravity, float maxLinearSpeed, float maxAngularSpeed,
-									b3MetalDispatchStats* stats );
+bool b3MetalIntegrateUnconstrained( b3MetalContext* context, b3BodyState* states, const b3BodySim* sims, int bodyCount, float h,
+									b3Vec3 gravity, float maxLinearSpeed, float maxAngularSpeed, b3MetalDispatchStats* stats );
 
 // Encode all unconstrained substeps into one command buffer. State and body
 // properties are uploaded once, dispatches are separated by buffer barriers,
 // and state is read back only after the final substep.
-bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState* states, const b3BodySim* sims,
-	int bodyCount, int subStepCount, float h, b3Vec3 gravity, float maxLinearSpeed, float maxAngularSpeed,
-	float invTimeStep, const b3MetalFinalizeResult** finalizeResults, b3StepContext* finalizationContext,
-	b3MetalDispatchStats* stats );
+bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState* states, const b3BodySim* sims, int bodyCount,
+											int subStepCount, float h, b3Vec3 gravity, float maxLinearSpeed,
+											float maxAngularSpeed, float invTimeStep,
+											const b3MetalFinalizeResult** finalizeResults, b3StepContext* finalizationContext,
+											b3MetalDispatchStats* stats );
 
 // Execute velocity integration, colored convex/mesh contact and distance-joint
 // solving, and position integration while state remains GPU-resident for every
 // substep. Graph-overflow constraints execute serially in upstream order.
-bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepContext,
-	int velocityIterations, int relaxIterations, int restitutionIterations, b3MetalDispatchStats* stats );
+bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepContext, int velocityIterations,
+								  int relaxIterations, int restitutionIterations, b3MetalDispatchStats* stats );
 
 // Compute transform, sleep-motion, and world-inertia finalization values. When
 // statesAreResident is true, the persistent state buffer is reused without a
 // CPU upload. results points into persistent shared storage owned by context.
-bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, const b3BodySim* sims,
-	int bodyCount, float invTimeStep, bool statesAreResident, const b3MetalFinalizeResult** results,
-	b3MetalDispatchStats* stats );
+bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, const b3BodySim* sims, int bodyCount,
+							float invTimeStep, bool statesAreResident, const b3MetalFinalizeResult** results,
+							b3MetalDispatchStats* stats );
 
 // Traverse the existing Box3D dynamic trees and compact candidate ranges on
 // Metal. Per-move records and candidates preserve move-array and tree traversal
 // order. Returns false before exposing results if the bounded Metal traversal
 // cannot represent the step.
 bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* world, const int* moveArray, int moveCount,
-	const b3MetalPairQueryRecord** records,
-	const b3MetalPairCandidate** candidates, int* candidateCount, b3MetalDispatchStats* stats );
+									const b3MetalPairQueryRecord** records, const b3MetalPairCandidate** candidates,
+									int* candidateCount, b3MetalDispatchStats* stats );
 
 // Batch the first common convex narrow-phase route. The returned array contains
 // only active Metal results, ordered by inputIndex; eligibleCount is its length.
-// Result normals and points are oriented into world axes, while points remain
-// relative to body A's origin. Exact VF64 subtraction is used for double-precision
+// Result normals and anchors are oriented into world axes and relative to each
+// body's center of mass. Exact VF64 subtraction is used for double-precision
 // world translations before converting the relative displacement to float,
 // matching Box3D's scalar narrow-phase boundary.
-bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices,
-	int contactCount, const b3MetalConvexManifoldResult** results, int* eligibleCount, b3MetalDispatchStats* stats );
+bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices, int contactCount,
+									const b3MetalConvexManifoldResult** results, int* eligibleCount,
+									b3MetalDispatchStats* stats );
 
 // Explicit diagnostic/fallback staging of the private contact-id-indexed table.
 // This submits and waits for a blit; it is not part of the steady narrow phase.
-bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalConvexManifoldResult* results,
-	int resultCapacity );
+bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalConvexManifoldResult* results, int resultCapacity );
 
 // Retain post-persistence solver metadata by contact id during the existing CPU
 // collision pass. The narrow-phase dispatch preallocates the table, so parallel
@@ -162,8 +171,8 @@ bool b3MetalStageResidentContactPrepare( b3MetalContext* context, b3Contact* con
 
 // Return the current shared compact post-solve table. A result is authoritative
 // only when its contactId and generation match the requested entry.
-const b3MetalContactImpulseResult* b3MetalGetResidentContactImpulseTable(
-	const b3MetalContext* context, uint32_t* generation, int* resultCount );
+const b3MetalContactImpulseResult* b3MetalGetResidentContactImpulseTable( const b3MetalContext* context, uint32_t* generation,
+																		  int* resultCount );
 
 // Return the contact ids whose shapes requested hit events during the current
 // resident narrow-phase input pass. The list is already compact and is valid

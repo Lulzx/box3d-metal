@@ -165,39 +165,39 @@ The narrow-phase route owns a separate persistent geometry registry indexed by
 Box3D shape id. On its first dispatch after shape revision, the CPU packs sphere
 and capsule endpoints/radii, validates compact supported hulls, deduplicates
 identical `b3HullData` content, and writes one point, plane, and triangle stream
-plus a 64-byte descriptor for each shape slot. Stable dispatches skip
+plus a 96-byte geometry/material descriptor for each shape slot. Stable dispatches skip
 world-shape traversal and packing. Shape creation, destruction, or geometry mutation invalidates both
-this registry and the existing pair metadata revision; filter mutation currently
+this registry and the existing pair metadata revision; material mutation has a
+separate revision, while filter mutation currently
 over-invalidates the geometry registry as a conservative consequence of sharing
 that revision. Allocation, count, or hull validation failure rejects the Metal
 narrow-phase dispatch before any result is consumed. A separate body-id-indexed
-transform registry packs every live static/awake/sleeping body once for the
-collision phase. It is keyed by world step, explicit transform revision, and
+transform registry packs every live static/awake/sleeping body transform and
+local center once for the collision phase. It is keyed by world step, explicit transform revision, and
 body-slot count. Same-step dispatches reuse it; body create/destroy/teleport or
 the next solved step rebuilds it. Double builds retain all three binary64 world
 position bit patterns and perform VF64 subtraction in the shader. Unsupported
 contact batches return before either registry is built.
 
-The 16-byte contact input contains eligibility and two shape ids rather than
-per-contact geometry or transforms; the MSL kernel follows shape-to-body ids to
-load both registries directly.
+The 32-byte contact input contains eligibility, two shape ids, contact identity,
+and contact generation rather than per-contact geometry or transforms; the MSL
+kernel follows shape-to-body ids to load both registries directly.
 
-Full 80-byte narrow-phase outputs are private. A deterministic 256-lane block
+Full 160-byte narrow-phase outputs are private. A deterministic 256-lane block
 scan, serial block prefix, and parallel scatter compact only active supported
 results into a shared stream in the same command buffer. Each compact record
 carries its original contact-array index and remains ordered by that index. CPU
 collision workers use one lower-bound search per parallel range followed by a
 linear walk; no dense result-to-contact map is allocated. Unsupported records
 and explicit per-record CPU fallbacks do not enter the shared payload.
-The scatter pass also rotates active normals and frame-A points with the
-resident body quaternion. CPU application therefore skips matrix construction
-and local-to-world vector transforms; points remain relative to body A's origin
-so exact far-world anchor construction and center-of-mass adjustment retain the
-existing CPU semantics.
+The scatter pass rotates active normals, constructs both COM-relative anchors
+with VF64 translation subtraction, resolves default material parameters and
+rotated tangent velocity, and feature-matches the prior impulse table. CPU
+application skips matrix construction, local-to-world transforms, origin-to-COM
+adjustment, and its old per-point persistence search.
 
 The same scatter writes an identical finalized record to a persistent private
-table indexed by Box3D contact id. The 16-byte input's fourth word now carries
-that id. Compact output remains ordered by awake-contact input index for the
+table indexed by Box3D contact id. Compact output remains ordered by awake-contact input index for the
 current CPU application path, while the private copy sets `inputIndex` to the
 contact id so its address and identity are independent of input permutation.
 The table is exposed only through an explicit diagnostic/fallback blit; normal
@@ -205,10 +205,13 @@ steps add no shared stream, command buffer, or wait. Entries are authoritative
 only for contacts marked eligible in the current successful dispatch; stale
 unsupported slots are never consumed.
 
-That authority now survives into solver setup explicitly. Each collision worker
-clears the transient ownership bit before overlap/recycling decisions and sets
-it only after the resident result is actually passed through Box3D's persistence,
-material, and topology path. Contacts requesting a pre-solve callback remain CPU
+That authority now survives into solver setup explicitly. The scatter kernel
+feature-matches the prior generation-tagged impulse table, emits persistence and
+normal warm-start values, computes default material mixing and tangent velocity,
+and finalizes both center-of-mass-relative anchors. Each collision worker clears
+the transient ownership bit before overlap/recycling decisions and sets it only
+after the resident result passes through Box3D's allocation, callback, and
+topology path. Contacts requesting a pre-solve callback remain CPU
 owned. Solver setup counts marked contact ids in graph-color order and exposes
 SIMD-wide coverage only when every colored convex contact is resident-table
 authoritative and no convex overflow exists.
@@ -217,8 +220,9 @@ That complete-coverage gate now drives a Metal contact-preparation kernel at the
 front of the existing solver command buffer. CPU workers skip
 `b3PrepareContacts_Convex`; instead, the kernel reads normal and identity from
 the private contact-id table and writes the existing 1,696-byte SIMD-wide
-constraint ABI. CPU-owned persistence anchors, warm-start impulses, materials,
-tangent velocity, body indices, and manifold storage identity are retained in a
+constraint ABI. Finalized anchors, point persistence, default materials, tangent
+velocity, and normal warm starts come from the private result. Body indices,
+custom callback results, contact-scope impulses, and manifold storage identity are retained in a
 generation-tagged 152-byte shared table indexed by contact ID. Collision workers
 write disjoint records during the existing persistence pass. Solver submission
 then initializes tail lanes and bulk-copies one four-byte contact-ID schedule per
@@ -230,15 +234,14 @@ impulses on Metal. A status word validates table authority without staging the
 table. If input packing or a later unsupported constraint rejects the route,
 CPU convex preparation is rerun before the CPU solver fallback. This removes
 CPU preparation arithmetic plus the dedicated solver-time contact traversal and
-144-byte lane stream. CPU manifold persistence/material work, table writes, the
-graph-color schedule, events, and topology remain.
+144-byte lane stream. CPU manifold allocation, custom callbacks, table writes,
+the graph-color schedule, events, and topology remain.
 The 80-byte post-solve record carries contact generation plus each point's
-feature ID without increasing its size. Before the next supported persistence
-record is staged, matching features restore normal impulses from that resident
-record; friction, twist, and rolling warm-start terms are restored at contact
-scope. A recycled contact slot with a different generation cannot inherit the
-old result. This removes CPU manifold impulse freshness as a prerequisite for
-future lazy public synchronization.
+feature ID. The next manifold scatter validates contact identity and generation,
+claims matching features in upstream order, and writes normal impulses and
+persistence bits into the 160-byte finalized record. Friction, twist, and rolling
+warm-start terms are restored at contact scope. A recycled contact slot with a
+different generation cannot inherit the old result.
 Successful resident solves now skip the all-contact CPU impulse-store walk.
 During the already-required narrow-phase input pack, Box3D retains only IDs whose
 shapes requested hit events. The store stage processes that compact exception
@@ -265,7 +268,7 @@ paths, not yet the final performance architecture.
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 | Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
-| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere local geometry is batched on Metal; compact hull geometry is deduplicated and retained across revision-stable dispatches. CPU applies persistence, materials, callbacks, and state transitions. High-aspect/speculative hull-sphere, other hull pairs, meshes, height fields, and compounds remain CPU |
+| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere geometry, COM-relative anchors, point persistence/warm-start matching, default material mixing, and tangent velocity are finalized on Metal. CPU retains manifold allocation, custom/pre-solve callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, other hull pairs, meshes, height fields, and compounds remain CPU |
 | Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts an 80-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
@@ -374,6 +377,9 @@ Feature-matched resident warm-start carry is recorded in
 Lazy public-manifold synchronization and the compact hit-event exception path
 are recorded in
 [`benchmarks/m4-pro-lazy-contact-impulse-sync-2026-09-02.md`](benchmarks/m4-pro-lazy-contact-impulse-sync-2026-09-02.md).
+GPU-authored persistence, COM-relative anchors, and default material
+finalization are recorded in
+[`benchmarks/m4-pro-contact-finalization-residency-2026-09-02.md`](benchmarks/m4-pro-contact-finalization-residency-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

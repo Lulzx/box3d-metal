@@ -1252,6 +1252,9 @@ void b3Shape_SetFriction( b3ShapeId shapeId, float friction )
 	b3Shape* shape = b3GetShape( world, shapeId );
 	B3_ASSERT( shape->type != b3_compoundShape );
 	b3GetShapeMaterials( shape )[0].friction = friction;
+#if defined( BOX3D_METAL )
+	world->metalContactMaterialRevision += 1;
+#endif
 }
 
 float b3Shape_GetFriction( b3ShapeId shapeId )
@@ -1269,6 +1272,9 @@ void b3Shape_SetRestitution( b3ShapeId shapeId, float restitution )
 	b3Shape* shape = b3GetShape( world, shapeId );
 	B3_ASSERT( shape->type != b3_compoundShape );
 	b3GetShapeMaterials( shape )[0].restitution = restitution;
+#if defined( BOX3D_METAL )
+	world->metalContactMaterialRevision += 1;
+#endif
 }
 
 float b3Shape_GetRestitution( b3ShapeId shapeId )
@@ -1290,6 +1296,9 @@ void b3Shape_SetSurfaceMaterial( b3ShapeId shapeId, b3SurfaceMaterial surfaceMat
 	b3Shape* shape = b3GetShape( world, shapeId );
 	B3_ASSERT( shape->type != b3_compoundShape );
 	b3GetShapeMaterials( shape )[0] = surfaceMaterial;
+#if defined( BOX3D_METAL )
+	world->metalContactMaterialRevision += 1;
+#endif
 }
 
 b3SurfaceMaterial b3Shape_GetSurfaceMaterial( b3ShapeId shapeId )
@@ -1321,6 +1330,9 @@ void b3Shape_SetMeshMaterial( b3ShapeId shapeId, b3SurfaceMaterial surfaceMateri
 
 	B3_REC( world, ShapeSetMeshMaterial, shapeId, surfaceMaterial, index );
 	b3GetShapeMaterials( shape )[index] = surfaceMaterial;
+#if defined( BOX3D_METAL )
+	world->metalContactMaterialRevision += 1;
+#endif
 }
 
 b3SurfaceMaterial b3Shape_GetMeshSurfaceMaterial( b3ShapeId shapeId, int index )
@@ -1834,8 +1846,8 @@ b3AABB b3Shape_GetAABB( b3ShapeId shapeId )
 	b3Shape* shape = b3GetShape( world, shapeId );
 #if defined( BOX3D_METAL )
 	if ( world->locked == false && world->metalShapeCpuBoundsStale && shape->metalResultIndex != B3_NULL_INDEX &&
-		shape->metalSyncGeneration != world->metalShapeResultGeneration &&
-		b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
+		 shape->metalSyncGeneration != world->metalShapeResultGeneration &&
+		 b3MetalSyncShapeBounds( world->metalContext, world, shape->id ) == false )
 	{
 		b3Body* body = world->bodies.data + shape->bodyId;
 		shape->aabb = b3ComputeFatShapeAABB( shape, b3GetBodyTransformQuick( world, body ), B3_SPECULATIVE_DISTANCE );
