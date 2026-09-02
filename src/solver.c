@@ -1298,7 +1298,9 @@ static bool b3ExecuteMetalUnconstrainedSubsteps( b3StepContext* context, int sub
 	world->metalUnconstrainedDispatchCount += (uint64_t)subStepCount;
 	world->metalLastUnconstrainedGpuMilliseconds = stats.gpuMilliseconds;
 	context->metalStatesResident = true;
-	world->metalFinalizationDispatchCount += context->metalFinalizeResults != NULL ? 1 : 0;
+	bool finalizedOnDevice = context->metalFinalizeResults != NULL || context->metalFinalizationDeviceOnly;
+	world->metalFinalizationDispatchCount += finalizedOnDevice ? 1 : 0;
+	world->metalFinalizationReadbackBypassCount += context->metalFinalizationDeviceOnly ? 1 : 0;
 	world->metalLastFinalizationReadbackBytes = context->metalFinalizeResults != NULL ?
 		(uint64_t)bodyCount * sizeof( b3MetalFinalizeResult ) : 0;
 	return true;
@@ -1385,7 +1387,9 @@ static bool b3ExecuteMetalConstraintSubsteps( b3StepContext* context )
 		world->metalLastJointGpuMilliseconds = stats.gpuMilliseconds;
 	}
 	context->metalStatesResident = true;
-	world->metalFinalizationDispatchCount += context->metalFinalizeResults != NULL ? 1 : 0;
+	bool finalizedOnDevice = context->metalFinalizeResults != NULL || context->metalFinalizationDeviceOnly;
+	world->metalFinalizationDispatchCount += finalizedOnDevice ? 1 : 0;
+	world->metalFinalizationReadbackBypassCount += context->metalFinalizationDeviceOnly ? 1 : 0;
 	world->metalLastFinalizationReadbackBytes = context->metalFinalizeResults != NULL ?
 		(uint64_t)bodyCount * sizeof( b3MetalFinalizeResult ) : 0;
 	return true;
@@ -1400,6 +1404,10 @@ static void b3ExecuteMetalFinalization( b3StepContext* context, int bodyCount )
 		return;
 	}
 	if ( context->metalFinalizeResults != NULL )
+	{
+		return;
+	}
+	if ( context->metalFinalizationDeviceOnly )
 	{
 		return;
 	}
@@ -1942,6 +1950,7 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		stepContext->sims = awakeSet->bodySims.data;
 		stepContext->states = awakeSet->bodyStates.data;
 		stepContext->metalFinalizeResults = NULL;
+		stepContext->metalFinalizationDeviceOnly = false;
 		stepContext->metalShapeResults = NULL;
 		stepContext->metalShapeResultCount = 0;
 		stepContext->metalEnlargedShapeResults = NULL;

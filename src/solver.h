@@ -242,6 +242,10 @@ typedef struct b3StepContext
 	// Optional arithmetic results produced by the Metal finalization kernel.
 	// Pointer lifetime is owned by the world's Metal context.
 	const b3MetalFinalizeResult* metalFinalizeResults;
+	// Private finalization authority was consumed by device AABB/tree work, but
+	// the CPU mirror was deliberately omitted. The portable body pass recomputes
+	// its bookkeeping from the returned body states.
+	bool metalFinalizationDeviceOnly;
 	const b3MetalShapeAABBResult* metalShapeResults;
 	int metalShapeResultCount;
 	const b3MetalEnlargedShapeResult* metalEnlargedShapeResults;

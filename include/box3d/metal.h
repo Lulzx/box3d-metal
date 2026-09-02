@@ -101,9 +101,12 @@ typedef struct b3MetalProfile
 	uint64_t finalizationDispatchCount;
 	uint64_t finalizationFallbackCount;
 	/// Bytes explicitly copied from private device finalization authority into
-	/// the latest CPU apply mirror. This remains nonzero until body transforms
-	/// and move events become lazily materialized.
+	/// the latest CPU apply mirror. Zero on the bounded sleep-disabled, non-CCD
+	/// route; other routes retain the checked mirror.
 	uint64_t lastFinalizationReadbackBytes;
+	/// Successful private-device finalization phases that omitted the CPU result
+	/// mirror because sleeping and continuous collision were disabled.
+	uint64_t finalizationReadbackBypassCount;
 	uint64_t shapeDispatchCount;
 	uint64_t shapeFallbackCount;
 	uint64_t shapeCompactDispatchCount;

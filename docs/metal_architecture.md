@@ -134,11 +134,17 @@ reverse island traversal unchanged.
 Finalization arithmetic now lands in a private Metal buffer. Shape AABB
 generation and resident tree refit consume that private authority directly;
 they no longer share a CPU-visible result allocation. A checked blit populates
-a separate host mirror only because the remaining CPU body-finalization pass
-still applies transforms, move events, flags, force reset, sleep, and CCD state.
-`lastFinalizationReadbackBytes` makes this remaining transfer explicit. The
-next residency boundary can omit that blit once body transforms and move events
-have lazy CPU mirrors, without changing the device AABB/broad-phase pipeline.
+a separate host mirror when sleeping or continuous collision requires fields
+from the device result. On the stable sleep-disabled, non-CCD route, that blit
+is omitted: the remaining CPU body pass recomputes Erin's finalization
+arithmetic from the returned solver states while the private device result
+continues directly into shape AABB generation and tree refit.
+`lastFinalizationReadbackBytes` reports the retained transfer and
+`finalizationReadbackBypassCount` reports successful zero-readback steps. This
+removes the 100-byte-per-body finalization stream on the bounded route, but not
+the CPU body traversal, solver-state readback, move-event bookkeeping, force
+reset, or public transform mirror. Device-authoritative body transforms and
+compact move events are the next residency boundary.
 
 An independently opt-in pair stage copies Erin's existing static, kinematic,
 and dynamic tree topology into persistent shared Metal buffers. A monotonic

@@ -75,7 +75,8 @@ int main( void )
 	printf( "# operation=whole_world_unconstrained substeps=4 workers=%d timing=wall_clock_step metal_finalization=%s "
 		"metal_broad_phase=%s shapes=%s\n", workerCount, enableFinalization ? "on" : "off",
 		enableBroadPhase ? "on" : "off", createShapes ? "sphere_per_body" : "none" );
-	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,finalization_readback_bytes,pair_kernel_ms,pair_dispatches,"
+	printf( "bodies,repeats,cpu_ms,gpu_ms,metal_kernel_ms,finalization_readback_bytes,finalization_readback_bypasses,"
+		"pair_kernel_ms,pair_dispatches,"
 		"pair_fallbacks,speedup\n" );
 	const int counts[] = { 512, 2048, 8192, 32768, 131072, 524288 };
 	int testCount = selectedBodyCount > 0 ? 1 : (int)( sizeof( counts ) / sizeof( counts[0] ) );
@@ -107,8 +108,9 @@ int main( void )
 		}
 		double gpuMs = TimeWorld( gpuWorld, repeats );
 		b3MetalProfile metal = b3World_GetMetalProfile( gpuWorld );
-		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%.6f,%llu,%llu,%.3f\n", bodyCount, repeats, cpuMs, gpuMs,
+		printf( "%d,%d,%.6f,%.6f,%.6f,%llu,%llu,%.6f,%llu,%llu,%.3f\n", bodyCount, repeats, cpuMs, gpuMs,
 			metal.lastUnconstrainedGpuMilliseconds, (unsigned long long)metal.lastFinalizationReadbackBytes,
+			(unsigned long long)metal.finalizationReadbackBypassCount,
 			metal.lastPairGpuMilliseconds,
 			(unsigned long long)metal.pairDispatchCount, (unsigned long long)metal.pairFallbackCount, cpuMs / gpuMs );
 		b3DestroyWorld( gpuWorld );

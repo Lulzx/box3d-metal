@@ -705,6 +705,7 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.finalizationDispatchCount = world->metalFinalizationDispatchCount;
 	profile.finalizationFallbackCount = world->metalFinalizationFallbackCount;
 	profile.lastFinalizationReadbackBytes = world->metalLastFinalizationReadbackBytes;
+	profile.finalizationReadbackBypassCount = world->metalFinalizationReadbackBypassCount;
 	profile.shapeDispatchCount = world->metalShapeDispatchCount;
 	profile.shapeFallbackCount = world->metalShapeFallbackCount;
 	profile.shapeCompactDispatchCount = world->metalShapeCompactDispatchCount;

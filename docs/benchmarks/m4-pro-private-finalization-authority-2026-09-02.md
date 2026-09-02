@@ -13,9 +13,9 @@ separate shared mirror is filled by an explicit checked blit only for the
 remaining CPU apply pass. Allocation or encoder failure returns through the
 existing CPU fallback boundary.
 
-This does not yet remove the transfer: it makes the transfer optional in the
-architecture. `b3MetalProfile.lastFinalizationReadbackBytes` reports the exact
-remaining mirror size rather than hiding it inside a shared allocation.
+This checkpoint did not yet remove the transfer: it made the transfer optional
+in the architecture. `b3MetalProfile.lastFinalizationReadbackBytes` reports the
+exact remaining mirror size rather than hiding it inside a shared allocation.
 
 ## Evidence
 
@@ -34,3 +34,8 @@ Device-authoritative body transforms and GPU-authored move-event records can now
 be added without moving AABB or broad-phase consumers back to shared storage.
 Once their lazy CPU synchronization is fail-closed, the finalization blit can be
 omitted and `lastFinalizationReadbackBytes` can reach zero on stable worlds.
+
+The subsequent
+[`finalization readback bypass`](m4-pro-finalization-readback-bypass-2026-09-02.md)
+checkpoint reaches zero bytes on the bounded sleep-disabled, non-CCD route
+while retaining the CPU body pass and the readback-required sleep path.

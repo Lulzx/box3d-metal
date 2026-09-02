@@ -3273,6 +3273,8 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 			b3MetalPackFinalizeProperties( context->finalizePropertiesBuffer.contents, sims, bodyCount );
 		}
 		int shapeCount = finalizationContext != NULL ? b3MetalPackShapeInputs( context, finalizationContext ) : 0;
+		bool omitFinalizeReadback = finalizeResults != NULL && finalizationContext != NULL &&
+			finalizationContext->world->enableSleep == false && finalizationContext->world->enableContinuous == false;
 		bool treeRefitEncoded = false;
 		bool shapeReadbackEncoded = false;
 
@@ -3332,7 +3334,8 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 			treeRefitEncoded = b3MetalEncodePairTreeRefit( context, encoder, finalizationContext, shapeCount );
 		}
 		[encoder endEncoding];
-		if ( finalizeResults != NULL && b3MetalEncodeFinalizeReadback( context, commandBuffer, bodyCount ) == false )
+		if ( finalizeResults != NULL && omitFinalizeReadback == false &&
+			b3MetalEncodeFinalizeReadback( context, commandBuffer, bodyCount ) == false )
 		{
 			return false;
 		}
@@ -3351,7 +3354,14 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 		memcpy( states, context->bodyStateBuffer.contents, stateByteCount );
 		if ( finalizeResults != NULL )
 		{
-			*finalizeResults = context->finalizeReadbackBuffer.contents;
+			if ( omitFinalizeReadback )
+			{
+				finalizationContext->metalFinalizationDeviceOnly = true;
+			}
+			else
+			{
+				*finalizeResults = context->finalizeReadbackBuffer.contents;
+			}
 		}
 		if ( finalizationContext != NULL && shapeCount > 0 )
 		{
@@ -4619,6 +4629,8 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		bool prepareContactsOnGpu = stepContext->metalPrepareConvexOnGpu;
 		bool preparedHasRestitution = false;
 		bool finalizeBodies = stepContext->world->metalFinalizationEnabled;
+		bool omitFinalizeReadback = finalizeBodies && stepContext->world->enableSleep == false &&
+			stepContext->world->enableContinuous == false;
 		NSUInteger finalizationBytes = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeResult );
 		NSUInteger finalizePropertyBytes = (NSUInteger)bodyCount * sizeof( b3MetalFinalizeProperties );
 		if ( b3MetalEnsureBodyCapacity( context, stateBytes ) == false ||
@@ -5058,7 +5070,8 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		}
 
 		[encoder endEncoding];
-		if ( finalizeBodies && b3MetalEncodeFinalizeReadback( context, commandBuffer, bodyCount ) == false )
+		if ( finalizeBodies && omitFinalizeReadback == false &&
+			b3MetalEncodeFinalizeReadback( context, commandBuffer, bodyCount ) == false )
 		{
 			return false;
 		}
@@ -5086,7 +5099,18 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		}
 
 		memcpy( stepContext->states, context->bodyStateBuffer.contents, stateBytes );
-		stepContext->metalFinalizeResults = finalizeBodies ? context->finalizeReadbackBuffer.contents : NULL;
+		if ( finalizeBodies )
+		{
+			if ( omitFinalizeReadback )
+			{
+				stepContext->metalFinalizationDeviceOnly = true;
+				stepContext->metalFinalizeResults = NULL;
+			}
+			else
+			{
+				stepContext->metalFinalizeResults = context->finalizeReadbackBuffer.contents;
+			}
+		}
 		if ( shapeCount > 0 )
 		{
 			b3MetalAdvanceShapeResultGeneration( stepContext->world );
