@@ -286,8 +286,15 @@ partial plan is consumed. When no exception move exists and density remains
 within the historical `16 * moveCount` bound, a final Metal kernel flattens the
 ranges into 8-byte shape-id seeds in ascending-move, reverse-candidate order.
 The CPU then reads only that flat stream, rather than scanning 52-byte records
-and 16-byte raw candidates. The raw buffers remain shared GPU scratch in this
-checkpoint; mixed custom/compound plans retain the record path. Deterministic contact creation and all coupled contact,
+and 16-byte raw candidates. In worlds without live compound or custom-filter
+shapes, those raw records, candidates, and prefix-scan blocks use
+`MTLStorageModePrivate`; only the summary and flat seed stream are CPU-visible.
+Eligibility is cached by shape revision and fails closed for the entire world.
+Mixed custom/compound plans retain the shared record path. A direct plan above
+the compact `16 * moveCount` bound but within the historical
+`64 * moveCount` capability is generated privately and then explicitly blitted
+to shared records for the legacy serial consumer. A compound query shape is a
+hard shader error rather than an unsafe residual record. Deterministic contact creation and all coupled contact,
 body-edge, solver-set, pair-set, event, and island topology remain CPU-owned. Unsupported
 threadgroup geometry, tree heights at or
 above 63, shader stack overflow, changing counts, allocation failure, or more
@@ -455,7 +462,7 @@ paths, not yet the final performance architecture.
 | Distance joints, including spring, limit, and motor modes | GPU-resident across all substeps |
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
-| Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, candidate planning, exact blocked-joint body-pair rejection, residual-filter move compaction, and flat contact-seed emission. Zero-exception plans bypass CPU record/candidate traversal; custom/compound exceptions and deterministic contact topology creation remain CPU-owned |
+| Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, private raw candidate scratch for ordinary worlds, exact blocked-joint body-pair rejection, residual-filter move compaction, and flat contact-seed emission. Zero-exception plans expose only the summary and seed stream; custom/compound worlds, dense materialization, and deterministic contact topology creation retain explicit CPU-visible paths |
 | Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Ordered callback/topology/first-touch exceptions retain the CPU path. Lazy CPU mirrors synchronize only at explicit boundaries. CPU retains cold/revision packing, manifold allocation, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
 | Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts a 112-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
@@ -603,6 +610,9 @@ recorded in
 The compact contact-seed stream, exact-order differential, and cold/steady
 whole-world measurements are recorded in
 [`benchmarks/m4-pro-contact-seed-stream-2026-09-03.md`](benchmarks/m4-pro-contact-seed-stream-2026-09-03.md).
+Private raw pair scratch, dense materialization, compound-query gating, and the
+current cold/steady measurements are recorded in
+[`benchmarks/m4-pro-private-pair-scratch-2026-09-03.md`](benchmarks/m4-pro-private-pair-scratch-2026-09-03.md).
 Fully resident convex-contact state, sim, shape-bound, and body-finalization
 ownership is recorded in
 [`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).

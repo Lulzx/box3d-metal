@@ -585,6 +585,8 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			world->metalLastPairDirectCreateCount = directMetalPlan ? directCreateCount : 0;
 			world->metalLastPairContactSeedCount = contactSeedCount;
 			world->metalLastPairContactSeedBytes = stats.pairContactSeedSharedBytes;
+			world->metalPairPrivateScratchDispatchCount += (uint64_t)stats.pairPrivateScratchDispatchCount;
+			world->metalLastPairRawSharedBytes = stats.pairRawSharedBytes;
 			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
 			usedMetalPairs = true;
 		}

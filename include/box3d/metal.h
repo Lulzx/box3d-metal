@@ -173,6 +173,12 @@ typedef struct b3MetalProfile
 	uint64_t pairRecordTraversalBypassCount;
 	int lastPairContactSeedCount;
 	uint64_t lastPairContactSeedBytes;
+	/// Pair passes whose raw records, candidates, and scan blocks stayed in
+	/// device-private Metal storage.
+	uint64_t pairPrivateScratchDispatchCount;
+	/// CPU-visible raw record and candidate bytes for the latest pair pass. Zero
+	/// on the compact private-scratch route.
+	uint64_t lastPairRawSharedBytes;
 	uint64_t narrowPhaseDispatchCount;
 	uint64_t narrowPhaseFallbackCount;
 	uint64_t narrowPhaseGeometryUploadCount;

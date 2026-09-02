@@ -19,9 +19,9 @@ longer scans every 52-byte query record to collect telemetry and then scans the
 same records plus 16-byte raw candidates to create contacts. GPU summary fields
 provide the direct and residual candidate totals. Custom callbacks, compound
 children, dense plans, and dispatch failures retain the prior exact path or the
-complete CPU oracle. Raw record and candidate buffers are still shared GPU
-scratch in this checkpoint; this is a CPU-visible payload and traversal
-reduction, not yet private raw-pair residency.
+complete CPU oracle. At this checkpoint raw record and candidate buffers were
+still shared GPU scratch. The subsequent private-scratch checkpoint removes
+that remaining CPU-visible allocation for eligible ordinary worlds.
 
 `b3CreateContact` remains serial and CPU-owned because it mutates the contact ID
 pool and generations, two body edge lists, solver-set indices, the open-addressed

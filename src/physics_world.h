@@ -353,6 +353,8 @@ typedef struct b3World
 	uint64_t metalPairRecordTraversalBypassCount;
 	int metalLastPairContactSeedCount;
 	uint64_t metalLastPairContactSeedBytes;
+	uint64_t metalPairPrivateScratchDispatchCount;
+	uint64_t metalLastPairRawSharedBytes;
 	uint64_t metalPairShapeRevision;
 	uint64_t metalPairFilterRevision;
 	uint64_t metalContactMaterialRevision;

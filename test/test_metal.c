@@ -99,6 +99,17 @@ static int VerifyResidentPairTraversal( b3World* world )
 										   &candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds,
 										   &contactSeedCount, &stats ) );
 	ENSURE( stats.treeUploadCount == 0 );
+	if ( records == NULL )
+	{
+		ENSURE( candidates == NULL );
+		ENSURE( cpuFilterMoves == NULL );
+		ENSURE( cpuFilterMoveCount == 0 );
+		ENSURE( contactSeeds != NULL );
+		ENSURE( contactSeedCount == candidateCount );
+		ENSURE( stats.pairPrivateScratchDispatchCount == 1 );
+		ENSURE( stats.pairRawSharedBytes == 0 );
+		return 0;
+	}
 	int observedCpuFilterMoves = 0;
 	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
 	{
@@ -1172,6 +1183,11 @@ static int MetalPairTraversalTest( void )
 	ENSURE( stats.pairRequiresCpuFiltering == 0 );
 	ENSURE( contactSeeds != NULL );
 	ENSURE( contactSeedCount == gpuCandidateCount );
+	ENSURE( gpuRecords == NULL );
+	ENSURE( gpuCandidates == NULL );
+	ENSURE( cpuFilterMoves == NULL );
+	ENSURE( stats.pairPrivateScratchDispatchCount == 1 );
+	ENSURE( stats.pairRawSharedBytes == 0 );
 	ENSURE( stats.pairContactSeedCount == gpuCandidateCount );
 	ENSURE( stats.pairContactSeedSharedBytes == (uint64_t)gpuCandidateCount * sizeof( b3MetalPairContactSeed ) );
 	double initialGpuMilliseconds = stats.gpuMilliseconds;
@@ -1186,19 +1202,11 @@ static int MetalPairTraversalTest( void )
 	ENSURE( cpuFilterMoveCount == 0 );
 	ENSURE( contactSeeds != NULL );
 	ENSURE( contactSeedCount == gpuCandidateCount );
-	int seedIndex = 0;
-	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
-	{
-		const b3MetalPairQueryRecord* record = gpuRecords + moveIndex;
-		for ( uint32_t candidateIndex = record->count; candidateIndex-- > 0; )
-		{
-			const b3MetalPairCandidate* candidate = gpuCandidates + record->offset + candidateIndex;
-			ENSURE( contactSeeds[seedIndex].shapeIndexA == candidate->shapeIndex );
-			ENSURE( contactSeeds[seedIndex].shapeIndexB == record->queryShapeIndex );
-			seedIndex += 1;
-		}
-	}
-	ENSURE( seedIndex == contactSeedCount );
+	ENSURE( gpuRecords == NULL );
+	ENSURE( gpuCandidates == NULL );
+	ENSURE( cpuFilterMoves == NULL );
+	ENSURE( stats.pairPrivateScratchDispatchCount == 1 );
+	ENSURE( stats.pairRawSharedBytes == 0 );
 	double steadyGpuMilliseconds = stats.gpuMilliseconds;
 
 	int cpuCapacity = bodyCount * bodyCount;
@@ -1218,15 +1226,7 @@ static int MetalPairTraversalTest( void )
 		b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
 		int proxyId = B3_PROXY_ID( proxyKey );
 		b3AABB fatAABB = b3DynamicTree_GetAABB( broadPhase->trees + proxyType, proxyId );
-		ENSURE( gpuRecords[moveIndex].queryShapeIndex ==
-				(int)b3DynamicTree_GetUserData( broadPhase->trees + proxyType, proxyId ) );
-		capture.queryShapeIndex = gpuRecords[moveIndex].queryShapeIndex;
-		ENSURE( gpuRecords[moveIndex].lowerX == fatAABB.lowerBound.x );
-		ENSURE( gpuRecords[moveIndex].lowerY == fatAABB.lowerBound.y );
-		ENSURE( gpuRecords[moveIndex].lowerZ == fatAABB.lowerBound.z );
-		ENSURE( gpuRecords[moveIndex].upperX == fatAABB.upperBound.x );
-		ENSURE( gpuRecords[moveIndex].upperY == fatAABB.upperBound.y );
-		ENSURE( gpuRecords[moveIndex].upperZ == fatAABB.upperBound.z );
+		capture.queryShapeIndex = (int)b3DynamicTree_GetUserData( broadPhase->trees + proxyType, proxyId );
 		capture.count = 0;
 		if ( proxyType == b3_dynamicBody )
 		{
@@ -1241,15 +1241,12 @@ static int MetalPairTraversalTest( void )
 		b3DynamicTree_Query( broadPhase->trees + b3_dynamicBody, fatAABB, B3_DEFAULT_MASK_BITS, false, CapturePairCandidate,
 							 &capture );
 
-		ENSURE( gpuRecords[moveIndex].flags == 0 );
-		ENSURE( gpuRecords[moveIndex].count == (uint32_t)capture.count );
 		for ( int candidateIndex = 0; candidateIndex < capture.count; ++candidateIndex )
 		{
 			const b3MetalPairCandidate* cpu = cpuCandidates + candidateIndex;
-			const b3MetalPairCandidate* gpu = gpuCandidates + gpuRecords[moveIndex].offset + candidateIndex;
-			ENSURE( cpu->proxyId == gpu->proxyId );
-			ENSURE( cpu->treeType == gpu->treeType );
-			ENSURE( cpu->shapeIndex == gpu->shapeIndex );
+			const b3MetalPairContactSeed* seed = contactSeeds + totalCpuCount + capture.count - 1 - candidateIndex;
+			ENSURE( cpu->shapeIndex == seed->shapeIndexA );
+			ENSURE( capture.queryShapeIndex == seed->shapeIndexB );
 		}
 		totalCpuCount += capture.count;
 	}
@@ -1377,6 +1374,8 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( profile.lastPairContactSeedCount == bodyCount * ( bodyCount - 1 ) / 2 );
 	ENSURE( profile.lastPairContactSeedBytes ==
 			(uint64_t)( bodyCount * ( bodyCount - 1 ) / 2 ) * sizeof( b3MetalPairContactSeed ) );
+	ENSURE( profile.pairPrivateScratchDispatchCount == 1 );
+	ENSURE( profile.lastPairRawSharedBytes == 0 );
 	printf( "    final pair plan contacts=%d direct=%d seedBytes=%llu recordTraversal=bypassed exactTopology=yes\n",
 			cpu->broadPhase.pairSet.count, profile.lastPairDirectCreateCount,
 			(unsigned long long)profile.lastPairContactSeedBytes );
@@ -1436,6 +1435,8 @@ static int MetalFinalPairRandomDifferentialTest( void )
 		ENSURE( profile.pairContactSeedDispatchCount == 1 );
 		ENSURE( profile.pairRecordTraversalBypassCount == 1 );
 		ENSURE( profile.lastPairContactSeedCount == cpu->broadPhase.pairSet.count );
+		ENSURE( profile.pairPrivateScratchDispatchCount == 1 );
+		ENSURE( profile.lastPairRawSharedBytes == 0 );
 		b3DestroyWorld( gpuWorldId );
 		b3DestroyWorld( cpuWorldId );
 	}
@@ -1551,6 +1552,8 @@ static int MetalFinalPairFilterExceptionTest( void )
 	ENSURE( profile.pairContactSeedDispatchCount == 0 );
 	ENSURE( profile.pairRecordTraversalBypassCount == 0 );
 	ENSURE( profile.lastPairContactSeedBytes == 0 );
+	ENSURE( profile.pairPrivateScratchDispatchCount == 0 );
+	ENSURE( profile.lastPairRawSharedBytes > 0 );
 
 	b3Joint_SetCollideConnected( cpuJoint, true );
 	b3Joint_SetCollideConnected( gpuJoint, true );
@@ -1567,6 +1570,10 @@ static int MetalFinalPairFilterExceptionTest( void )
 	ENSURE( profile.pairContactSeedDispatchCount == 1 );
 	ENSURE( profile.pairRecordTraversalBypassCount == 1 );
 	ENSURE( profile.lastPairContactSeedBytes == sizeof( b3MetalPairContactSeed ) );
+	// Eligibility is cached per shape revision and fails closed for the whole
+	// world while compound or custom-filter shapes remain live.
+	ENSURE( profile.pairPrivateScratchDispatchCount == 0 );
+	ENSURE( profile.lastPairRawSharedBytes > 0 );
 	printf( "    final pair exceptions direct=1 filtered=3 callbacks=%d compoundChildren=2 jointMutation=device\n",
 			cpuCapture.count );
 
@@ -1924,6 +1931,109 @@ static int MetalExistingPairFilterTest( void )
 	printf( "    existing pair filter contacts=1 suppressed=1 restored=%d uploads=stable\n", candidateCount );
 
 	b3DestroyWorld( worldId );
+	return 0;
+}
+
+static int MetalPrivatePairDenseMaterializationTest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	const int targetCount = 20;
+	for ( int i = 0; i < targetCount; ++i )
+	{
+		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+		b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+	}
+	// Drain the static insertion moves so the dense plan has one query and a
+	// deliberately greater-than-16 candidate list.
+	b3UpdateBroadPhasePairs( b3GetWorldFromId( worldId ) );
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.enableSleep = false;
+	b3BodyId visitor = b3CreateBody( worldId, &bodyDef );
+	b3CreateSphereShape( visitor, &shapeDef, &sphere );
+
+	b3World* world = b3GetWorldFromId( worldId );
+	b3BroadPhase* broadPhase = &world->broadPhase;
+	ENSURE( broadPhase->moveArray.count == 1 );
+	const b3MetalPairQueryRecord* records = NULL;
+	const b3MetalPairCandidate* candidates = NULL;
+	const int* cpuFilterMoves = NULL;
+	const b3MetalPairContactSeed* contactSeeds = NULL;
+	int candidateCount = 0;
+	int cpuFilterMoveCount = 0;
+	int contactSeedCount = 0;
+	b3MetalDispatchStats stats = { 0 };
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, 1, &records,
+			&candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds, &contactSeedCount, &stats ) );
+	ENSURE( candidateCount == targetCount );
+	ENSURE( records != NULL );
+	ENSURE( candidates != NULL );
+	ENSURE( cpuFilterMoves == NULL );
+	ENSURE( cpuFilterMoveCount == 0 );
+	ENSURE( contactSeeds == NULL );
+	ENSURE( contactSeedCount == 0 );
+	ENSURE( stats.pairPrivateScratchDispatchCount == 1 );
+	ENSURE( stats.pairRawSharedBytes ==
+			sizeof( b3MetalPairQueryRecord ) + targetCount * sizeof( b3MetalPairCandidate ) );
+	ENSURE( records[0].count == targetCount );
+	printf( "    private dense materialization candidates=%d rawSharedBytes=%llu capability=preserved\n", candidateCount,
+			(unsigned long long)stats.pairRawSharedBytes );
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
+static int MetalCompoundPairQueryGateTest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	b3SurfaceMaterial material = b3DefaultSurfaceMaterial();
+	b3CompoundSphereDef child = {
+		.sphere = { .center = b3Vec3_zero, .radius = 0.5f },
+		.material = material,
+	};
+	b3CompoundDef compoundDef = { .spheres = &child, .sphereCount = 1 };
+	b3CompoundData* compound = b3CreateCompound( &compoundDef );
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	b3BodyId compoundBody = b3CreateBody( worldId, &bodyDef );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3ShapeId compoundShape = b3CreateBakedCompoundShape( compoundBody, &shapeDef, compound );
+	bodyDef.type = b3_dynamicBody;
+	bodyDef.enableSleep = false;
+	b3BodyId visitor = b3CreateBody( worldId, &bodyDef );
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3CreateSphereShape( visitor, &shapeDef, &sphere );
+
+	b3World* world = b3GetWorldFromId( worldId );
+	b3UpdateBroadPhasePairs( world );
+	b3Filter filter = b3Shape_GetFilter( compoundShape );
+	filter.groupIndex = 1;
+	b3Shape_SetFilter( compoundShape, filter, true );
+	ENSURE( world->broadPhase.moveArray.count == 1 );
+	const b3MetalPairQueryRecord* records = NULL;
+	const b3MetalPairCandidate* candidates = NULL;
+	const int* cpuFilterMoves = NULL;
+	const b3MetalPairContactSeed* contactSeeds = NULL;
+	int candidateCount = 0;
+	int cpuFilterMoveCount = 0;
+	int contactSeedCount = 0;
+	b3MetalDispatchStats stats = { 0 };
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, world->broadPhase.moveArray.data, 1, &records,
+			&candidates, &candidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds, &contactSeedCount,
+			&stats ) == false );
+	ENSURE( records == NULL );
+	ENSURE( candidates == NULL );
+	ENSURE( cpuFilterMoves == NULL );
+	ENSURE( contactSeeds == NULL );
+	printf( "    compound pair query hardGate=closed cpuOracleRequired=yes\n" );
+	b3DestroyWorld( worldId );
+	b3DestroyCompound( compound );
 	return 0;
 }
 
@@ -4270,6 +4380,8 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalFinalPairFilterExceptionTest );
 	RUN_SUBTEST( MetalJointPairRegistryTest );
 	RUN_SUBTEST( MetalExistingPairFilterTest );
+	RUN_SUBTEST( MetalPrivatePairDenseMaterializationTest );
+	RUN_SUBTEST( MetalCompoundPairQueryGateTest );
 	RUN_SUBTEST( MetalPairTraversalFallbackTest );
 	RUN_SUBTEST( MetalShapeCompactionTest );
 	RUN_SUBTEST( MetalShapeInputRegistryTest );

@@ -33,8 +33,12 @@ path. A revisioned device hash set rejects exactly the body pairs blocked by a
 `collideConnected == false` joint; unrelated and collision-enabled joints stay
 on the direct GPU plan. Zero-exception plans are flattened on-device into an
 8-byte-per-contact seed stream in exact creation order, so the CPU does not walk
-per-move query records or raw tree candidates. Contact topology creation remains
-CPU-owned. Tree snapshots remain in persistent Metal storage;
+per-move query records or raw tree candidates. Their 52-byte query records,
+16-byte candidates, and scan blocks now stay in private Metal storage. Worlds
+containing compound or custom-filter shapes retain the shared residual path;
+unusually dense direct plans preserve the prior 64-candidates-per-move capability
+with an explicit private-to-shared materialization. Contact topology creation
+remains CPU-owned. Tree snapshots remain in persistent Metal storage;
 ordinary awake-shape motion updates leaves and refits internal bounds on-device,
 while topology changes and unsupported CPU mutations invalidate the snapshot.
 Enlarged proxy bookkeeping remains in a private GPU-compacted stream rather
