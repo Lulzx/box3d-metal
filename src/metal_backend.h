@@ -25,6 +25,8 @@ typedef struct b3MetalPairQueryRecord
 	uint32_t flags;
 	int queryShapeIndex;
 	int queryProxyKey;
+	uint32_t requiresCpuFiltering;
+	uint32_t cpuFilterOffset;
 	float lowerX, lowerY, lowerZ;
 	float upperX, upperY, upperZ;
 } b3MetalPairQueryRecord;
@@ -98,6 +100,8 @@ typedef struct b3MetalDispatchStats
 	int treeUploadCount;
 	int metadataUploadCount;
 	int pairSetUploadCount;
+	// Non-zero when an emitted pair still needs CPU compound/custom filtering.
+	int pairRequiresCpuFiltering;
 } b3MetalDispatchStats;
 
 // Returns false when there is no usable Metal device or the shader pipeline
@@ -156,7 +160,8 @@ bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, 
 // cannot represent the step.
 bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* world, const int* moveArray, int moveCount,
 									const b3MetalPairQueryRecord** records, const b3MetalPairCandidate** candidates,
-									int* candidateCount, b3MetalDispatchStats* stats );
+									int* candidateCount, const int** cpuFilterMoves, int* cpuFilterMoveCount,
+									b3MetalDispatchStats* stats );
 
 // Number of deterministically compacted proxy moves retained on the device by
 // the most recently committed Metal tree refit. The count remains authoritative
