@@ -836,7 +836,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.lastNarrowPhaseHullShapeCount = world->metalLastNarrowPhaseHullShapeCount;
 	profile.lastNarrowPhaseUniqueHullCount = world->metalLastNarrowPhaseUniqueHullCount;
 	profile.lastNarrowPhaseResultCount = world->metalLastNarrowPhaseResultCount;
-	profile.lastNarrowPhaseResultBytes = (uint64_t)world->metalLastNarrowPhaseResultCount * 160u;
+	profile.lastNarrowPhaseResultBytes =
+		(uint64_t)world->metalLastNarrowPhaseResultCount * sizeof( b3MetalConvexManifoldResult );
 	profile.lastNarrowPhaseManifoldTableCount = world->metalLastNarrowPhaseManifoldTableCount;
 	profile.lastResidentConvexContactCount = world->metalLastResidentConvexContactCount;
 	profile.lastResidentConvexConstraintCount = world->metalLastResidentConvexConstraintCount;
@@ -1113,7 +1114,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 #if defined( BOX3D_METAL )
 		bool residentCollisionBypass =
 			metalResult != NULL && metalResult->eligible != 0 && metalResult->touching != 0 && metalResult->pointCount >= 1 &&
-			metalResult->pointCount <= 2 && metalResult->contactGeneration == contact->generation &&
+			metalResult->pointCount <= B3_MAX_MANIFOLD_POINTS && metalResult->contactGeneration == contact->generation &&
 			( metalResult->residentFlags & 2u ) != 0 && wasTouching && contact->manifoldCount == 1 &&
 			contact->manifolds != NULL && isFast == false && ( shapeA->flags & b3_enableHitEvents ) == 0 &&
 			( shapeB->flags & b3_enableHitEvents ) == 0 && world->recording == NULL;
@@ -1144,16 +1145,18 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 #if defined( BOX3D_METAL )
 		bool prepareRefreshedOnMetal = false;
 		b3LocalManifold localConvexManifold = { 0 };
-		b3LocalManifoldPoint localConvexPoints[2] = { 0 };
-		float localNormalImpulses[2] = { 0.0f, 0.0f };
-		b3Vec3 localAnchorBs[2] = { b3Vec3_zero, b3Vec3_zero };
+		b3LocalManifoldPoint localConvexPoints[B3_MAX_MANIFOLD_POINTS] = { 0 };
+		float localNormalImpulses[B3_MAX_MANIFOLD_POINTS] = { 0.0f };
+		b3Vec3 localAnchorBs[B3_MAX_MANIFOLD_POINTS] = {
+			b3Vec3_zero, b3Vec3_zero, b3Vec3_zero, b3Vec3_zero,
+		};
 		b3PrecomputedContactMaterial localMaterial = { 0 };
 		if ( metalResult != NULL )
 		{
 			const b3MetalConvexManifoldResult* result = metalResult;
 			if ( result->eligible != 0 )
 			{
-				B3_ASSERT( result->pointCount <= 2 );
+				B3_ASSERT( result->pointCount <= B3_MAX_MANIFOLD_POINTS );
 				localConvexManifold.normal = (b3Vec3){ result->normalX, result->normalY, result->normalZ };
 				localConvexManifold.points = localConvexPoints;
 				localConvexManifold.pointCount = result->touching != 0 ? (int)result->pointCount : 0;
@@ -1161,7 +1164,13 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 				localConvexPoints[0].separation = result->separation1;
 				localConvexPoints[1].point = (b3Vec3){ result->point2X, result->point2Y, result->point2Z };
 				localConvexPoints[1].separation = result->separation2;
-				uint32_t featureIds[2] = { result->featureId1, result->featureId2 };
+				localConvexPoints[2].point = (b3Vec3){ result->point3X, result->point3Y, result->point3Z };
+				localConvexPoints[2].separation = result->separation3;
+				localConvexPoints[3].point = (b3Vec3){ result->point4X, result->point4Y, result->point4Z };
+				localConvexPoints[3].separation = result->separation4;
+				uint32_t featureIds[B3_MAX_MANIFOLD_POINTS] = {
+					result->featureId1, result->featureId2, result->featureId3, result->featureId4,
+				};
 				for ( int pointIndex = 0; pointIndex < localConvexManifold.pointCount; ++pointIndex )
 				{
 					uint32_t featureId = featureIds[pointIndex];
@@ -1174,10 +1183,14 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 				}
 				localNormalImpulses[0] = result->normalImpulse1;
 				localNormalImpulses[1] = result->normalImpulse2;
+				localNormalImpulses[2] = result->normalImpulse3;
+				localNormalImpulses[3] = result->normalImpulse4;
 				precomputedNormalImpulses = localNormalImpulses;
 				precomputedPersistedBits = result->persistedBits;
 				localAnchorBs[0] = (b3Vec3){ result->anchorB1X, result->anchorB1Y, result->anchorB1Z };
 				localAnchorBs[1] = (b3Vec3){ result->anchorB2X, result->anchorB2Y, result->anchorB2Z };
+				localAnchorBs[2] = (b3Vec3){ result->anchorB3X, result->anchorB3Y, result->anchorB3Z };
+				localAnchorBs[3] = (b3Vec3){ result->anchorB4X, result->anchorB4Y, result->anchorB4Z };
 				precomputedAnchorBs = localAnchorBs;
 				precomputedAnchorsRelativeToCenter = true;
 				localMaterial.friction = result->friction;

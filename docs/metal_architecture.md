@@ -567,3 +567,18 @@ The follow-on removal of the steady awake-body ID scan is recorded in
 Fully resident convex-contact state, sim, shape-bound, and body-finalization
 ownership is recorded in
 [`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).
+
+### Four-point resident contact transport
+
+Convex face contacts may contain up to `B3_MAX_MANIFOLD_POINTS` (four) points.
+The resident manifold, preparation, and compact impulse ABIs therefore carry
+four points end to end, matching the existing four-point capacity of Box3D's
+wide contact solver. Metal preparation, warm-start matching, solve,
+restitution, compact store, lazy CPU synchronization, and the
+precomputed-manifold bridge all accept the same limit.
+
+This is transport and solver capacity, not a claim that hull-hull narrow phase
+is already resident. The Metal manifold generator still emits the documented
+sphere, capsule, and hull-sphere subset. Hull-hull SAT, clipping, and feature
+generation are the next producer to use the widened ABI; those pairs continue
+through the CPU oracle until that differential test gate passes.

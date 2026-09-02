@@ -62,6 +62,12 @@ typedef struct b3MetalConvexManifoldResult
 	float tangentVelocityX, tangentVelocityY, tangentVelocityZ, tangentVelocityPadding;
 	float anchorB1X, anchorB1Y, anchorB1Z, anchorB1Padding;
 	float anchorB2X, anchorB2Y, anchorB2Z, anchorB2Padding;
+	float point3X, point3Y, point3Z, separation3;
+	float point4X, point4Y, point4Z, separation4;
+	uint32_t featureId3, featureId4;
+	float normalImpulse3, normalImpulse4;
+	float anchorB3X, anchorB3Y, anchorB3Z, anchorB3Padding;
+	float anchorB4X, anchorB4Y, anchorB4Z, anchorB4Padding;
 } b3MetalConvexManifoldResult;
 
 // Compact post-solve state written by Metal and indexed by contact id. This is
@@ -79,7 +85,7 @@ typedef struct b3MetalContactImpulseResult
 	{
 		float normalImpulse, totalNormalImpulse, normalVelocity;
 		uint32_t featureId;
-	} points[2];
+	} points[B3_MAX_MANIFOLD_POINTS];
 } b3MetalContactImpulseResult;
 
 typedef struct b3MetalDispatchStats

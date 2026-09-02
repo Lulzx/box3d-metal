@@ -550,8 +550,8 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 
 	b3ContactCache* cache = &contact->convexContact.cache;
 
-	b3LocalManifoldPoint precomputedPointBuffer[2];
-	int pointCapacity = precomputedConvexManifold != NULL ? 2 : 32;
+	b3LocalManifoldPoint precomputedPointBuffer[B3_MAX_MANIFOLD_POINTS];
+	int pointCapacity = precomputedConvexManifold != NULL ? B3_MAX_MANIFOLD_POINTS : 32;
 	b3LocalManifoldPoint* pointBuffer =
 		precomputedConvexManifold != NULL
 			? precomputedPointBuffer
@@ -564,16 +564,26 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 	{
 		B3_ASSERT( ( typeA == b3_sphereShape && typeB == b3_sphereShape ) ||
 				   ( typeA == b3_capsuleShape && ( typeB == b3_sphereShape || typeB == b3_capsuleShape ) ) ||
-				   ( typeA == b3_hullShape && typeB == b3_sphereShape ) );
+				   ( typeA == b3_hullShape && ( typeB == b3_sphereShape || typeB == b3_hullShape ) ) );
 		if ( typeA == b3_hullShape )
 		{
-			// The specialized hull-point route does not consume or emit GJK
-			// simplexes. Keep a valid cold cache if this contact later falls back.
-			cache->simplexCache = b3_emptyDistanceCache;
+			if ( typeB == b3_hullShape )
+			{
+				// A precomputed hull pair does not update the CPU SAT cache. Keep a
+				// valid cold cache if this contact later falls back.
+				cache->satCache = (b3SATCache){ 0 };
+			}
+			else
+			{
+				// The specialized hull-point route does not consume or emit GJK
+				// simplexes. Keep a valid cold cache if this contact later falls back.
+				cache->simplexCache = b3_emptyDistanceCache;
+			}
 		}
 		geomManifold = *precomputedConvexManifold;
 		geomManifold.points = pointBuffer;
-		B3_ASSERT( 0 <= precomputedConvexManifold->pointCount && precomputedConvexManifold->pointCount <= 2 );
+		B3_ASSERT( 0 <= precomputedConvexManifold->pointCount &&
+				   precomputedConvexManifold->pointCount <= B3_MAX_MANIFOLD_POINTS );
 		for ( int pointIndex = 0; pointIndex < precomputedConvexManifold->pointCount; ++pointIndex )
 		{
 			pointBuffer[pointIndex] = precomputedConvexManifold->points[pointIndex];
