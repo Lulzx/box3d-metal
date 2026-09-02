@@ -22,7 +22,7 @@ index e5d603b..5545d63 100644
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4..31d1570 100644
+index cfe16e4..7d9339f 100644
 --- a/README.md
 +++ b/README.md
 @@ -9,6 +9,187 @@ Box3D is a 3D physics engine for games.
@@ -93,8 +93,8 @@ index cfe16e4..31d1570 100644
 +topology mutation rebuild fail-closed. Identical hull streams remain
 +content-deduplicated. A second body-id registry retains static and awake body
 +rotations, local centers, and VF64-capable world translations for the collision
-+step. Each 32-byte contact record carries eligibility, shape/contact identity,
-+and contact generation. Full 240-byte outputs stay in private Metal storage; a stable scan/prefix/scatter pass
++step. Each 40-byte contact record carries eligibility, shape/contact identity,
++contact generation, and a CPU-seeded SAT cache. Full 240-byte outputs stay in private Metal storage; a stable scan/prefix/scatter pass
 +returns only active results, tagged by original contact index, in the same
 +command buffer. The scatter rotates normals into world axes, produces both
 +center-of-mass-relative anchors with VF64 translation subtraction, mixes default
@@ -154,7 +154,7 @@ index cfe16e4..31d1570 100644
 +runs no CPU collision workers, while the hit-event and first-touch
 +differentials each return exactly one ordered 240-byte record. Contact mirrors
 +use a world generation instead of per-step stable-contact flag writes. A
-+revisioned contact input/order registry now retains the 32-byte records across
++revisioned contact input/order registry now retains the 40-byte records across
 +unchanged pair, graph, and eligibility revisions, so stable steps neither
 +gather graph contact IDs nor rewrite the input buffer. Current body indices and
 +fast-body flags come from the per-step body registry. The same dispatch proves
@@ -4053,6 +4053,59 @@ index 0000000..3d8a686
 +queries, CCD bookkeeping, and CPU fallback still do. Eliminating it requires a
 +resident authoritative shape-bound store plus selective CPU synchronization,
 +not simply deleting the readback.
+diff --git a/docs/benchmarks/m4-pro-resident-sat-cache-2026-09-03.md b/docs/benchmarks/m4-pro-resident-sat-cache-2026-09-03.md
+new file mode 100644
+index 0000000..37f45e7
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-resident-sat-cache-2026-09-03.md
+@@ -0,0 +1,47 @@
++# M4 Pro resident box SAT cache — 2026-09-03
++
++## Scope
++
++Canonical box contacts now carry Box3D's SAT separation, feature type, and
++feature indices through the Metal narrow phase. The first dispatch is seeded
++from the CPU contact cache. Later dispatches read the prior private
++contact-ID-indexed result table, so a shared contact-input repack does not erase
++the cache. Cached face-A and face-B contacts rebuild the clipped manifold before
++falling through to fresh SAT, matching Box3D's strict linear-slop acceptance.
++
++The 240-byte result ABI is unchanged: two former padding words now hold the SAT
++record. The shared contact input grows from 32 to 40 bytes. A repeated-dispatch
++differential verifies at least one resident face-cache hit after deliberately
++repacking that input, while manifold bytes remain deterministic after accounting
++for Box3D's expected `hit` transition.
++
++## Correctness boundaries
++
++- Canonical boxes remain bounded to a 16:1 maximum/minimum extent ratio.
++- Edge-pair cache records are emitted and retained, but currently run fresh edge
++  SAT on the next dispatch instead of taking the cached-edge shortcut.
++- An 80:1 floor experiment matched the cold manifold exactly but diverged after
++  rotation because Metal and CPU disagreed on cached clipped-face acceptance.
++  That aspect class therefore remains an explicit CPU exception.
++- A recycled CPU contact now synchronizes its prior resident impulse record
++  before CPU preparation consumes the recycled manifold.
++
++## M4 Pro validation
++
++The following passed on the local Apple M4 Pro:
++
++- complete CPU release suite;
++- complete Float Metal Werror suite;
++- focused Double/VF64 Metal Werror suite;
++- focused Float and Double/VF64 UndefinedBehaviorSanitizer Metal suites;
++- focused AddressSanitizer Metal suite with leak detection disabled;
++- 256-body Metal demo, 120 steps and four substeps, with zero solver fallbacks.
++
++The whole-world convex-contact benchmark remains dominated by the known CPU
++collision/finalization boundary. This run measured 0.896x at 131,072 bodies and
++0.836x at 262,144 bodies. These are wall-clock values from the shared host and
++are recorded as a regression guard, not a speedup claim. Moving the remaining
++finalization and pair/contact topology work on-device remains the performance
++path.
++
++No PDF artifacts were regenerated or modified for this checkpoint.
 diff --git a/docs/benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md b/docs/benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md
 new file mode 100644
 index 0000000..c2d3a87
@@ -4536,10 +4589,10 @@ index 0000000..bf16de3
 +before that traversal and state readback can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..2c0b8df
+index 0000000..6f6cfbc
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,584 @@
+@@ -0,0 +1,591 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -4834,8 +4887,9 @@ index 0000000..2c0b8df
 +position bit patterns and perform VF64 subtraction in the shader. Unsupported
 +contact batches return before either registry is built.
 +
-+The 32-byte contact input contains eligibility, two shape ids, contact identity,
-+and contact generation rather than per-contact geometry or transforms. A cache
++The 40-byte contact input contains eligibility, two shape ids, contact identity,
++contact generation, and a CPU-seeded hull SAT feature rather than per-contact
++geometry or transforms. A cache
 +key combines pair-set, constraint-graph, and explicit eligibility revisions.
 +When it is unchanged, the input/order buffer is reused without gathering graph
 +contact IDs or writing CPU records. The MSL kernel follows shape-to-body ids to
@@ -4860,6 +4914,12 @@ index 0000000..2c0b8df
 +table indexed by Box3D contact id. Compact exceptions remain ordered by
 +awake-contact input index, while the private copy sets `inputIndex` to the
 +contact id so its address and identity are independent of input permutation.
++Canonical box contacts carry their SAT separation, feature type, and feature
++indices in this table. Face-A and face-B cache hits rebuild the clipped manifold
++before fresh SAT, and later dispatches consume the private copy even when a
++topology revision repacks the shared input registry. Edge-pair caches currently
++fall through to fresh GPU SAT; high-aspect boxes remain CPU-owned until their
++rotating cached-face acceptance matches the CPU oracle.
 +The table is exposed only through an explicit diagnostic/fallback blit. Entries
 +are authoritative only for contacts marked eligible in the current successful
 +dispatch; stale unsupported slots are never consumed.
@@ -7072,10 +7132,10 @@ index d85f233..ffa6859 100644
  int b3GetWideContactConstraintByteCount( void );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000..46c8a77
+index 0000000..5cdad2c
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,233 @@
+@@ -0,0 +1,234 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -7136,8 +7196,9 @@ index 0000000..46c8a77
 +	float normalImpulse1, normalImpulse2;
 +	uint32_t persistedBits;
 +	uint32_t residentFlags;
-+	float friction, restitution, rollingResistance, materialPadding;
-+	float tangentVelocityX, tangentVelocityY, tangentVelocityZ, tangentVelocityPadding;
++	float friction, restitution, rollingResistance, satSeparation;
++	float tangentVelocityX, tangentVelocityY, tangentVelocityZ;
++	uint32_t satCache;
 +	float anchorB1X, anchorB1Y, anchorB1Z, anchorB1Padding;
 +	float anchorB2X, anchorB2Y, anchorB2Z, anchorB2Padding;
 +	float point3X, point3Y, point3Z, separation3;
@@ -7311,10 +7372,10 @@ index 0000000..46c8a77
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..46a02d8
+index 0000000..4049389
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,5919 @@
+@@ -0,0 +1,5984 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -7614,6 +7675,8 @@ index 0000000..46a02d8
 +	uint32_t contactGeneration;
 +	uint32_t prepareEligible;
 +	int32_t indexA, indexB;
++	float satSeparation;
++	uint32_t satCache;
 +} b3MetalConvexManifoldInput;
 +
 +typedef struct b3MetalBodyTransform
@@ -7673,7 +7736,7 @@ index 0000000..46a02d8
 +_Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
 +_Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
 +_Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed" );
-+_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 32, "Metal convex-manifold input ABI changed" );
++_Static_assert( sizeof( b3MetalConvexManifoldInput ) == 40, "Metal convex-manifold input ABI changed" );
 +_Static_assert( sizeof( b3MetalBodyTransform ) == 80, "Metal body-transform ABI changed" );
 +_Static_assert( sizeof( b3MetalConvexManifoldResult ) == 240, "Metal convex-manifold result ABI changed" );
 +_Static_assert( offsetof( b3MetalConvexManifoldResult, inputIndex ) == 12, "Metal manifold input-index ABI changed" );
@@ -7871,7 +7934,7 @@ index 0000000..46a02d8
 +	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates,shapeCount,pairCapacity,p1,p2; };\n"
 +	"struct PairPrefixParams { uint moveCount,candidateCapacity,candidateLimit,padding; };\n"
 +	"struct ConvexManifoldInput {\n"
-+	"  uint eligible,shapeIdA,shapeIdB,contactId,contactGeneration,prepareEligible; int indexA,indexB;\n"
++	"  uint eligible,shapeIdA,shapeIdB,contactId,contactGeneration,prepareEligible; int indexA,indexB; float satSeparation; uint satCache;\n"
 +	"};\n"
 +	"struct BodyTransform { float qx,qy,qz,qw,px,py,pz; uint supported; ulong pxBits,pyBits,pzBits; int index; uint flags;\n"
 +	"  float localCenterX,localCenterY,localCenterZ,sleepVelocity; };\n"
@@ -7883,7 +7946,7 @@ index 0000000..46a02d8
 +	"struct ConvexManifoldResult { uint eligible,touching,pointCount,inputIndex; float nx,ny,nz; uint contactGeneration;\n"
 +	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,scanOffset,contactId;\n"
 +	"  float normalImpulse1,normalImpulse2; uint persistedBits,residentFlags;\n"
-+	"  float friction,restitution,rollingResistance,materialPadding,tangentVelocityX,tangentVelocityY,tangentVelocityZ,tangentVelocityPadding;\n"
++	"  float friction,restitution,rollingResistance,satSeparation,tangentVelocityX,tangentVelocityY,tangentVelocityZ; uint satCache;\n"
 +	"  float anchorB1X,anchorB1Y,anchorB1Z,anchorB1Padding,anchorB2X,anchorB2Y,anchorB2Z,anchorB2Padding;\n"
 +	"  float p3x,p3y,p3z,separation3,p4x,p4y,p4z,separation4; uint feature3,feature4; float normalImpulse3,normalImpulse4;\n"
 +	"  float anchorB3X,anchorB3Y,anchorB3Z,anchorB3Padding,anchorB4X,anchorB4Y,anchorB4Z,anchorB4Padding; };\n"
@@ -7895,7 +7958,7 @@ index 0000000..46a02d8
 +	"  float rollingResistance,tangentVelocityX,tangentVelocityY,tangentVelocityZ;\n"
 +	"  float twistImpulse,frictionImpulseX,frictionImpulseY,frictionImpulseZ;\n"
 +	"  float rollingImpulseX,rollingImpulseY,rollingImpulseZ; uint contactGeneration; PreparePoint points[4]; };\n"
-+	"struct ConvexManifoldParams { uint contactCount; float linearSlop,speculativeDistance; uint bodyCount; };\n"
++	"struct ConvexManifoldParams { uint contactCount; float linearSlop,speculativeDistance; uint bodyCount,previousTableCount; };\n"
 +	"struct ManifoldCompactParams { uint contactCount,blockCount,previousCount,previousGeneration,currentGeneration,p0,p1,p2; };\n"
 +	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
 +	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
@@ -8362,6 +8425,16 @@ index 0000000..46a02d8
 +	"  float denom=1.0f/(va+vb+vc),v=vb*denom,w=vc*denom;return a+v*ab+w*ac;}\n"
 +	"struct BoxClipVertex { float3 position; float separation; uint feature; };\n"
 +	"struct BoxManifold { float3 normal; uint pointCount; BoxClipVertex points[4]; float minSeparation; uint valid; };\n"
++	"float3 box_cross(float3 a,float3 b){return float3(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);}\n"
++	"float box_dot(float3 a,float3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}\n"
++	"float3 box_rotate(float4 q,float3 v){float3 t1=box_cross(q.xyz,v);float3 t2=float3(t1.x+q.w*v.x,t1.y+q.w*v.y,t1.z+q.w*v.z);\n"
++	"  float3 t3=box_cross(q.xyz,t2);return float3(v.x+2.0f*t3.x,v.y+2.0f*t3.y,v.z+2.0f*t3.z);}\n"
++	"float3 box_inv_rotate(float4 q,float3 v){float3 t1=box_cross(q.xyz,v);float3 t2=float3(t1.x-q.w*v.x,t1.y-q.w*v.y,t1.z-q.w*v.z);\n"
++	"  float3 t3=box_cross(q.xyz,t2);return float3(v.x+2.0f*t3.x,v.y+2.0f*t3.y,v.z+2.0f*t3.z);}\n"
++	"float4 box_inv_mul_quat(float4 a,float4 b){float3 t1=box_cross(b.xyz,a.xyz);float3 t2=float3(t1.x+a.w*b.x,t1.y+a.w*b.y,t1.z+a.w*b.z);\n"
++	"  float3 t3=float3(t2.x-b.w*a.x,t2.y-b.w*a.y,t2.z-b.w*a.z);return float4(t3,a.w*b.w+box_dot(a.xyz,b.xyz));}\n"
++	"float3 box_clip_intersection(float3 a,float3 b,float da,float db){float denominator=da-db;float fraction=da/denominator;\n"
++	"  float3 delta=b-a;float3 scaled=fraction*delta;return a+scaled;}\n"
 +	"uint box_make_feature(uint owner1,uint index1,uint owner2,uint index2){return (owner1<<24u)|(index1<<16u)|(owner2<<8u)|index2;}\n"
 +	"uint box_flip_feature(uint feature){uint owner1=feature>>24u,index1=(feature>>16u)&255u,owner2=(feature>>8u)&255u,index2=feature&255u;\n"
 +	"  return ((1u-owner2)<<24u)|(index2<<16u)|((1u-owner1)<<8u)|index1;}\n"
@@ -8384,11 +8457,11 @@ index 0000000..46a02d8
 +	"  BoxClipVertex vertex1=polygon[count-1u];float distance1=dot(normal,vertex1.position)-offset;uint outCount=0u;\n"
 +	"  for(uint index=0u;index<count;++index){BoxClipVertex vertex2=polygon[index];float distance2=dot(normal,vertex2.position)-offset;\n"
 +	"    if(distance1<=0.0f&&distance2<=0.0f){if(outCount>=8u)return 9u;out[outCount++]=vertex2;}\n"
-+	"    else if(distance1<=0.0f&&distance2>0.0f){float fraction=distance1/(distance1-distance2);BoxClipVertex clipped;\n"
-+	"      clipped.position=vertex1.position+fraction*(vertex2.position-vertex1.position);clipped.separation=dot(refNormal,clipped.position)-refOffset;\n"
++	"    else if(distance1<=0.0f&&distance2>0.0f){BoxClipVertex clipped;\n"
++	"      clipped.position=box_clip_intersection(vertex1.position,vertex2.position,distance1,distance2);clipped.separation=dot(refNormal,clipped.position)-refOffset;\n"
 +	"      clipped.feature=(vertex2.feature&0xffff0000u)|edgeIndex;if(outCount>=8u)return 9u;out[outCount++]=clipped;}\n"
-+	"    else if(distance2<=0.0f&&distance1>0.0f){float fraction=distance1/(distance1-distance2);BoxClipVertex clipped;\n"
-+	"      clipped.position=vertex1.position+fraction*(vertex2.position-vertex1.position);clipped.separation=dot(refNormal,clipped.position)-refOffset;\n"
++	"    else if(distance2<=0.0f&&distance1>0.0f){BoxClipVertex clipped;\n"
++	"      clipped.position=box_clip_intersection(vertex1.position,vertex2.position,distance1,distance2);clipped.separation=dot(refNormal,clipped.position)-refOffset;\n"
 +	"      clipped.feature=(vertex1.feature&0x0000ffffu)|(edgeIndex<<16u);if(outCount>=8u)return 9u;out[outCount++]=clipped;\n"
 +	"      if(outCount>=8u)return 9u;out[outCount++]=vertex2;}vertex1=vertex2;distance1=distance2;}return outCount;}\n"
 +	"void box_reduce(thread BoxManifold& manifold,thread BoxClipVertex* points,uint count,float speculativeDistance){\n"
@@ -8476,8 +8549,10 @@ index 0000000..46a02d8
 +	"                                const device BodyTransform* bodyTransforms [[buffer(7)]],\n"
 +	"                                const device HullEdge* hullEdges [[buffer(8)]],\n"
 +	"                                const device uint* hullFaces [[buffer(9)]],\n"
++	"                                const device ConvexManifoldResult* previousTable [[buffer(10)]],\n"
 +	"                                uint i [[thread_position_in_grid]]) {\n"
 +	"  if(i>=p.contactCount)return; ConvexManifoldInput in=inputs[i]; ConvexManifoldResult out={};out.inputIndex=i;\n"
++	"  if(in.contactId<p.previousTableCount){ConvexManifoldResult previous=previousTable[in.contactId];if(previous.eligible!=0u&&previous.contactId==in.contactId&&previous.contactGeneration==in.contactGeneration){in.satSeparation=previous.satSeparation;in.satCache=previous.satCache;}}\n"
 +	"  if(in.eligible==0u){results[i]=out;return;} out.eligible=1u;\n"
 +	"  ShapeGeometry geometryA=shapeGeometry[in.shapeIdA],geometryB=shapeGeometry[in.shapeIdB];\n"
 +	"  if(geometryA.supported==0u||geometryB.supported==0u||geometryA.bodyId<0||geometryB.bodyId<0||\n"
@@ -8494,7 +8569,7 @@ index 0000000..46a02d8
 +	"#endif\n"
 +	"  float4 qA=float4(transformA.qx,transformA.qy,transformA.qz,transformA.qw);\n"
 +	"  float4 qB=float4(transformB.qx,transformB.qy,transformB.qz,transformB.qw);\n"
-+	"  float3 relativePosition=inv_rotate(qA,d); float4 relativeRotation=quat_mul(float4(-qA.xyz,qA.w),qB);\n"
++	"  float3 relativePosition=box_inv_rotate(qA,d); float4 relativeRotation=box_inv_mul_quat(qA,qB);\n"
 +	"  float3 a1=float3(geometryA.point1X,geometryA.point1Y,geometryA.point1Z),a2=float3(geometryA.point2X,geometryA.point2Y,geometryA.point2Z);\n"
 +	"  float3 b1=rotate(relativeRotation,float3(geometryB.point1X,geometryB.point1Y,geometryB.point1Z))+relativePosition;\n"
 +	"  float3 b2=rotate(relativeRotation,float3(geometryB.point2X,geometryB.point2Y,geometryB.point2Z))+relativePosition;\n"
@@ -8504,28 +8579,52 @@ index 0000000..46a02d8
 +	"    float3 lowerA=float3(3.40282347e+38f),upperA=float3(-3.40282347e+38f),lowerB=lowerA,upperB=upperA;\n"
 +	"    for(uint pointIndex=0u;pointIndex<8u;++pointIndex){float3 pointA=hullPoints[geometryA.pointOffset+pointIndex].xyz;float3 pointB=hullPoints[geometryB.pointOffset+pointIndex].xyz;\n"
 +	"      lowerA=min(lowerA,pointA);upperA=max(upperA,pointA);lowerB=min(lowerB,pointB);upperB=max(upperB,pointB);}\n"
-+	"    float3 extentA=upperA-lowerA,extentB=upperB-lowerB;float minA=min(extentA.x,min(extentA.y,extentA.z)),maxA=max(extentA.x,max(extentA.y,extentA.z));\n"
-+	"    float minB=min(extentB.x,min(extentB.y,extentB.z)),maxB=max(extentB.x,max(extentB.y,extentB.z));\n"
++	"    float3 extentA=upperA-lowerA,extentB=upperB-lowerB;float minA=min(extentA.x,min(extentA.y,extentA.z));\n"
++	"    float minB=min(extentB.x,min(extentB.y,extentB.z)),maxA=max(extentA.x,max(extentA.y,extentA.z)),maxB=max(extentB.x,max(extentB.y,extentB.z));\n"
 +	"    if(minA<=p.linearSlop||minB<=p.linearSlop||maxA>16.0f*minA||maxB>16.0f*minB){out.eligible=0u;results[i]=out;return;}\n"
++	"    BoxManifold manifold={};uint cacheType=in.satCache&255u,cacheIndexA=(in.satCache>>8u)&255u,cacheIndexB=(in.satCache>>16u)&255u;uint usedCache=0u;\n"
++	"    if(cacheType==2u&&cacheIndexA<geometryA.planeCount){float4 plane=hullPlanes[geometryA.planeOffset+cacheIndexA];float3 direction=-box_inv_rotate(qB,box_rotate(qA,plane.xyz));\n"
++	"      float bestDot=-3.40282347e+38f;uint support=0u;for(uint pointIndex=0u;pointIndex<geometryB.pointCount;++pointIndex){float value=dot(direction,hullPoints[geometryB.pointOffset+pointIndex].xyz);\n"
++	"        if(value>bestDot){bestDot=value;support=pointIndex;}}float3 supportPoint=box_rotate(relativeRotation,hullPoints[geometryB.pointOffset+support].xyz)+relativePosition;\n"
++	"      float separation=dot(plane.xyz,supportPoint)-plane.w;\n"
++	"      if(separation>=p.speculativeDistance){out.satSeparation=in.satSeparation;out.satCache=(in.satCache&0x00ffffffu)|0x01000000u;results[i]=out;return;}\n"
++	"      box_build_face(manifold,geometryA,geometryB,relativeRotation,relativePosition,cacheIndexA,support,p.speculativeDistance,hullPoints,hullPlanes,hullEdges,hullFaces);\n"
++	"      if(manifold.valid!=0u&&manifold.pointCount>0u&&fabs(in.satSeparation-manifold.minSeparation)<p.linearSlop){usedCache=1u;out.satSeparation=in.satSeparation;out.satCache=(in.satCache&0x00ffffffu)|0x01000000u;}}\n"
++	"    else if(cacheType==3u&&cacheIndexB<geometryB.planeCount){float4 plane=hullPlanes[geometryB.planeOffset+cacheIndexB];float3 direction=-box_inv_rotate(qA,box_rotate(qB,plane.xyz));\n"
++	"      float bestDot=-3.40282347e+38f;uint support=0u;for(uint pointIndex=0u;pointIndex<geometryA.pointCount;++pointIndex){float value=dot(direction,hullPoints[geometryA.pointOffset+pointIndex].xyz);\n"
++	"        if(value>bestDot){bestDot=value;support=pointIndex;}}float3 supportPoint=box_inv_rotate(relativeRotation,hullPoints[geometryA.pointOffset+support].xyz-relativePosition);\n"
++	"      float separation=dot(plane.xyz,supportPoint)-plane.w;\n"
++	"      if(separation>=p.speculativeDistance){out.satSeparation=in.satSeparation;out.satCache=(in.satCache&0x00ffffffu)|0x01000000u;results[i]=out;return;}\n"
++	"      float4 inverseRotation=float4(-relativeRotation.xyz,relativeRotation.w);float3 inversePosition=box_inv_rotate(relativeRotation,-relativePosition);\n"
++	"      box_build_face(manifold,geometryB,geometryA,inverseRotation,inversePosition,cacheIndexB,support,p.speculativeDistance,hullPoints,hullPlanes,hullEdges,hullFaces);\n"
++	"      if(manifold.valid!=0u){manifold.normal=-box_rotate(relativeRotation,manifold.normal);for(uint j=0u;j<manifold.pointCount;++j){manifold.points[j].position=box_rotate(relativeRotation,manifold.points[j].position)+relativePosition;manifold.points[j].feature=box_flip_feature(manifold.points[j].feature);}}\n"
++	"      if(manifold.valid!=0u&&manifold.pointCount>0u&&fabs(in.satSeparation-manifold.minSeparation)<p.linearSlop){usedCache=1u;out.satSeparation=in.satSeparation;out.satCache=(in.satCache&0x00ffffffu)|0x01000000u;}}\n"
++	"    if(usedCache==0u){manifold=BoxManifold{};out.satSeparation=0.0f;out.satCache=0u;\n"
 +	"    float faceASeparation=-3.40282347e+38f,faceBSeparation=-3.40282347e+38f;uint faceA=0u,vertexB=0u,faceB=0u,vertexA=0u;\n"
-+	"    for(uint face=0u;face<geometryA.planeCount;++face){float4 plane=hullPlanes[geometryA.planeOffset+face];\n"
-+	"      float separation=3.40282347e+38f;uint support=0u;for(uint pointIndex=0u;pointIndex<geometryB.pointCount;++pointIndex){\n"
-+	"        float3 point=rotate(relativeRotation,hullPoints[geometryB.pointOffset+pointIndex].xyz)+relativePosition;float value=dot(plane.xyz,point)-plane.w;\n"
-+	"        if(value<separation){separation=value;support=pointIndex;}}if(separation>faceASeparation){faceASeparation=separation;faceA=face;vertexB=support;}}\n"
-+	"    for(uint face=0u;face<geometryB.planeCount;++face){float4 plane=hullPlanes[geometryB.planeOffset+face];float3 normal=rotate(relativeRotation,plane.xyz);\n"
-+	"      float offset=plane.w+dot(normal,relativePosition),separation=3.40282347e+38f;uint support=0u;\n"
-+	"      for(uint pointIndex=0u;pointIndex<geometryA.pointCount;++pointIndex){float value=dot(normal,hullPoints[geometryA.pointOffset+pointIndex].xyz)-offset;\n"
-+	"        if(value<separation){separation=value;support=pointIndex;}}if(separation>faceBSeparation){faceBSeparation=separation;faceB=face;vertexA=support;}}\n"
-+	"    if(faceASeparation>p.speculativeDistance||faceBSeparation>p.speculativeDistance){results[i]=out;return;}\n"
++	"    for(uint face=0u;face<geometryA.planeCount;++face){float4 plane=hullPlanes[geometryA.planeOffset+face];float3 direction=-box_inv_rotate(qB,box_rotate(qA,plane.xyz));\n"
++	"      float planeSeparation=dot(plane.xyz,relativePosition)-plane.w,supportValue=-3.40282347e+38f;uint support=0u;\n"
++	"      for(uint pointIndex=0u;pointIndex<geometryB.pointCount;++pointIndex){float value=dot(direction,hullPoints[geometryB.pointOffset+pointIndex].xyz);\n"
++	"        if(value>supportValue){supportValue=value;support=pointIndex;}}float separation=planeSeparation-supportValue;\n"
++	"      if(separation>faceASeparation){faceASeparation=separation;faceA=face;vertexB=support;}}\n"
++	"    for(uint face=0u;face<geometryB.planeCount;++face){float4 plane=hullPlanes[geometryB.planeOffset+face];float3 direction=-box_inv_rotate(qA,box_rotate(qB,plane.xyz));\n"
++	"      float planeSeparation=dot(direction,relativePosition)-plane.w,supportValue=-3.40282347e+38f;uint support=0u;\n"
++	"      for(uint pointIndex=0u;pointIndex<geometryA.pointCount;++pointIndex){float value=dot(direction,hullPoints[geometryA.pointOffset+pointIndex].xyz);\n"
++	"        if(value>supportValue){supportValue=value;support=pointIndex;}}float separation=planeSeparation-supportValue;\n"
++	"      if(separation>faceBSeparation){faceBSeparation=separation;faceB=face;vertexA=support;}}\n"
++	"    if(faceASeparation>p.speculativeDistance){out.satSeparation=faceASeparation;out.satCache=2u|(faceA<<8u)|(vertexB<<16u);results[i]=out;return;}\n"
++	"    if(faceBSeparation>p.speculativeDistance){out.satSeparation=faceBSeparation;out.satCache=3u|(vertexA<<8u)|(faceB<<16u);results[i]=out;return;}\n"
 +	"    BoxEdgeQuery edgeQuery=box_query_edges(geometryA,geometryB,relativeRotation,relativePosition,hullPoints,hullPlanes,hullEdges,p.speculativeDistance);\n"
-+	"    if(edgeQuery.valid!=0u&&edgeQuery.separation>p.speculativeDistance){results[i]=out;return;}BoxManifold manifold={};\n"
-+	"    if(faceASeparation>faceBSeparation){box_build_face(manifold,geometryA,geometryB,relativeRotation,relativePosition,faceA,vertexB,p.speculativeDistance,hullPoints,hullPlanes,hullEdges,hullFaces);}\n"
-+	"    else{float4 inverseRotation=float4(-relativeRotation.xyz,relativeRotation.w);float3 inversePosition=inv_rotate(relativeRotation,-relativePosition);\n"
++	"    if(edgeQuery.valid!=0u&&edgeQuery.separation>p.speculativeDistance){out.satSeparation=edgeQuery.separation;out.satCache=4u|(edgeQuery.indexA<<8u)|(edgeQuery.indexB<<16u);results[i]=out;return;}\n"
++	"    if(faceASeparation>faceBSeparation){box_build_face(manifold,geometryA,geometryB,relativeRotation,relativePosition,faceA,vertexB,p.speculativeDistance,hullPoints,hullPlanes,hullEdges,hullFaces);\n"
++	"      if(manifold.valid!=0u&&manifold.pointCount>0u){out.satSeparation=manifold.minSeparation;out.satCache=2u|(faceA<<8u)|(vertexB<<16u);}}\n"
++	"    else{float4 inverseRotation=float4(-relativeRotation.xyz,relativeRotation.w);float3 inversePosition=box_inv_rotate(relativeRotation,-relativePosition);\n"
 +	"      box_build_face(manifold,geometryB,geometryA,inverseRotation,inversePosition,faceB,vertexA,p.speculativeDistance,hullPoints,hullPlanes,hullEdges,hullFaces);\n"
-+	"      if(manifold.valid!=0u){manifold.normal=-rotate(relativeRotation,manifold.normal);for(uint j=0u;j<manifold.pointCount;++j){\n"
-+	"        manifold.points[j].position=rotate(relativeRotation,manifold.points[j].position)+relativePosition;manifold.points[j].feature=box_flip_feature(manifold.points[j].feature);}}}\n"
++	"      if(manifold.valid!=0u){manifold.normal=-box_rotate(relativeRotation,manifold.normal);for(uint j=0u;j<manifold.pointCount;++j){\n"
++	"        manifold.points[j].position=box_rotate(relativeRotation,manifold.points[j].position)+relativePosition;manifold.points[j].feature=box_flip_feature(manifold.points[j].feature);}\n"
++	"        if(manifold.pointCount>0u){out.satSeparation=manifold.minSeparation;out.satCache=3u|(vertexA<<8u)|(faceB<<16u);}}}\n"
 +	"    if(edgeQuery.valid!=0u&&(manifold.pointCount==0u||edgeQuery.separation>manifold.minSeparation+p.linearSlop)){\n"
-+	"      BoxManifold edgeManifold={};if(box_build_edge(edgeManifold,geometryA,geometryB,relativeRotation,relativePosition,edgeQuery,hullPoints,hullEdges)!=0u)manifold=edgeManifold;}\n"
++	"      BoxManifold edgeManifold={};if(box_build_edge(edgeManifold,geometryA,geometryB,relativeRotation,relativePosition,edgeQuery,hullPoints,hullEdges)!=0u){manifold=edgeManifold;out.satSeparation=edgeManifold.minSeparation;out.satCache=4u|(edgeQuery.indexA<<8u)|(edgeQuery.indexB<<16u);}}\n"
++	"    }\n"
 +	"    if(manifold.valid==0u){out.eligible=0u;results[i]=out;return;}\n"
 +	"    if(manifold.pointCount==0u){results[i]=out;return;}out.touching=1u;out.pointCount=manifold.pointCount;\n"
 +	"    out.nx=manifold.normal.x;out.ny=manifold.normal.y;out.nz=manifold.normal.z;BoxClipVertex point=manifold.points[0];\n"
@@ -8596,11 +8695,11 @@ index 0000000..46a02d8
 +	"  constant ManifoldCompactParams& p [[buffer(2)]]){uint total=0u,stable=0u,matches=0u;for(uint i=0u;i<p.blockCount;++i){PairBlock b=blocks[i];\n"
 +	"    b.offset=total;blocks[i]=b;total+=b.sum;stable+=b.flags;matches+=b.padding;}summary->totalCount=ulong(total);summary->flags=stable;summary->writeFlags=matches;}\n"
 +	"kernel void b3_manifold_scatter(const device ConvexManifoldResult* results [[buffer(0)]],const device PairBlock* blocks [[buffer(1)]],\n"
-+	"  device ConvexManifoldResult* compact [[buffer(2)]],const device ConvexManifoldInput* inputs [[buffer(3)]],\n"
++	"  device ConvexManifoldResult* compact [[buffer(2)]],device ConvexManifoldInput* inputs [[buffer(3)]],\n"
 +	"  const device ShapeGeometry* shapeGeometry [[buffer(4)]],const device BodyTransform* bodyTransforms [[buffer(5)]],\n"
 +	"  device ConvexManifoldResult* table [[buffer(6)]],const device ImpulseResult* previous [[buffer(7)]],\n"
 +	"  device PrepareInput* prepareTable [[buffer(8)]],constant ManifoldCompactParams& p [[buffer(9)]],uint i [[thread_position_in_grid]]){\n"
-+	"  if(i>=p.contactCount)return;ConvexManifoldResult r=results[i];uint contactId=inputs[i].contactId;if(r.eligible==0u){if(p.p0!=0u){uint output=blocks[i/256u].offset+r.scanOffset;r.inputIndex=i;r.scanOffset=0u;r.contactId=contactId;compact[output]=r;}return;}ShapeGeometry geometryA=shapeGeometry[inputs[i].shapeIdA];\n"
++	"  if(i>=p.contactCount)return;ConvexManifoldResult r=results[i];uint contactId=inputs[i].contactId;inputs[i].satSeparation=r.satSeparation;inputs[i].satCache=r.satCache;if(r.eligible==0u){if(p.p0!=0u){uint output=blocks[i/256u].offset+r.scanOffset;r.inputIndex=i;r.scanOffset=0u;r.contactId=contactId;compact[output]=r;}return;}ShapeGeometry geometryA=shapeGeometry[inputs[i].shapeIdA];\n"
 +	"  ShapeGeometry geometryB=shapeGeometry[inputs[i].shapeIdB];BodyTransform transformA=bodyTransforms[geometryA.bodyId];\n"
 +	"  BodyTransform transformB=bodyTransforms[geometryB.bodyId];float4 q=float4(transformA.qx,transformA.qy,transformA.qz,transformA.qw);\n"
 +	"  float4 qb=float4(transformB.qx,transformB.qy,transformB.qz,transformB.qw);r.friction=sqrt(geometryA.friction*geometryB.friction);\n"
@@ -8673,7 +8772,7 @@ index 0000000..46a02d8
 +	"struct ConvexManifoldResult { uint eligible,touching,pointCount,inputIndex; float nx,ny,nz; uint contactGeneration;\n"
 +	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,scanOffset,contactId;\n"
 +	"  float normalImpulse1,normalImpulse2; uint persistedBits,residentFlags;\n"
-+	"  float friction,restitution,rollingResistance,materialPadding,tangentVelocityX,tangentVelocityY,tangentVelocityZ,tangentVelocityPadding;\n"
++	"  float friction,restitution,rollingResistance,satSeparation,tangentVelocityX,tangentVelocityY,tangentVelocityZ; uint satCache;\n"
 +	"  float anchorB1X,anchorB1Y,anchorB1Z,anchorB1Padding,anchorB2X,anchorB2Y,anchorB2Z,anchorB2Padding;\n"
 +	"  float p3x,p3y,p3z,separation3,p4x,p4y,p4z,separation4; uint feature3,feature4; float normalImpulse3,normalImpulse4;\n"
 +	"  float anchorB3X,anchorB3Y,anchorB3Z,anchorB3Padding,anchorB4X,anchorB4Y,anchorB4Z,anchorB4Padding; };\n"
@@ -9648,6 +9747,7 @@ index 0000000..46a02d8
 +		[context->convexManifoldTableBuffer release];
 +		context->convexManifoldTableBuffer = buffer;
 +		context->convexManifoldTableCapacity = capacity;
++		context->convexManifoldTableCount = 0;
 +	}
 +	return true;
 +}
@@ -11504,9 +11604,8 @@ index 0000000..46a02d8
 +	}
 +	b3Vec3 extentA = b3Sub( shapeA->hull->aabb.upperBound, shapeA->hull->aabb.lowerBound );
 +	b3Vec3 extentB = b3Sub( shapeB->hull->aabb.upperBound, shapeB->hull->aabb.lowerBound );
-+	// High-aspect reference faces amplify float projection error through stacked
-+	// four-point solves. Keep those on Erin's CPU SAT path until the Metal
-+	// projection/cache path has an equivalent high-precision implementation.
++	// High-aspect reference faces remain CPU-owned until the Metal cached-face
++	// rebuild matches Box3D's rotating clipped-face acceptance at that scale.
 +	float minExtentA = b3MinFloat( extentA.x, b3MinFloat( extentA.y, extentA.z ) );
 +	float maxExtentA = b3MaxFloat( extentA.x, b3MaxFloat( extentA.y, extentA.z ) );
 +	float minExtentB = b3MinFloat( extentB.x, b3MinFloat( extentB.y, extentB.z ) );
@@ -12015,8 +12114,11 @@ index 0000000..46a02d8
 +	if ( reuseInputs && b3MetalCanReuseConvexManifoldInputs( context, world, contactCount ) == false ) return false;
 +	( (b3World*)world )->metalLastNarrowPhaseResultCount = 0;
 +	( (b3World*)world )->metalLastNarrowPhaseManifoldTableCount = 0;
-+	context->convexManifoldTableCount = 0;
-+	if ( contactCount == 0 ) return true;
++	if ( contactCount == 0 )
++	{
++		context->convexManifoldTableCount = 0;
++		return true;
++	}
 +	if ( (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldInput ) ||
 +		 (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldResult ) ||
 +		 world->contacts.count < 0 || (NSUInteger)world->contacts.count > NSUIntegerMax / sizeof( b3MetalConvexManifoldResult ) )
@@ -12052,7 +12154,11 @@ index 0000000..46a02d8
 +			}
 +		}
 +		if ( reuseInputs == false ) context->contactHitEventIdCount = 0;
-+		if ( candidateCount == 0 ) return true;
++		if ( candidateCount == 0 )
++		{
++			context->convexManifoldTableCount = 0;
++			return true;
++		}
 +
 +		NSUInteger inputBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldInput );
 +		NSUInteger resultBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldResult );
@@ -12106,6 +12212,13 @@ index 0000000..46a02d8
 +				b3MetalConvexManifoldInput* input = inputs + i;
 +				input->contactId = (uint32_t)contactIndex;
 +				input->contactGeneration = contact->generation;
++				if ( shapeA->type == b3_hullShape && shapeB->type == b3_hullShape )
++				{
++					const b3SATCache* satCache = &contact->convexContact.cache.satCache;
++					input->satSeparation = satCache->separation;
++					input->satCache = (uint32_t)satCache->type | ( (uint32_t)satCache->indexA << 8 ) |
++						( (uint32_t)satCache->indexB << 16 ) | ( (uint32_t)satCache->hit << 24 );
++				}
 +				bool eligible = ( shapeA->type == b3_sphereShape && shapeB->type == b3_sphereShape ) ||
 +					( shapeA->type == b3_capsuleShape && shapeB->type == b3_sphereShape ) ||
 +					( shapeA->type == b3_capsuleShape && shapeB->type == b3_capsuleShape ) ||
@@ -12162,8 +12275,9 @@ index 0000000..46a02d8
 +			( (b3World*)world )->metalLastContactInputBytes = 0;
 +		}
 +
-+		struct { uint32_t contactCount; float linearSlop, speculativeDistance; uint32_t bodyCount; } params = {
++		struct { uint32_t contactCount; float linearSlop, speculativeDistance; uint32_t bodyCount, previousTableCount; } params = {
 +			(uint32_t)contactCount, B3_LINEAR_SLOP, B3_SPECULATIVE_DISTANCE, (uint32_t)context->convexBodyTransformCount,
++			(uint32_t)context->convexManifoldTableCount,
 +		};
 +		struct
 +		{
@@ -12195,6 +12309,7 @@ index 0000000..46a02d8
 +		[encoder setBuffer:context->convexBodyTransformBuffer offset:0 atIndex:7];
 +		[encoder setBuffer:context->convexHullEdgeBuffer offset:0 atIndex:8];
 +		[encoder setBuffer:context->convexHullFaceBuffer offset:0 atIndex:9];
++		[encoder setBuffer:context->convexManifoldTableBuffer offset:0 atIndex:10];
 +		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)contactCount, 1, 1 )
 +			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pipeline ), 1, 1 )];
 +		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -12378,6 +12493,17 @@ index 0000000..46a02d8
 +	contact->rollingResistance = result->rollingResistance;
 +	contact->tangentVelocity =
 +		(b3Vec3){ result->tangentVelocityX, result->tangentVelocityY, result->tangentVelocityZ };
++	uint8_t satType = (uint8_t)result->satCache;
++	if ( satType == b3_faceAxisA || satType == b3_faceAxisB || satType == b3_edgePairAxis )
++	{
++		contact->convexContact.cache.satCache = (b3SATCache){
++			.separation = result->satSeparation,
++			.type = satType,
++			.indexA = (uint8_t)( result->satCache >> 8 ),
++			.indexB = (uint8_t)( result->satCache >> 16 ),
++			.hit = (uint8_t)( result->satCache >> 24 ),
++		};
++	}
 +	contact->flags &= ~b3_simMetalManifoldStale;
 +	return true;
 +}
@@ -14375,7 +14501,7 @@ index 0000000..a4424e5
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7..20d1e1a 100644
+index 29c13c7..4b2b4e2 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -14756,7 +14882,7 @@ index 29c13c7..20d1e1a 100644
  // Used to hide the random-access latency of contact lookups while we work on an
  // earlier index.
  static inline void b3PrefetchContact( const b3Contact* contact )
-@@ -582,18 +900,69 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -582,18 +900,72 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  	const int contactPrefetchDistance = 4;
  	int prefetchEnd = endIndex - contactPrefetchDistance;
  
@@ -14823,11 +14949,14 @@ index 29c13c7..20d1e1a 100644
  
  		b3Contact* contact = contacts + contactIndex;
  		B3_VALIDATE( contact->contactId == contactIndex );
++#if defined( BOX3D_METAL )
++		bool hadMetalManifold = ( contact->flags & b3_simMetalManifold ) != 0;
++#endif
 +		contact->flags &= ~b3_simMetalManifold;
  
  		b3Shape* shapeA = shapes + contact->shapeIdA;
  		b3Shape* shapeB = shapes + contact->shapeIdB;
-@@ -653,8 +1022,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -653,8 +1025,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		// Contact recycling optimization. Please cite this library if you use this optimization.
  		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
  		// However, this allows larger relative motion and has fewer tuning parameters (just one).
@@ -14839,7 +14968,22 @@ index 29c13c7..20d1e1a 100644
  		{
  			// The scalar part of b3InvMulQuat is just the quaternion dot product.
  			// cos(relative_angle/2) = scalar(conj(q1) * q2) = dot(q1, q2)
-@@ -741,9 +1111,115 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -728,6 +1101,14 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+ 						taskContext->manifoldCounts[bucketIndex - 1] += 1;
+ 					}
+ 
++#if defined( BOX3D_METAL )
++					// A prior resident solve owns the current warm-start impulses. The
++					// recycling shortcut otherwise skips both the normal collision update
++					// and the point-matching path that imports them. Synchronize that one
++					// compact record before CPU preparation consumes the recycled manifold.
++					if ( hadMetalManifold ) b3SyncContactImpulses( world, contact );
++#endif
++
+ 					// Contact is recycled. This also skips updating other aspects of the contact
+ 					// such as material parameters.
+ 					continue;
+@@ -741,9 +1122,125 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
  		contact->flags |= b3_relativeTransformValid;
  
@@ -14947,6 +15091,16 @@ index 29c13c7..20d1e1a 100644
 +							 precomputedConvexManifold != NULL, precomputedNormalImpulses, precomputedPersistedBits,
 +							 precomputedAnchorBs, precomputedAnchorsRelativeToCenter, precomputedMaterial, taskContext->arena );
 +#if defined( BOX3D_METAL )
++		if ( precomputedConvexManifold != NULL && shapeA->type == b3_hullShape && shapeB->type == b3_hullShape )
++		{
++			contact->convexContact.cache.satCache = (b3SATCache){
++				.separation = metalResult->satSeparation,
++				.type = (uint8_t)metalResult->satCache,
++				.indexA = (uint8_t)( metalResult->satCache >> 8 ),
++				.indexB = (uint8_t)( metalResult->satCache >> 16 ),
++				.hit = (uint8_t)( metalResult->satCache >> 24 ),
++			};
++		}
 +		contact->flags &= ~b3_simMetalManifoldStale;
 +		contact->metalSyncGeneration = world->metalContactManifoldGeneration;
 +		if ( precomputedConvexManifold != NULL && ( contact->flags & b3_simEnablePreSolveEvents ) == 0 &&
@@ -14958,7 +15112,7 @@ index 29c13c7..20d1e1a 100644
  
  		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
  		if ( bucketIndex > 0 )
-@@ -814,8 +1290,34 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
+@@ -814,8 +1311,34 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
  	}
  }
  
@@ -14994,7 +15148,7 @@ index 29c13c7..20d1e1a 100644
  {
  	b3World* world = context->world;
  
-@@ -825,12 +1327,17 @@ static void b3Collide( b3StepContext* context )
+@@ -825,12 +1348,17 @@ static void b3Collide( b3StepContext* context )
  
  	// Gather contacts from all the graph colors into a single array for easier parallel-for
  	int touchingCount = 0;
@@ -15012,7 +15166,7 @@ index 29c13c7..20d1e1a 100644
  
  	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
  	int nonTouchingCount = awakeSet->contactIndices.count;
-@@ -840,58 +1347,145 @@ static void b3Collide( b3StepContext* context )
+@@ -840,58 +1368,145 @@ static void b3Collide( b3StepContext* context )
  	if ( contactCount == 0 )
  	{
  		b3TracyCZoneEnd( collide );
@@ -15188,7 +15342,7 @@ index 29c13c7..20d1e1a 100644
  	contactIndices = NULL;
  
  	// Serially update contact state
-@@ -900,8 +1494,10 @@ static void b3Collide( b3StepContext* context )
+@@ -900,8 +1515,10 @@ static void b3Collide( b3StepContext* context )
  
  	int satMultiplier = context->dt > 0.0f ? 1 : 0;
  
@@ -15201,7 +15355,7 @@ index 29c13c7..20d1e1a 100644
  	world->satCallCount = satMultiplier * world->taskContexts.data[0].satCallCount;
  	world->satCacheHitCount = satMultiplier * world->taskContexts.data[0].satCacheHitCount;
  	memcpy( world->manifoldCounts, world->taskContexts.data[0].manifoldCounts,
-@@ -909,7 +1505,8 @@ static void b3Collide( b3StepContext* context )
+@@ -909,7 +1526,8 @@ static void b3Collide( b3StepContext* context )
  
  	for ( int i = 1; i < world->workerCount; ++i )
  	{
@@ -15211,7 +15365,7 @@ index 29c13c7..20d1e1a 100644
  		world->satCallCount += world->taskContexts.data[i].satCallCount;
  		world->satCacheHitCount += world->taskContexts.data[i].satCacheHitCount;
  		for ( int j = 0; j < B3_CONTACT_MANIFOLD_COUNT_BUCKETS; ++j )
-@@ -932,7 +1529,8 @@ static void b3Collide( b3StepContext* context )
+@@ -932,7 +1550,8 @@ static void b3Collide( b3StepContext* context )
  	uint16_t worldId = world->worldId;
  
  	// Process contact state changes. Iterate over set bits
@@ -15221,7 +15375,7 @@ index 29c13c7..20d1e1a 100644
  	{
  		uint64_t bits = bitSet->bits[k];
  		while ( bits != 0 )
-@@ -1027,8 +1625,17 @@ static void b3Collide( b3StepContext* context )
+@@ -1027,8 +1646,17 @@ static void b3Collide( b3StepContext* context )
  	b3ValidateSolverSets( world );
  	b3ValidateContacts( world );
  
@@ -15239,7 +15393,7 @@ index 29c13c7..20d1e1a 100644
  }
  
  void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
-@@ -1039,6 +1646,41 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1667,41 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -15281,7 +15435,7 @@ index 29c13c7..20d1e1a 100644
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -1055,6 +1697,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1055,6 +1718,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Prepare to capture events
  	// Ensure user does not access stale data if there is an early return
  	b3Array_Clear( world->bodyMoveEvents );
@@ -15292,7 +15446,7 @@ index 29c13c7..20d1e1a 100644
  	b3Array_Clear( world->sensorBeginEvents );
  	b3Array_Clear( world->contactBeginEvents );
  	b3Array_Clear( world->contactHitEvents );
-@@ -1131,7 +1777,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1131,7 +1798,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Narrow phase : update contacts
  	{
  		uint64_t collideTicks = b3GetTicks();
@@ -15306,7 +15460,7 @@ index 29c13c7..20d1e1a 100644
  		world->profile.collide = b3GetMilliseconds( collideTicks );
  	}
  
-@@ -1176,6 +1827,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1176,6 +1848,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  
  	if ( world->recording != NULL )
  	{
@@ -15327,7 +15481,7 @@ index 29c13c7..20d1e1a 100644
  		uint64_t hash = b3HashWorldState( world );
  		b3RecArgs_StateHash stateHash = { worldId, hash };
  		b3RecWrite_StateHash( world->recording, &stateHash );
-@@ -1440,7 +2105,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1440,7 +2126,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  				b3WorldTransform transform = { bodySim->center, bodySim->transform.q };
  				draw->DrawTransformFcn( transform, draw->context );
  
@@ -15336,7 +15490,7 @@ index 29c13c7..20d1e1a 100644
  				{
  					b3Vec3 offset = { 0.05f, 0.05f, 0.05f };
  					b3Pos p = b3TransformWorldPoint( transform, offset );
-@@ -1517,6 +2182,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1517,6 +2203,11 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  					// avoid double draw
  					if ( b3GetBit( &world->debugContactSet, contactId ) == false )
  					{
@@ -15348,7 +15502,7 @@ index 29c13c7..20d1e1a 100644
  						b3Body* bodyA = b3Array_Get( world->bodies, contact->edges[0].bodyId );
  						b3BodySim* bodySimA = b3GetBodySim( world, bodyA );
  						b3Body* bodyB = b3Array_Get( world->bodies, contact->edges[1].bodyId );
-@@ -1753,6 +2423,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
+@@ -1753,6 +2444,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
  		return (b3BodyEvents){ 0 };
  	}
  
@@ -15363,7 +15517,7 @@ index 29c13c7..20d1e1a 100644
  	int count = world->bodyMoveEvents.count;
  	b3BodyEvents events = { world->bodyMoveEvents.data, count };
  	return events;
-@@ -2125,6 +2803,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
+@@ -2125,6 +2824,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
  	B3_REC( world, WorldSetContactRecycleDistance, worldId, recycleDistance );
  
  	world->contactRecycleDistance = b3ClampFloat( recycleDistance, 0.0f, FLT_MAX );
@@ -15371,7 +15525,7 @@ index 29c13c7..20d1e1a 100644
  }
  
  float b3World_GetContactRecycleDistance( b3WorldId worldId )
-@@ -2259,6 +2938,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
+@@ -2259,6 +2959,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
  	}
  
  	world->frictionCallback = callback != NULL ? callback : b3DefaultFrictionCallback;
@@ -15382,7 +15536,7 @@ index 29c13c7..20d1e1a 100644
  }
  
  void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* callback )
-@@ -2270,6 +2953,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
+@@ -2270,6 +2974,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
  	}
  
  	world->restitutionCallback = callback != NULL ? callback : b3DefaultRestitutionCallback;
@@ -15393,7 +15547,7 @@ index 29c13c7..20d1e1a 100644
  }
  
  void b3World_SetWorkerCount( b3WorldId worldId, int count )
-@@ -2312,6 +2999,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
+@@ -2312,6 +3020,7 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
  	}
  
  	b3StartRecordingIntoBuffer( world, recording );
@@ -15401,7 +15555,7 @@ index 29c13c7..20d1e1a 100644
  }
  
  void b3World_StopRecording( b3WorldId worldId )
-@@ -2323,6 +3011,7 @@ void b3World_StopRecording( b3WorldId worldId )
+@@ -2323,6 +3032,7 @@ void b3World_StopRecording( b3WorldId worldId )
  	}
  
  	b3StopRecordingInternal( world );
@@ -15409,7 +15563,7 @@ index 29c13c7..20d1e1a 100644
  }
  
  void b3World_DumpMemoryStats( b3WorldId worldId )
-@@ -3313,6 +4002,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
+@@ -3313,6 +4023,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
  	}
  	world->preSolveFcn = fcn;
  	world->preSolveContext = context;
@@ -15417,7 +15571,7 @@ index 29c13c7..20d1e1a 100644
  }
  
  void b3World_SetGravity( b3WorldId worldId, b3Vec3 gravity )
-@@ -3445,6 +4135,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3445,6 +4156,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	}
  
  	B3_REC( world, WorldExplode, worldId, *explosionDef );
@@ -15429,7 +15583,7 @@ index 29c13c7..20d1e1a 100644
  
  	// Locked due to waking
  	world->locked = true;
-@@ -3457,6 +4152,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3457,6 +4173,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	b3AABB aabb = b3OffsetAABB( localBox, position );
  
  	b3DynamicTree_Query( world->broadPhase.trees + b3_dynamicBody, aabb, maskBits, false, ExplosionCallback, &explosionContext );
@@ -15437,7 +15591,7 @@ index 29c13c7..20d1e1a 100644
  
  	world->locked = false;
  }
-@@ -3473,6 +4169,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +4190,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -15449,7 +15603,7 @@ index 29c13c7..20d1e1a 100644
  }
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
-@@ -3637,7 +4338,15 @@ void b3ValidateSolverSets( b3World* world )
+@@ -3637,7 +4359,15 @@ void b3ValidateSolverSets( b3World* world )
  					uint32_t syncedFlags = body->flags & ~b3_bodyTransientFlags;
  					B3_ASSERT( ( bodySim->flags & syncedFlags ) == syncedFlags );
  
@@ -17549,10 +17703,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..e815659
+index 0000000..610181a
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,3805 @@
+@@ -0,0 +1,3815 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -18491,6 +18645,15 @@ index 0000000..e815659
 +	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &gpu, &eligibleCount, NULL,
 +										   &stats ) );
 +	ENSURE( eligibleCount == firstEligibleCount );
++	int faceCacheHitCount = 0;
++	for ( int i = 0; i < firstEligibleCount; ++i )
++	{
++		uint32_t cacheType = gpu[i].satCache & 0xffu;
++		faceCacheHitCount += ( cacheType == b3_faceAxisA || cacheType == b3_faceAxisB ) &&
++			( gpu[i].satCache >> 24 ) != 0;
++		first[i].satCache = ( first[i].satCache & 0x00ffffffu ) | ( gpu[i].satCache & 0xff000000u );
++	}
++	ENSURE( faceCacheHitCount > 0 );
 +	ENSURE( memcmp( first, gpu, (size_t)firstEligibleCount * sizeof( b3MetalConvexManifoldResult ) ) == 0 );
 +	for ( int i = 0; i < contactCount / 2; ++i )
 +	{
@@ -18566,7 +18729,7 @@ index 0000000..e815659
 +	// contacts.
 +	ENSURE( profile.lastNarrowPhaseResultCount == contactCount );
 +	ENSURE( profile.lastNarrowPhaseManifoldTableCount == world->contacts.count );
-+	printf( "    resident narrow inputs geometry=%llu/%llu transforms=%llu/%llu hullShapes=%d uniqueHulls=%d inputBytes=32 "
++	printf( "    resident narrow inputs geometry=%llu/%llu transforms=%llu/%llu hullShapes=%d uniqueHulls=%d inputBytes=40 "
 +			"resultBytes=%zu tableSlots=%d\n",
 +			(unsigned long long)profile.narrowPhaseGeometryUploadCount, (unsigned long long)profile.narrowPhaseGeometryReuseCount,
 +			(unsigned long long)profile.narrowPhaseTransformUploadCount,
@@ -18811,8 +18974,9 @@ index 0000000..e815659
 +	b3Vec3 gpuVelocity = b3Body_GetLinearVelocity( bodyB );
 +	ENSURE( b3Length( b3Sub( cpuVelocity, gpuVelocity ) ) <= 3.0e-5f );
 +
-+	// The next unchanged step deliberately takes the CPU recycling exception.
-+	// A table slot still exists, but it must no longer authorize GPU preparation.
++	// The next unchanged step takes Box3D's recycling shortcut. The prior
++	// device impulse record is synchronized before CPU preparation consumes the
++	// recycled manifold, but the contact no longer authorizes GPU preparation.
 +	b3World_SetContactRecycleDistance( worldId, 0.1f );
 +	b3World_SetContactRecycleDistance( cpuWorldId, 0.1f );
 +	b3World_Step( cpuWorldId, 1.0f / 60.0f, 1 );
@@ -19255,7 +19419,7 @@ index 0000000..e815659
 +	ENSURE( profile.lastNarrowPhaseResultBytes == sizeof( b3MetalConvexManifoldResult ) );
 +	ENSURE( profile.contactInputPackCount == 3 );
 +	ENSURE( profile.contactInputReuseCount == 2 );
-+	ENSURE( profile.lastContactInputBytes == count * 32u );
++	ENSURE( profile.lastContactInputBytes == count * 40u );
 +	ENSURE( profile.lastContactStateBitSetBytes > 0 );
 +	ENSURE( profile.contactHitEventBitSetClearBypassCount == 4 );
 +	ENSURE( profile.lastContactHitEventBitSetBytes > 0 );
@@ -19291,7 +19455,7 @@ index 0000000..e815659
 +	ENSURE( profile.lastNarrowPhaseResultBytes == sizeof( b3MetalConvexManifoldResult ) );
 +	ENSURE( profile.contactInputPackCount == 4 );
 +	ENSURE( profile.contactInputReuseCount == 2 );
-+	ENSURE( profile.lastContactInputBytes == ( count + 1 ) * 32u );
++	ENSURE( profile.lastContactInputBytes == ( count + 1 ) * 40u );
 +	ENSURE( profile.lastContactStateBitSetBytes > 0 );
 +	ENSURE( profile.contactHitEventBitSetClearBypassCount == 5 );
 +	ENSURE( profile.lastContactHitEventBitSetBytes == 0 );
