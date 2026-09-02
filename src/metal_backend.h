@@ -165,7 +165,7 @@ bool b3MetalCanReuseConvexManifoldInputs( const b3MetalContext* context, const b
 // does not pack or synchronize CPU body sims and fails when the registry is not
 // authoritative for the world's current step and revision.
 bool b3MetalReadResidentBodyTransform( const b3MetalContext* context, const b3World* world, int bodyId,
-									   b3WorldTransform* transform, int* bodySimIndex );
+									   b3WorldTransform* transform, int* bodySimIndex, uint32_t* stateFlags );
 bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices, int contactCount,
 									const b3MetalConvexManifoldResult** results, int* resultCount, int* residentBypassCount,
 									b3MetalDispatchStats* stats );

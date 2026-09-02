@@ -246,6 +246,10 @@ typedef struct b3StepContext
 	// the CPU mirror was deliberately omitted. The portable body pass recomputes
 	// its bookkeeping from the returned body states.
 	bool metalFinalizationDeviceOnly;
+	// Finalization published absolute transforms and reset solver deltas in the
+	// resident state buffer. The CPU bookkeeping pass consumes the transform
+	// registry instead of the now-reset deltas.
+	bool metalBodyStatesFinalizedOnDevice;
 	const b3MetalShapeAABBResult* metalShapeResults;
 	int metalShapeResultCount;
 	const b3MetalEnlargedShapeResult* metalEnlargedShapeResults;

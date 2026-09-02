@@ -342,6 +342,9 @@ typedef struct b3World
 	uint64_t metalNarrowPhaseTransformUploadCount;
 	uint64_t metalNarrowPhaseTransformReuseCount;
 	uint64_t metalNarrowPhaseTransformDeviceRefreshCount;
+	uint64_t metalBodyStateUploadCount;
+	uint64_t metalBodyStateReuseCount;
+	uint64_t metalLastBodyStateUploadBytes;
 	int metalLastNarrowPhaseHullShapeCount;
 	int metalLastNarrowPhaseUniqueHullCount;
 	int metalLastNarrowPhaseResultCount;

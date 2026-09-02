@@ -704,12 +704,48 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 		B3_ASSERT( b3IsValidVec3( v ) );
 		B3_ASSERT( b3IsValidVec3( w ) );
 
-		float maxVelocity;
-		float maxDeltaPosition;
-		float sleepVelocity;
+		float maxVelocity = 0.0f;
+		float maxDeltaPosition = 0.0f;
+		float sleepVelocity = 0.0f;
+		uint32_t finalizedStateFlags = state->flags;
+		bool deviceStateFinalized = false;
+#if defined( BOX3D_METAL )
+		if ( stepContext->metalBodyStatesFinalizedOnDevice )
+		{
+			b3WorldTransform deviceTransform;
+			int deviceSimIndex = B3_NULL_INDEX;
+			bool current = b3MetalReadResidentBodyTransform( world->metalContext, world, sim->bodyId, &deviceTransform,
+				&deviceSimIndex, &finalizedStateFlags );
+			B3_ASSERT( current && deviceSimIndex == simIndex );
+			if ( current && deviceSimIndex == simIndex )
+			{
+				b3Quat oldRotation = sim->transform.q;
+				b3Pos oldCenter = sim->center;
+				b3Pos newCenter = b3TransformWorldPoint( deviceTransform, sim->localCenter );
+				b3Vec3 deltaPosition = b3SubPos( newCenter, oldCenter );
+				b3Quat deltaRotation = b3NormalizeQuat( b3MulQuat( deviceTransform.q, b3Conjugate( oldRotation ) ) );
+				b3Vec3 localOmega = b3InvRotateVector( oldRotation, w );
+				b3Vec3 localDeltaRotation = b3InvRotateVector( oldRotation, deltaRotation.v );
+				sim->center = newCenter;
+				sim->transform = deviceTransform;
+
+				b3Vec3 velocityArc = b3ModifiedCross( b3Abs( localOmega ), sim->maxExtent );
+				maxVelocity = b3Length( v ) + b3Length( velocityArc );
+				b3Vec3 rotationArc = b3ModifiedCross( b3Abs( localDeltaRotation ), sim->maxExtent );
+				maxDeltaPosition = b3Length( deltaPosition ) + 2.0f * b3Length( rotationArc );
+				sleepVelocity = b3MaxFloat( maxVelocity, 0.5f * invTimeStep * maxDeltaPosition );
+				deviceStateFinalized = true;
+			}
+		}
+#endif
 		const b3MetalFinalizeResult* metalResult =
 			stepContext->metalFinalizeResults != NULL ? stepContext->metalFinalizeResults + simIndex : NULL;
-		if ( metalResult != NULL )
+		if ( deviceStateFinalized )
+		{
+			// Absolute transform authority and motion metrics were reconstructed
+			// above; the resident state deltas are already reset for the next step.
+		}
+		else if ( metalResult != NULL )
 		{
 			sim->center = b3OffsetPos( sim->center, metalResult->deltaPosition );
 			sim->transform.q = metalResult->rotation;
@@ -769,7 +805,7 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
 
 		body->flags &= ~b3_bodyTransientFlags;
 		body->flags |= ( sim->flags & ( b3_isSpeedCapped | b3_hadTimeOfImpact ) );
-		body->flags |= ( state->flags & ( b3_isSpeedCapped | b3_hadTimeOfImpact ) );
+		body->flags |= ( finalizedStateFlags & ( b3_isSpeedCapped | b3_hadTimeOfImpact ) );
 		sim->flags &= ~b3_bodyTransientFlags;
 		state->flags &= ~b3_bodyTransientFlags;
 
@@ -1927,6 +1963,7 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 	world->metalLastContactPrepareIndexBytes = 0;
 	world->metalLastContactImpulseResultBytes = 0;
 	world->metalLastFinalizationReadbackBytes = 0;
+	world->metalLastBodyStateUploadBytes = 0;
 #endif
 
 	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
@@ -1958,6 +1995,7 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		stepContext->states = awakeSet->bodyStates.data;
 		stepContext->metalFinalizeResults = NULL;
 		stepContext->metalFinalizationDeviceOnly = false;
+		stepContext->metalBodyStatesFinalizedOnDevice = false;
 		stepContext->metalShapeResults = NULL;
 		stepContext->metalShapeResultCount = 0;
 		stepContext->metalEnlargedShapeResults = NULL;

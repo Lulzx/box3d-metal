@@ -78,6 +78,7 @@ struct b3MetalContext
 	id<MTLComputePipelineState> solveJointOverflowPipeline;
 	id<MTLBuffer> bodyStateBuffer;
 	NSUInteger bodyStateCapacity;
+	int bodyStateResidentCount;
 	id<MTLBuffer> bodyPropertiesBuffer;
 	NSUInteger bodyPropertiesCapacity;
 	id<MTLBuffer> finalizeResultBuffer;
@@ -705,7 +706,7 @@ static const char* b3_metalSource =
 	"  s.qx = qv.x; s.qy = qv.y; s.qz = qv.z; s.qw = qw;\n"
 	"  states[i] = s;\n"
 	"}\n"
-	"kernel void b3_finalize_bodies(const device BodyState* states [[buffer(0)]],\n"
+	"kernel void b3_finalize_bodies(device BodyState* states [[buffer(0)]],\n"
 	"                               const device BodyProperties* props [[buffer(1)]],\n"
 	"                               const device FinalizeProperties* finalizeProps [[buffer(2)]],\n"
 	"                               device FinalizeResult* results [[buffer(3)]],\n"
@@ -756,7 +757,7 @@ static const char* b3_metalSource =
 	"  results[i] = out;\n"
 	"  if(p.publishTransforms!=0u&&fp.bodyId>=0&&uint(fp.bodyId)<p.transformCount){\n"
 	"    BodyTransform t=bodyTransforms[fp.bodyId];t.qx=q.x;t.qy=q.y;t.qz=q.z;t.qw=q.w;\n"
-	"    t.px=position.x;t.py=position.y;t.pz=position.z;t.supported=1u;t.index=int(i);t.flags=0u;\n"
+	"    t.px=position.x;t.py=position.y;t.pz=position.z;t.supported=1u;t.index=int(i);t.flags=s.flags;\n"
 	"    t.localCenterX=fp.localCenterX;t.localCenterY=fp.localCenterY;t.localCenterZ=fp.localCenterZ;\n"
 	"#if defined(B3_DOUBLE_PRECISION)\n"
 	"    t.pxBits=b3_vf64_add_float(b3_vf64_add_float(fp.centerXBits,dp.x),origin.x);\n"
@@ -764,6 +765,8 @@ static const char* b3_metalSource =
 	"    t.pzBits=b3_vf64_add_float(b3_vf64_add_float(fp.centerZBits,dp.z),origin.z);\n"
 	"#endif\n"
 	"    bodyTransforms[fp.bodyId]=t;\n"
+	"    s.dpx=0.0f;s.dpy=0.0f;s.dpz=0.0f;s.qx=0.0f;s.qy=0.0f;s.qz=0.0f;s.qw=1.0f;\n"
+	"    s.flags&=~0x00000340u;states[i]=s;\n"
 	"  }\n"
 	"}\n"
 	"kernel void b3_finalize_shapes(const device ShapeInput* inputs [[buffer(0)]],\n"
@@ -3195,6 +3198,7 @@ bool b3MetalIntegratePositions( b3MetalContext* context, b3BodyState* states, in
 		{
 			return false;
 		}
+		context->bodyStateResidentCount = 0;
 		memcpy( context->bodyStateBuffer.contents, states, byteCount );
 
 		b3MetalIntegrateParams params = {
@@ -3243,7 +3247,7 @@ bool b3MetalIntegratePositions( b3MetalContext* context, b3BodyState* states, in
 }
 
 static bool b3MetalPrepareBodyTransformDeviceRefresh( b3MetalContext* context, const b3World* world );
-static void b3MetalCommitBodyTransformDeviceRefresh( b3MetalContext* context, b3World* world );
+static void b3MetalCommitBodyTransformDeviceRefresh( b3MetalContext* context, b3World* world, int bodyCount );
 
 bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState* states, const b3BodySim* sims,
 	int bodyCount, int subStepCount, float h, b3Vec3 gravity, float maxLinearSpeed, float maxAngularSpeed,
@@ -3262,7 +3266,7 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 	{
 		return false;
 	}
-	if ( bodyCount == 0 )
+		if ( bodyCount == 0 )
 	{
 		return true;
 	}
@@ -3281,7 +3285,24 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 			return false;
 		}
 
-		memcpy( context->bodyStateBuffer.contents, states, stateByteCount );
+		bool omitFinalizeReadback = finalizeResults != NULL && finalizationContext != NULL &&
+			finalizationContext->world->enableSleep == false && finalizationContext->world->enableContinuous == false;
+		bool publishBodyTransforms = omitFinalizeReadback &&
+			b3MetalPrepareBodyTransformDeviceRefresh( context, finalizationContext->world );
+		bool reuseBodyStates = publishBodyTransforms && context->bodyStateResidentCount == bodyCount &&
+			memcmp( context->bodyStateBuffer.contents, states, stateByteCount ) == 0;
+		// A failed command must not leave the previous generation reusable.
+		context->bodyStateResidentCount = 0;
+		if ( reuseBodyStates == false )
+		{
+			memcpy( context->bodyStateBuffer.contents, states, stateByteCount );
+		}
+		if ( finalizationContext != NULL )
+		{
+			finalizationContext->world->metalBodyStateReuseCount += reuseBodyStates ? 1 : 0;
+			finalizationContext->world->metalBodyStateUploadCount += reuseBodyStates ? 0 : 1;
+			finalizationContext->world->metalLastBodyStateUploadBytes = reuseBodyStates ? 0 : stateByteCount;
+		}
 		b3MetalBodyProperties* properties = context->bodyPropertiesBuffer.contents;
 		b3MetalPackBodyProperties( properties, sims, bodyCount );
 		if ( finalizeResults != NULL )
@@ -3289,10 +3310,6 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 			b3MetalPackFinalizeProperties( context->finalizePropertiesBuffer.contents, sims, bodyCount );
 		}
 		int shapeCount = finalizationContext != NULL ? b3MetalPackShapeInputs( context, finalizationContext ) : 0;
-		bool omitFinalizeReadback = finalizeResults != NULL && finalizationContext != NULL &&
-			finalizationContext->world->enableSleep == false && finalizationContext->world->enableContinuous == false;
-		bool publishBodyTransforms = omitFinalizeReadback &&
-			b3MetalPrepareBodyTransformDeviceRefresh( context, finalizationContext->world );
 		bool treeRefitEncoded = false;
 		bool shapeReadbackEncoded = false;
 
@@ -3375,7 +3392,12 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 		}
 		if ( publishBodyTransforms )
 		{
-			b3MetalCommitBodyTransformDeviceRefresh( context, finalizationContext->world );
+			b3MetalCommitBodyTransformDeviceRefresh( context, finalizationContext->world, bodyCount );
+			finalizationContext->metalBodyStatesFinalizedOnDevice = true;
+		}
+		else
+		{
+			context->bodyStateResidentCount = 0;
 		}
 
 		memcpy( states, context->bodyStateBuffer.contents, stateByteCount );
@@ -3476,6 +3498,7 @@ bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, 
 		{
 			return false;
 		}
+		context->bodyStateResidentCount = 0;
 		if ( statesAreResident == false )
 		{
 			memcpy( context->bodyStateBuffer.contents, states, stateBytes );
@@ -4086,17 +4109,18 @@ static bool b3MetalPrepareBodyTransformDeviceRefresh( b3MetalContext* context, c
 	return b3MetalEnsureBodyTransformRegistry( context, world );
 }
 
-static void b3MetalCommitBodyTransformDeviceRefresh( b3MetalContext* context, b3World* world )
+static void b3MetalCommitBodyTransformDeviceRefresh( b3MetalContext* context, b3World* world, int bodyCount )
 {
 	B3_ASSERT( context != NULL && world != NULL );
 	context->convexBodyTransformCount = world->bodies.count;
 	context->convexBodyTransformStepIndex = world->stepIndex;
 	context->convexBodyTransformRevision = world->metalBodyTransformRevision;
+	context->bodyStateResidentCount = bodyCount;
 	world->metalNarrowPhaseTransformDeviceRefreshCount += 1;
 }
 
 bool b3MetalReadResidentBodyTransform( const b3MetalContext* context, const b3World* world, int bodyId,
-	b3WorldTransform* transform, int* bodySimIndex )
+	b3WorldTransform* transform, int* bodySimIndex, uint32_t* stateFlags )
 {
 	if ( context == NULL || world == NULL || transform == NULL || bodyId < 0 || bodyId >= world->bodies.count ||
 		 context->convexBodyTransformBuffer == nil || context->convexBodyTransformCount != world->bodies.count ||
@@ -4117,6 +4141,7 @@ bool b3MetalReadResidentBodyTransform( const b3MetalContext* context, const b3Wo
 	transform->p = (b3Pos){ record->px, record->py, record->pz };
 #endif
 	if ( bodySimIndex != NULL ) *bodySimIndex = record->index;
+	if ( stateFlags != NULL ) *stateFlags = record->flags;
 	return true;
 }
 
@@ -4725,7 +4750,17 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 			return false;
 		}
 
-		memcpy( context->bodyStateBuffer.contents, stepContext->states, stateBytes );
+		bool reuseBodyStates = publishBodyTransforms && context->bodyStateResidentCount == bodyCount &&
+			memcmp( context->bodyStateBuffer.contents, stepContext->states, stateBytes ) == 0;
+		// A failed command must not leave the previous generation reusable.
+		context->bodyStateResidentCount = 0;
+		if ( reuseBodyStates == false )
+		{
+			memcpy( context->bodyStateBuffer.contents, stepContext->states, stateBytes );
+		}
+		stepContext->world->metalBodyStateReuseCount += reuseBodyStates ? 1 : 0;
+		stepContext->world->metalBodyStateUploadCount += reuseBodyStates ? 0 : 1;
+		stepContext->world->metalLastBodyStateUploadBytes = reuseBodyStates ? 0 : stateBytes;
 		b3MetalPackBodyProperties( context->bodyPropertiesBuffer.contents, stepContext->sims, bodyCount );
 		if ( prepareContactsOnGpu &&
 			b3MetalPackContactPrepareIndices( context, stepContext, &preparedHasRestitution ) == false )
@@ -5173,7 +5208,12 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		}
 		if ( publishBodyTransforms )
 		{
-			b3MetalCommitBodyTransformDeviceRefresh( context, stepContext->world );
+			b3MetalCommitBodyTransformDeviceRefresh( context, stepContext->world, bodyCount );
+			stepContext->metalBodyStatesFinalizedOnDevice = true;
+		}
+		else
+		{
+			context->bodyStateResidentCount = 0;
 		}
 		if ( prepareContactsOnGpu )
 		{

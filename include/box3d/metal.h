@@ -135,6 +135,10 @@ typedef struct b3MetalProfile
 	/// Finalization phases that refreshed the next-step narrow-phase transform
 	/// registry directly from private device results.
 	uint64_t narrowPhaseTransformDeviceRefreshCount;
+	/// Cross-step awake solver-state uploads and exact resident reuses.
+	uint64_t bodyStateUploadCount;
+	uint64_t bodyStateReuseCount;
+	uint64_t lastBodyStateUploadBytes;
 	int lastNarrowPhaseHullShapeCount;
 	int lastNarrowPhaseUniqueHullCount;
 	int lastNarrowPhaseResultCount;

@@ -45,3 +45,8 @@ This removes the per-step CPU transform-registry rebuild for the next device
 collision consumer. It does not yet keep the solver body-state/property arrays
 resident across steps, materialize public transforms lazily, author body move
 events on the device, or bypass the contiguous CPU body-finalization walk.
+
+The subsequent
+[`cross-step body-state residency`](m4-pro-body-state-residency-2026-09-02.md)
+checkpoint keeps unchanged awake states in the existing unified-memory buffer
+and fails closed to a full upload after public mutation.

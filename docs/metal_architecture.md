@@ -165,6 +165,20 @@ fail closed through the existing revision/step checks. This is transform
 authority for device collision consumers, not yet lazy public body transforms:
 the CPU finalization walk still maintains the public body-sim mirror.
 
+The same bounded finalization kernel resets resident solver position/rotation
+deltas and transient state flags after publishing their absolute transform and
+flags. The CPU bookkeeping pass reconstructs its motion metrics from the old
+CPU pose and the device-authored absolute pose, so event/debug behavior remains
+oracle-compatible even though the returned state deltas are already ready for
+the next step. Before the following solver command, an exact byte comparison
+between the resident state buffer and the CPU state mirror detects every public
+velocity, impulse, lock, wake/order, or fallback mutation. An exact match omits
+the CPU-to-device state copy; a mismatch performs the full upload. This is a
+fail-closed transitional boundary: `bodyStateUploadCount`,
+`bodyStateReuseCount`, and `lastBodyStateUploadBytes` expose it. The comparison
+still reads the CPU state array, and solved states still return to the CPU; full
+device authority requires revisioned mutators and lazy public synchronization.
+
 An independently opt-in pair stage copies Erin's existing static, kinematic,
 and dynamic tree topology into persistent shared Metal buffers. A monotonic
 broad-phase revision lets node snapshots remain resident across pair queries.
