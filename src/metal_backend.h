@@ -63,12 +63,13 @@ typedef struct b3MetalContactImpulseResult
 	uint32_t contactId;
 	uint32_t generation;
 	uint32_t pointCount;
-	uint32_t flags;
+	uint32_t contactGeneration;
 	float frictionX, frictionY, frictionZ, twistImpulse;
 	float rollingX, rollingY, rollingZ, padding;
 	struct
 	{
-		float normalImpulse, totalNormalImpulse, normalVelocity, padding;
+		float normalImpulse, totalNormalImpulse, normalVelocity;
+		uint32_t featureId;
 	} points[2];
 } b3MetalContactImpulseResult;
 
@@ -157,7 +158,7 @@ bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalCon
 // Retain post-persistence solver metadata by contact id during the existing CPU
 // collision pass. The narrow-phase dispatch preallocates the table, so parallel
 // collision workers only write disjoint records and never allocate.
-bool b3MetalStageResidentContactPrepare( b3MetalContext* context, const b3Contact* contact );
+bool b3MetalStageResidentContactPrepare( b3MetalContext* context, b3Contact* contact );
 
 // Return the current shared compact post-solve table. A result is authoritative
 // only when its contactId and generation match the requested entry.

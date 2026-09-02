@@ -1901,7 +1901,7 @@ void b3StoreImpulses_Convex( b3SolverBlock block, b3StepContext* context, int wo
 				{
 					const b3MetalContactImpulseResult* candidate = impulseResults + contactId;
 					if ( candidate->contactId == (uint32_t)contactId && candidate->generation == impulseGeneration &&
-						candidate->pointCount == (uint32_t)pointCount && candidate->flags == 1 )
+						candidate->pointCount == (uint32_t)pointCount && candidate->contactGeneration == contact->generation )
 					{
 						result = candidate;
 					}

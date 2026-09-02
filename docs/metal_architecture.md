@@ -218,7 +218,7 @@ front of the existing solver command buffer. CPU workers skip
 the private contact-id table and writes the existing 1,696-byte SIMD-wide
 constraint ABI. CPU-owned persistence anchors, warm-start impulses, materials,
 tangent velocity, body indices, and manifold storage identity are retained in a
-generation-tagged 144-byte shared table indexed by contact ID. Collision workers
+generation-tagged 152-byte shared table indexed by contact ID. Collision workers
 write disjoint records during the existing persistence pass. Solver submission
 then initializes tail lanes and bulk-copies one four-byte contact-ID schedule per
 active color; it does not dereference contacts or repack their metadata. The
@@ -231,6 +231,13 @@ CPU convex preparation is rerun before the CPU solver fallback. This removes
 CPU preparation arithmetic plus the dedicated solver-time contact traversal and
 144-byte lane stream. CPU manifold persistence/material work, table writes, the
 graph-color schedule, impulse storage, events, and topology remain.
+The 80-byte post-solve record carries contact generation plus each point's
+feature ID without increasing its size. Before the next supported persistence
+record is staged, matching features restore normal impulses from that resident
+record; friction, twist, and rolling warm-start terms are restored at contact
+scope. A recycled contact slot with a different generation cannot inherit the
+old result. This removes CPU manifold impulse freshness as a prerequisite for
+future lazy public synchronization.
 
 Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 unsupported joint solution, continuous collision, events, and sleeping/island
@@ -352,6 +359,8 @@ Compact post-solve impulse extraction and hit-event equivalence are recorded in
 [`benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md`](benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md).
 Constraint-graph revisioning and unchanged-step schedule reuse are recorded in
 [`benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md`](benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md).
+Feature-matched resident warm-start carry is recorded in
+[`benchmarks/m4-pro-resident-warm-start-2026-09-02.md`](benchmarks/m4-pro-resident-warm-start-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

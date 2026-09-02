@@ -1459,6 +1459,87 @@ static int MetalResidentContactHitEventTest( void )
 	return 0;
 }
 
+static int MetalResidentWarmStartCarryTest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
+	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
+	b3World_SetContactRecycleDistance( cpuWorld, 0.0f );
+	b3World_SetContactRecycleDistance( gpuWorld, 0.0f );
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.baseMaterial.friction = 0.6f;
+	b3BodyDef staticDef = b3DefaultBodyDef();
+	b3BodyId cpuStatic = b3CreateBody( cpuWorld, &staticDef );
+	b3BodyId gpuStatic = b3CreateBody( gpuWorld, &staticDef );
+	b3CreateSphereShape( cpuStatic, &shapeDef, &sphere );
+	b3CreateSphereShape( gpuStatic, &shapeDef, &sphere );
+	b3BodyDef dynamicDef = b3DefaultBodyDef();
+	dynamicDef.type = b3_dynamicBody;
+	dynamicDef.enableSleep = false;
+	dynamicDef.position = (b3Pos){ 0.98, 0.0, 0.0 };
+	dynamicDef.linearVelocity = (b3Vec3){ -0.4f, 0.1f, 0.0f };
+	b3BodyId cpuDynamic = b3CreateBody( cpuWorld, &dynamicDef );
+	b3BodyId gpuDynamic = b3CreateBody( gpuWorld, &dynamicDef );
+	b3CreateSphereShape( cpuDynamic, &shapeDef, &sphere );
+	b3CreateSphereShape( gpuDynamic, &shapeDef, &sphere );
+
+	b3World_Step( cpuWorld, 1.0f / 60.0f, 1 );
+	b3World_Step( gpuWorld, 1.0f / 60.0f, 1 );
+	b3World* gpu = b3GetWorldFromId( gpuWorld );
+	int contactId = B3_NULL_INDEX;
+	for ( int colorIndex = 0; colorIndex < B3_OVERFLOW_INDEX && contactId == B3_NULL_INDEX; ++colorIndex )
+	{
+		if ( gpu->constraintGraph.colors[colorIndex].convexContacts.count > 0 )
+		{
+			contactId = gpu->constraintGraph.colors[colorIndex].convexContacts.data[0];
+		}
+	}
+	ENSURE( contactId != B3_NULL_INDEX );
+	b3Contact* contact = b3Array_Get( gpu->contacts, contactId );
+	ENSURE( contact->manifoldCount == 1 && contact->manifolds[0].pointCount == 1 );
+	uint32_t resultGeneration = 0;
+	int resultCount = 0;
+	const b3MetalContactImpulseResult* results =
+		b3MetalGetResidentContactImpulseTable( gpu->metalContext, &resultGeneration, &resultCount );
+	ENSURE( results != NULL && contactId < resultCount );
+	const b3MetalContactImpulseResult* result = results + contactId;
+	ENSURE( result->generation == resultGeneration );
+	ENSURE( result->contactGeneration == contact->generation );
+	ENSURE( result->points[0].featureId == contact->manifolds[0].points[0].featureId );
+	ENSURE( result->points[0].normalImpulse > 0.0f );
+	uint32_t savedContactGeneration = contact->generation;
+	contact->generation += 1;
+	contact->manifolds[0].points[0].normalImpulse = 777.0f;
+	ENSURE( b3MetalStageResidentContactPrepare( gpu->metalContext, contact ) );
+	ENSURE( contact->manifolds[0].points[0].normalImpulse == 777.0f );
+	contact->generation = savedContactGeneration;
+
+	// Simulate a stale CPU public mirror. The next persistence pass must match
+	// feature IDs against the resident result and recover every warm-start term.
+	contact->manifolds[0].points[0].normalImpulse = 1000.0f;
+	contact->manifolds[0].frictionImpulse = (b3Vec3){ 1000.0f, 1000.0f, 1000.0f };
+	contact->manifolds[0].twistImpulse = 1000.0f;
+	contact->manifolds[0].rollingImpulse = (b3Vec3){ 1000.0f, 1000.0f, 1000.0f };
+	b3World_Step( cpuWorld, 1.0f / 60.0f, 1 );
+	b3World_Step( gpuWorld, 1.0f / 60.0f, 1 );
+	float velocityError = b3Length( b3Sub( b3Body_GetLinearVelocity( cpuDynamic ),
+		b3Body_GetLinearVelocity( gpuDynamic ) ) );
+	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( profile.contactPrepareDispatchCount == 2 );
+	ENSURE( profile.contactSchedulePackCount == 1 );
+	ENSURE( profile.contactScheduleReuseCount == 1 );
+	ENSURE( velocityError <= 3.0e-5f );
+	printf( "    resident warm-start feature=%u schedule=1/1 velocityError=%.3g\n",
+		result->points[0].featureId, velocityError );
+	b3DestroyWorld( gpuWorld );
+	b3DestroyWorld( cpuWorld );
+	return 0;
+}
+
 static int MetalPairTraversalFallbackTest( void )
 {
 	const int bodyCount = 80;
@@ -2717,6 +2798,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalContactPrepareFallbackTest );
 	RUN_SUBTEST( MetalResidentContactPrepareDifferentialTest );
 	RUN_SUBTEST( MetalResidentContactHitEventTest );
+	RUN_SUBTEST( MetalResidentWarmStartCarryTest );
 	RUN_SUBTEST( MetalPairTraversalTest );
 	RUN_SUBTEST( MetalExistingPairFilterTest );
 	RUN_SUBTEST( MetalPairTraversalFallbackTest );

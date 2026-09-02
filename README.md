@@ -69,7 +69,7 @@ staging exists only for validation and fallback diagnostics.
 When every colored convex contact remains authoritative after persistence and
 callback processing, a Metal preparation kernel now builds Erin's SIMD-wide
 contact constraints from that table in the solver command buffer. The CPU still
-owns persistence and material resolution, but writes the resulting 144-byte
+owns persistence and material resolution, but writes the resulting 152-byte
 record once into a generation-tagged contact-ID table during that existing pass.
 Solver submission bulk-copies only a deterministic four-byte contact-ID schedule
 per SIMD lane; it no longer walks and dereferences every contact to repack the
@@ -85,6 +85,10 @@ The constraint graph carries a monotonic topology/order revision. The four-byte
 contact-ID lane schedule remains in its Metal buffer while that revision and its
 exact wide/contact counts are unchanged; contact or joint insertion/removal
 invalidates it before the next solver submission.
+The post-solve table also retains contact generation and per-point feature IDs.
+On the next fresh supported collision pass, matching features restore normal,
+friction, twist, and rolling warm-start impulses from GPU-authored state before
+preparation metadata is staged. Contact-slot reuse cannot consume stale state.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.

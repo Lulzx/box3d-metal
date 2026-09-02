@@ -169,6 +169,7 @@ struct b3MetalContext
 	id<MTLBuffer> contactImpulseResultBuffer;
 	NSUInteger contactImpulseResultCapacity;
 	int contactImpulseResultCount;
+	uint32_t contactImpulseResultGeneration;
 	id<MTLBuffer> meshContactBuffer;
 	NSUInteger meshContactCapacity;
 	id<MTLBuffer> meshManifoldBuffer;
@@ -344,6 +345,7 @@ typedef struct b3MetalContactPreparePoint
 {
 	float anchorAX, anchorAY, anchorAZ, separation;
 	float anchorBX, anchorBY, anchorBZ, normalImpulse;
+	uint32_t featureId;
 } b3MetalContactPreparePoint;
 
 typedef struct b3MetalContactPrepareInput
@@ -355,7 +357,8 @@ typedef struct b3MetalContactPrepareInput
 	float friction, restitution;
 	float rollingResistance, tangentVelocityX, tangentVelocityY, tangentVelocityZ;
 	float twistImpulse, frictionImpulseX, frictionImpulseY, frictionImpulseZ;
-	float rollingImpulseX, rollingImpulseY, rollingImpulseZ, padding;
+	float rollingImpulseX, rollingImpulseY, rollingImpulseZ;
+	uint32_t contactGeneration;
 	b3MetalContactPreparePoint points[2];
 } b3MetalContactPrepareInput;
 
@@ -369,8 +372,8 @@ typedef struct b3MetalContactPrepareParams
 	uint32_t generation;
 } b3MetalContactPrepareParams;
 
-_Static_assert( sizeof( b3MetalContactPreparePoint ) == 32, "Metal contact-prepare point ABI changed" );
-_Static_assert( sizeof( b3MetalContactPrepareInput ) == 144, "Metal contact-prepare input ABI changed" );
+_Static_assert( sizeof( b3MetalContactPreparePoint ) == 36, "Metal contact-prepare point ABI changed" );
+_Static_assert( sizeof( b3MetalContactPrepareInput ) == 152, "Metal contact-prepare input ABI changed" );
 _Static_assert( sizeof( b3MetalContactPrepareParams ) == 48, "Metal contact-prepare parameter ABI changed" );
 _Static_assert( sizeof( b3MetalContactImpulseResult ) == 80, "Metal contact-impulse result ABI changed" );
 
@@ -1057,16 +1060,16 @@ static const char* b3_contactSource =
 	"};\n"
 	"struct ConvexManifoldResult { uint eligible,touching,pointCount,inputIndex; float nx,ny,nz,padding2;\n"
 	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,scanOffset,contactId; };\n"
-	"struct PreparePoint { float anchorAX,anchorAY,anchorAZ,separation; float anchorBX,anchorBY,anchorBZ,normalImpulse; };\n"
+	"struct PreparePoint { float anchorAX,anchorAY,anchorAZ,separation; float anchorBX,anchorBY,anchorBZ,normalImpulse; uint featureId; };\n"
 	"struct Softness { float biasRate, massScale, impulseScale; };\n"
 	"struct PrepareInput { uint contactId; int indexA,indexB; uint generation; ulong manifold; float friction,restitution;\n"
 	"  float rollingResistance,tangentVelocityX,tangentVelocityY,tangentVelocityZ;\n"
 	"  float twistImpulse,frictionImpulseX,frictionImpulseY,frictionImpulseZ;\n"
-	"  float rollingImpulseX,rollingImpulseY,rollingImpulseZ,padding; PreparePoint points[2]; };\n"
+	"  float rollingImpulseX,rollingImpulseY,rollingImpulseZ; uint contactGeneration; PreparePoint points[2]; };\n"
 	"struct PrepareParams { uint wideCount,tableCount; float warmStartScale,invTau; Softness contactSoftness; float padding0;\n"
 	"  Softness staticSoftness; uint generation; };\n"
-	"struct ImpulsePoint { float normalImpulse,totalNormalImpulse,normalVelocity,padding; };\n"
-	"struct ImpulseResult { uint contactId,generation,pointCount,flags; float frictionX,frictionY,frictionZ,twistImpulse;\n"
+	"struct ImpulsePoint { float normalImpulse,totalNormalImpulse,normalVelocity; uint featureId; };\n"
+	"struct ImpulseResult { uint contactId,generation,pointCount,contactGeneration; float frictionX,frictionY,frictionZ,twistImpulse;\n"
 	"  float rollingX,rollingY,rollingZ,padding; ImpulsePoint points[2]; };\n"
 	"struct ImpulseParams { uint wideCount,tableCount,generation,padding; };\n"
 	"struct BodyProperties { float qx,qy,qz,qw; float forceX,forceY,forceZ; float torqueX,torqueY,torqueZ; float invMass;\n"
@@ -1258,14 +1261,14 @@ static const char* b3_contactSource =
 	"  } scatter_bodies(states,c.indexA,a); scatter_bodies(states,c.indexB,b);\n"
 	"}\n"
 	"kernel void b3_store_contact_impulses(const device uint* indices [[buffer(0)]],const device ContactWide* constraints [[buffer(1)]],\n"
-	"  device ImpulseResult* results [[buffer(2)]],constant ImpulseParams& p [[buffer(3)]],uint tid [[thread_position_in_grid]]){\n"
+	"  device ImpulseResult* results [[buffer(2)]],const device PrepareInput* inputs [[buffer(3)]],constant ImpulseParams& p [[buffer(4)]],uint tid [[thread_position_in_grid]]){\n"
 	"  if(tid>=p.wideCount)return;const device ContactWide& c=constraints[tid];\n"
 	"  for(uint lane=0;lane<4u;++lane){uint contactId=indices[4u*tid+lane];if(contactId==0xffffffffu||contactId>=p.tableCount)continue;\n"
-	"    uint pointCount=uint(c.pointCounts[lane]);if(pointCount==0u||pointCount>2u)continue;ImpulseResult r={};r.contactId=contactId;r.generation=p.generation;r.pointCount=pointCount;r.flags=1u;\n"
+	"    uint pointCount=uint(c.pointCounts[lane]);if(pointCount==0u||pointCount>2u)continue;PrepareInput in=inputs[contactId];ImpulseResult r={};r.contactId=contactId;r.generation=p.generation;r.pointCount=pointCount;r.contactGeneration=in.contactGeneration;\n"
 	"    float f1=c.frictionImpulse.x[lane],f2=c.frictionImpulse.y[lane];r.frictionX=f1*c.tangent1.X[lane]+f2*c.tangent2.X[lane];\n"
 	"    r.frictionY=f1*c.tangent1.Y[lane]+f2*c.tangent2.Y[lane];r.frictionZ=f1*c.tangent1.Z[lane]+f2*c.tangent2.Z[lane];r.twistImpulse=c.twistImpulse[lane];\n"
 	"    r.rollingX=c.rollingImpulse.X[lane];r.rollingY=c.rollingImpulse.Y[lane];r.rollingZ=c.rollingImpulse.Z[lane];\n"
-	"    for(uint j=0;j<pointCount;++j){r.points[j].normalImpulse=c.points[j].normalImpulses[lane];r.points[j].totalNormalImpulse=c.points[j].totalNormalImpulses[lane];r.points[j].normalVelocity=c.points[j].relativeVelocities[lane];}\n"
+	"    for(uint j=0;j<pointCount;++j){r.points[j].normalImpulse=c.points[j].normalImpulses[lane];r.points[j].totalNormalImpulse=c.points[j].totalNormalImpulses[lane];r.points[j].normalVelocity=c.points[j].relativeVelocities[lane];r.points[j].featureId=in.points[j].featureId;}\n"
 	"    results[contactId]=r;}\n"
 	"}\n"
 	"void warm_mesh_one(device BodyState* states,device MeshContact* contacts,device MeshManifold* manifolds,uint index){\n"
@@ -2288,7 +2291,7 @@ static bool b3MetalEnsureContactImpulseResultCapacity( b3MetalContext* context, 
 const b3MetalContactImpulseResult* b3MetalGetResidentContactImpulseTable(
 	const b3MetalContext* context, uint32_t* generation, int* resultCount )
 {
-	if ( generation != NULL ) *generation = context != NULL ? context->contactPrepareGeneration : 0;
+	if ( generation != NULL ) *generation = context != NULL ? context->contactImpulseResultGeneration : 0;
 	if ( resultCount != NULL ) *resultCount = context != NULL ? context->contactImpulseResultCount : 0;
 	return context != NULL && context->contactImpulseResultCount > 0 ? context->contactImpulseResultBuffer.contents : NULL;
 }
@@ -2547,7 +2550,7 @@ static void b3MetalPackBodyProperties( b3MetalBodyProperties* properties, const 
 	}
 }
 
-bool b3MetalStageResidentContactPrepare( b3MetalContext* context, const b3Contact* contact )
+bool b3MetalStageResidentContactPrepare( b3MetalContext* context, b3Contact* contact )
 {
 	if ( context == NULL || contact == NULL || context->contactPrepareGeneration == 0 ||
 		contact->contactId < 0 || contact->contactId >= context->convexManifoldTableCount ||
@@ -2559,7 +2562,34 @@ bool b3MetalStageResidentContactPrepare( b3MetalContext* context, const b3Contac
 	NSUInteger tableIndex = (NSUInteger)contact->contactId;
 	if ( tableIndex >= context->contactPrepareTableCapacity / sizeof( b3MetalContactPrepareInput ) ) return false;
 
-	const b3Manifold* manifold = contact->manifolds;
+	b3Manifold* manifold = contact->manifolds;
+	const b3MetalContactImpulseResult* previous = NULL;
+	if ( context->contactImpulseResultBuffer != nil && contact->contactId < context->contactImpulseResultCount )
+	{
+		const b3MetalContactImpulseResult* candidate =
+			( (const b3MetalContactImpulseResult*)context->contactImpulseResultBuffer.contents ) + contact->contactId;
+		if ( candidate->contactId == (uint32_t)contact->contactId &&
+			candidate->generation == context->contactImpulseResultGeneration &&
+			candidate->contactGeneration == contact->generation && candidate->pointCount >= 1 && candidate->pointCount <= 2 )
+		{
+			previous = candidate;
+			manifold->frictionImpulse = (b3Vec3){ previous->frictionX, previous->frictionY, previous->frictionZ };
+			manifold->twistImpulse = previous->twistImpulse;
+			manifold->rollingImpulse = (b3Vec3){ previous->rollingX, previous->rollingY, previous->rollingZ };
+			for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
+			{
+				b3ManifoldPoint* point = manifold->points + pointIndex;
+				for ( uint32_t oldIndex = 0; oldIndex < previous->pointCount; ++oldIndex )
+				{
+					if ( point->featureId == previous->points[oldIndex].featureId )
+					{
+						point->normalImpulse = previous->points[oldIndex].normalImpulse;
+						break;
+					}
+				}
+			}
+		}
+	}
 	b3MetalContactPrepareInput input = {
 		.contactId = (uint32_t)contact->contactId,
 		.indexA = contact->bodySimIndexA,
@@ -2579,6 +2609,7 @@ bool b3MetalStageResidentContactPrepare( b3MetalContext* context, const b3Contac
 		.rollingImpulseX = manifold->rollingImpulse.x,
 		.rollingImpulseY = manifold->rollingImpulse.y,
 		.rollingImpulseZ = manifold->rollingImpulse.z,
+		.contactGeneration = contact->generation,
 	};
 	for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
 	{
@@ -2592,6 +2623,7 @@ bool b3MetalStageResidentContactPrepare( b3MetalContext* context, const b3Contac
 			.anchorBY = point->anchorB.y,
 			.anchorBZ = point->anchorB.z,
 			.normalImpulse = point->normalImpulse,
+			.featureId = point->featureId,
 		};
 	}
 	( (b3MetalContactPrepareInput*)context->contactPrepareTableBuffer.contents )[tableIndex] = input;
@@ -4621,7 +4653,8 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 			[encoder setBuffer:context->contactPrepareIndexBuffer offset:0 atIndex:0];
 			[encoder setBuffer:context->contactConstraintBuffer offset:0 atIndex:1];
 			[encoder setBuffer:context->contactImpulseResultBuffer offset:0 atIndex:2];
-			[encoder setBytes:&params length:sizeof( params ) atIndex:3];
+			[encoder setBuffer:context->contactPrepareTableBuffer offset:0 atIndex:3];
+			[encoder setBytes:&params length:sizeof( params ) atIndex:4];
 			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)stepContext->wideContactCount, 1, 1 )
 				threadsPerThreadgroup:MTLSizeMake( storeImpulseWidth, 1, 1 )];
 		}
@@ -4663,6 +4696,7 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		if ( prepareContactsOnGpu )
 		{
 			context->contactImpulseResultCount = context->convexManifoldTableCount;
+			context->contactImpulseResultGeneration = context->contactPrepareGeneration;
 			stepContext->world->metalLastContactImpulseResultBytes =
 				(uint64_t)stepContext->world->metalLastResidentConvexContactCount * sizeof( b3MetalContactImpulseResult );
 		}
