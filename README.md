@@ -38,7 +38,9 @@ per-move query records or raw tree candidates. Their 52-byte query records,
 containing compound or custom-filter shapes retain the shared residual path;
 unusually dense direct plans preserve the prior 64-candidates-per-move capability
 with an explicit private-to-shared materialization. Contact topology creation
-remains CPU-owned. Tree snapshots remain in persistent Metal storage;
+remains CPU-owned. Tree snapshots now remain in device-private Metal storage;
+a CPU tree revision stages and blits a fresh snapshot before traversal, while
+unchanged and device-refit steps expose no shared authoritative tree copy.
 ordinary awake-shape motion updates leaves and refits internal bounds on-device,
 while topology changes and unsupported CPU mutations invalidate the snapshot.
 Enlarged proxy bookkeeping remains in a private GPU-compacted stream rather

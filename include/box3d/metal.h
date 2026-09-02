@@ -140,6 +140,12 @@ typedef struct b3MetalProfile
 	uint64_t pairDispatchCount;
 	uint64_t pairFallbackCount;
 	uint64_t pairTreeUploadCount;
+	/// CPU tree-node bytes staged and blitted into the private Metal snapshot by
+	/// the latest pair phase. Zero when the resident snapshot was reused.
+	uint64_t lastPairTreeUploadBytes;
+	/// Logical bytes in the device-private tree snapshot used by the latest pair
+	/// phase. This excludes transient shared upload staging capacity.
+	uint64_t lastPairTreePrivateBytes;
 	uint64_t pairMetadataUploadCount;
 	/// Exact blocked joint-body pair registry uploads caused by joint topology or
 	/// collide-connected changes.

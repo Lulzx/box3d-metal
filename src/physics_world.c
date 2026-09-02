@@ -812,6 +812,8 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.pairDispatchCount = world->metalPairDispatchCount;
 	profile.pairFallbackCount = world->metalPairFallbackCount;
 	profile.pairTreeUploadCount = world->metalPairTreeUploadCount;
+	profile.lastPairTreeUploadBytes = world->metalLastPairTreeUploadBytes;
+	profile.lastPairTreePrivateBytes = world->metalLastPairTreePrivateBytes;
 	profile.pairMetadataUploadCount = world->metalPairMetadataUploadCount;
 	profile.pairFilterRegistryUploadCount = world->metalPairFilterRegistryUploadCount;
 	profile.pairSetUploadCount = world->metalPairSetUploadCount;

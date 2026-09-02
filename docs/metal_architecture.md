@@ -239,8 +239,11 @@ advance a world revision and fail closed to a full repack. The profile exposes
 property authority.
 
 An independently opt-in pair stage copies Erin's existing static, kinematic,
-and dynamic tree topology into persistent shared Metal buffers. A monotonic
-broad-phase revision lets node snapshots remain resident across pair queries.
+and dynamic tree topology through shared upload staging into a persistent
+device-private Metal buffer. The upload blit precedes traversal in the same
+command buffer, and the revision becomes authoritative only after successful
+completion. A monotonic broad-phase revision lets node snapshots remain resident
+across pair queries without a CPU-visible authoritative copy.
 For supported non-CCD steps, shape finalization writes enlarged leaf bounds
 directly into that snapshot and deterministic height-ordered kernels refit
 kinematic and dynamic internal nodes. This preserves Erin's topology and DFS
@@ -613,6 +616,9 @@ whole-world measurements are recorded in
 Private raw pair scratch, dense materialization, compound-query gating, and the
 current cold/steady measurements are recorded in
 [`benchmarks/m4-pro-private-pair-scratch-2026-09-03.md`](benchmarks/m4-pro-private-pair-scratch-2026-09-03.md).
+Device-private dynamic-tree ownership, revision upload/reuse telemetry, and
+whole-world timing samples are recorded in
+[`benchmarks/m4-pro-private-pair-tree-2026-09-03.md`](benchmarks/m4-pro-private-pair-tree-2026-09-03.md).
 Fully resident convex-contact state, sim, shape-bound, and body-finalization
 ownership is recorded in
 [`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).

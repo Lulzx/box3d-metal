@@ -1163,6 +1163,11 @@ static int MetalPairTraversalTest( void )
 	b3World* world = b3GetWorldFromId( worldId );
 	b3BroadPhase* broadPhase = &world->broadPhase;
 	int moveCount = broadPhase->moveArray.count;
+	uint64_t expectedTreeBytes = 0;
+	for ( int treeIndex = 0; treeIndex < b3_bodyTypeCount; ++treeIndex )
+	{
+		expectedTreeBytes += (uint64_t)broadPhase->trees[treeIndex].nodeCapacity * sizeof( b3TreeNode );
+	}
 	ENSURE( moveCount == bodyCount + ( bodyCount + 49 ) / 50 );
 	const b3MetalPairQueryRecord* gpuRecords = NULL;
 	const b3MetalPairCandidate* gpuCandidates = NULL;
@@ -1177,6 +1182,8 @@ static int MetalPairTraversalTest( void )
 										   &contactSeedCount, &stats ) );
 	ENSURE( stats.commandBufferCount == 1 );
 	ENSURE( stats.treeUploadCount == 1 );
+	ENSURE( stats.pairTreeUploadBytes == expectedTreeBytes );
+	ENSURE( stats.pairTreePrivateBytes == expectedTreeBytes );
 	ENSURE( stats.metadataUploadCount == 1 );
 	ENSURE( stats.pairSetUploadCount == 1 );
 	ENSURE( cpuFilterMoveCount == 0 );
@@ -1197,6 +1204,8 @@ static int MetalPairTraversalTest( void )
 										   &contactSeedCount, &stats ) );
 	ENSURE( stats.commandBufferCount == 1 );
 	ENSURE( stats.treeUploadCount == 0 );
+	ENSURE( stats.pairTreeUploadBytes == 0 );
+	ENSURE( stats.pairTreePrivateBytes == expectedTreeBytes );
 	ENSURE( stats.metadataUploadCount == 0 );
 	ENSURE( stats.pairSetUploadCount == 0 );
 	ENSURE( cpuFilterMoveCount == 0 );
@@ -1274,12 +1283,16 @@ static int MetalPairTraversalTest( void )
 										   &gpuCandidates, &gpuCandidateCount, &cpuFilterMoves, &cpuFilterMoveCount, &contactSeeds,
 										   &contactSeedCount, &stats ) );
 	ENSURE( stats.treeUploadCount == 1 );
+	ENSURE( stats.pairTreeUploadBytes == expectedTreeBytes );
+	ENSURE( stats.pairTreePrivateBytes == expectedTreeBytes );
 	ENSURE( stats.metadataUploadCount == 1 );
 	ENSURE( stats.pairSetUploadCount == 0 );
 	ENSURE( cpuFilterMoveCount == 0 );
 	ENSURE( VerifyResidentPairTraversal( world ) == 0 );
-	printf( "    pair traversal moves=%d candidates=%d initial=%.3f ms steady=%.3f ms exactOrder=yes\n", moveCount,
-			gpuCandidateCount, initialGpuMilliseconds, steadyGpuMilliseconds );
+	printf( "    pair traversal moves=%d candidates=%d initial=%.3f ms steady=%.3f ms treePrivate=%llu "
+			"reuseUpload=0 exactOrder=yes\n",
+			moveCount, gpuCandidateCount, initialGpuMilliseconds, steadyGpuMilliseconds,
+			(unsigned long long)expectedTreeBytes );
 
 	free( cpuCandidates );
 	b3DestroyWorld( worldId );
@@ -1374,6 +1387,8 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( profile.lastPairContactSeedCount == bodyCount * ( bodyCount - 1 ) / 2 );
 	ENSURE( profile.lastPairContactSeedBytes ==
 			(uint64_t)( bodyCount * ( bodyCount - 1 ) / 2 ) * sizeof( b3MetalPairContactSeed ) );
+	ENSURE( profile.lastPairTreeUploadBytes > 0 );
+	ENSURE( profile.lastPairTreePrivateBytes == profile.lastPairTreeUploadBytes );
 	ENSURE( profile.pairPrivateScratchDispatchCount == 1 );
 	ENSURE( profile.lastPairRawSharedBytes == 0 );
 	printf( "    final pair plan contacts=%d direct=%d seedBytes=%llu recordTraversal=bypassed exactTopology=yes\n",

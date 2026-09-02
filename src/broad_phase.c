@@ -574,6 +574,8 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			world->metalPairDispatchCount += 1;
 			world->metalResidentPairMoveDispatchCount += useResidentMoves ? 1 : 0;
 			world->metalPairTreeUploadCount += (uint64_t)stats.treeUploadCount;
+			world->metalLastPairTreeUploadBytes = stats.pairTreeUploadBytes;
+			world->metalLastPairTreePrivateBytes = stats.pairTreePrivateBytes;
 			world->metalPairMetadataUploadCount += (uint64_t)stats.metadataUploadCount;
 			world->metalPairFilterRegistryUploadCount += (uint64_t)stats.pairFilterRegistryUploadCount;
 			world->metalPairSetUploadCount += (uint64_t)stats.pairSetUploadCount;
