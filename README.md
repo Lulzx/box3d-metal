@@ -22,8 +22,10 @@ order inside dedicated Metal kernels. Distance joints (including springs,
 limits, and motors) and parallel joints share the GPU-resident command graph;
 other joint types fall back safely. Experimental, separately opt-in stages port
 body/shape finalization and traverse Erin's existing broad-phase trees on Metal
-with deterministic on-device candidate compaction, while retaining CPU filtering
-and contact creation. Tree snapshots remain in persistent Metal storage;
+with deterministic on-device candidate compaction. Self/moved-proxy duplicates,
+same-body pairs, sensors, and built-in shape filters are rejected against a
+persistent shape-metadata table; existing contacts, joint overrides, compounds,
+custom callbacks, and contact creation retain the CPU oracle. Tree snapshots remain in persistent Metal storage;
 ordinary awake-shape motion updates leaves and refits internal bounds on-device,
 while topology changes and unsupported CPU mutations invalidate the snapshot.
 Enlarged proxy bookkeeping consumes a stable GPU-compacted subset rather than

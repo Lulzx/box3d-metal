@@ -676,6 +676,7 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.pairDispatchCount = world->metalPairDispatchCount;
 	profile.pairFallbackCount = world->metalPairFallbackCount;
 	profile.pairTreeUploadCount = world->metalPairTreeUploadCount;
+	profile.pairMetadataUploadCount = world->metalPairMetadataUploadCount;
 	profile.pairTreeRefitCount = world->metalPairTreeRefitCount;
 	profile.lastPositionGpuMilliseconds = world->metalLastPositionGpuMilliseconds;
 	profile.lastUnconstrainedGpuMilliseconds = world->metalLastUnconstrainedGpuMilliseconds;

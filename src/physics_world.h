@@ -296,7 +296,9 @@ typedef struct b3World
 	uint64_t metalPairDispatchCount;
 	uint64_t metalPairFallbackCount;
 	uint64_t metalPairTreeUploadCount;
+	uint64_t metalPairMetadataUploadCount;
 	uint64_t metalPairTreeRefitCount;
+	uint64_t metalPairShapeRevision;
 	double metalLastPositionGpuMilliseconds;
 	double metalLastUnconstrainedGpuMilliseconds;
 	double metalLastContactGpuMilliseconds;

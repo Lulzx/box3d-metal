@@ -137,7 +137,10 @@ serial kernel prefixes block totals, and a parallel add applies block offsets.
 A final traversal writes disjoint candidate ranges in the same command buffer.
 Each per-move record also carries the resident leaf's shape id and fat AABB, so
 the CPU filtering callback does not dereference the CPU dynamic tree for query
-metadata. When device leaf update and refit succeed, CPU proxy bookkeeping
+metadata. A revisioned resident shape table rejects self/moved-proxy duplicates,
+same-body pairs, sensors, and built-in group/category/mask filters during both
+the count and write traversals. Shape creation, destruction, and filter mutation
+refresh that table; unchanged steps do not repack it. When device leaf update and refit succeed, CPU proxy bookkeeping
 consumes a stable GPU-compacted 32-byte record only for each enlarged shape.
 A 256-lane hierarchical scan preserves packed shape order across blocks. This
 skips the full-result rescan, enlarged-body bit-set reduction, and second
@@ -145,9 +148,10 @@ body/shape-list walk. The CPU tree is still enlarged for public queries and
 fallback safety.
 The first unexpectedly dense call may submit one write-only retry after growing
 the persistent candidate buffer; the steady path submits and waits once. CPU
-consumption then reuses the complete upstream callback for moved-proxy
-de-duplication, compound children, sensors, filters, joint collision overrides,
-and custom user filters. Unsupported threadgroup geometry, tree heights at or
+consumption then reuses the complete upstream callback as a fail-closed oracle
+and handles existing-contact suppression, compound children, joint collision
+overrides, custom user filters, and deterministic contact creation. Unsupported
+threadgroup geometry, tree heights at or
 above 63, shader stack overflow, changing counts, allocation failure, or more
 than 64 raw candidates per moved proxy on average fall back to the full CPU
 traversal before any partial result is consumed.
@@ -235,6 +239,8 @@ correctness checkpoint is in
 [`benchmarks/m4-pro-pair-prefix-2026-09-02.md`](benchmarks/m4-pro-pair-prefix-2026-09-02.md).
 Resident leaf refit and VF64 far-world validation are recorded in
 [`benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md`](benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md).
+Resident moved-proxy and built-in shape filtering are recorded in
+[`benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md`](benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

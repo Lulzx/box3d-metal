@@ -41,6 +41,7 @@ typedef struct b3MetalDispatchStats
 	int bodyCount;
 	int commandBufferCount;
 	int treeUploadCount;
+	int metadataUploadCount;
 } b3MetalDispatchStats;
 
 // Returns false when there is no usable Metal device or the shader pipeline
@@ -97,8 +98,8 @@ bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, 
 // Metal. Per-move records and candidates preserve move-array and tree traversal
 // order. Returns false before exposing results if the bounded Metal traversal
 // cannot represent the step.
-bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase* broadPhase,
-	const int* moveArray, int moveCount, const b3MetalPairQueryRecord** records,
+bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* world, const int* moveArray, int moveCount,
+	const b3MetalPairQueryRecord** records,
 	const b3MetalPairCandidate** candidates, int* candidateCount, b3MetalDispatchStats* stats );
 
 // Mark the resident tree snapshot as matching CPU bounds after a successful

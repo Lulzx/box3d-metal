@@ -32,11 +32,33 @@ typedef struct b3PairCandidateCapture
 	int capacity;
 	int count;
 	int treeType;
+	int queryProxyKey;
+	int queryShapeIndex;
+	const b3BroadPhase* broadPhase;
+	const b3World* world;
 } b3PairCandidateCapture;
 
 static bool CapturePairCandidate( int proxyId, uint64_t userData, void* context )
 {
 	b3PairCandidateCapture* capture = context;
+	int targetProxyKey = B3_PROXY_KEY( proxyId, capture->treeType );
+	if ( targetProxyKey == capture->queryProxyKey ) return true;
+	b3BodyType queryType = B3_PROXY_TYPE( capture->queryProxyKey );
+	bool targetMoved = b3GetBit( capture->broadPhase->movedProxies + capture->treeType, proxyId );
+	if ( ( queryType == b3_dynamicBody && capture->treeType == b3_dynamicBody &&
+		   targetProxyKey < capture->queryProxyKey && targetMoved ) ||
+		 ( queryType != b3_dynamicBody && targetMoved ) )
+	{
+		return true;
+	}
+	int targetShapeIndex = (int)userData;
+	const b3Shape* queryShape = capture->world->shapes.data + capture->queryShapeIndex;
+	const b3Shape* targetShape = capture->world->shapes.data + targetShapeIndex;
+	if ( queryShape->bodyId == targetShape->bodyId || queryShape->sensorIndex != B3_NULL_INDEX ||
+		 targetShape->sensorIndex != B3_NULL_INDEX || b3ShouldShapesCollide( queryShape->filter, targetShape->filter ) == false )
+	{
+		return true;
+	}
 	if ( capture->count >= capture->capacity ) return false;
 	capture->candidates[capture->count++] = (b3MetalPairCandidate){
 		.proxyId = proxyId,
@@ -55,22 +77,26 @@ static int VerifyResidentPairTraversal( b3World* world )
 	const b3MetalPairCandidate* candidates = NULL;
 	int candidateCount = 0;
 	b3MetalDispatchStats stats = { 0 };
-	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount,
 		&records, &candidates, &candidateCount, &stats ) );
 	ENSURE( stats.treeUploadCount == 0 );
 	int capacity = b3MaxInt( 1, candidateCount );
 	b3MetalPairCandidate* reference = malloc( (size_t)capacity * sizeof( b3MetalPairCandidate ) );
 	ENSURE( reference != NULL );
-	b3PairCandidateCapture capture = { .candidates = reference, .capacity = capacity };
+	b3PairCandidateCapture capture = {
+		.candidates = reference, .capacity = capacity, .broadPhase = broadPhase, .world = world,
+	};
 	int totalCount = 0;
 	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
 	{
 		int proxyKey = broadPhase->moveArray.data[moveIndex];
+		capture.queryProxyKey = proxyKey;
 		b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
 		int proxyId = B3_PROXY_ID( proxyKey );
 		b3AABB aabb = b3DynamicTree_GetAABB( broadPhase->trees + proxyType, proxyId );
 		ENSURE( records[moveIndex].queryShapeIndex ==
 			(int)b3DynamicTree_GetUserData( broadPhase->trees + proxyType, proxyId ) );
+		capture.queryShapeIndex = records[moveIndex].queryShapeIndex;
 		ENSURE( records[moveIndex].lowerX == aabb.lowerBound.x );
 		ENSURE( records[moveIndex].lowerY == aabb.lowerBound.y );
 		ENSURE( records[moveIndex].lowerZ == aabb.lowerBound.z );
@@ -427,8 +453,8 @@ static int MetalPairTraversalTest( void )
 	worldDef.gravity = b3Vec3_zero;
 	b3WorldId worldId = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( worldId, 1 ) );
-	b3ShapeDef shapeDef = b3DefaultShapeDef();
 	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.46f };
+	b3ShapeId mutableShapeId = { 0 };
 	for ( int i = 0; i < bodyCount; ++i )
 	{
 		b3BodyDef bodyDef = b3DefaultBodyDef();
@@ -436,42 +462,63 @@ static int MetalPairTraversalTest( void )
 		bodyDef.position = (b3Pos){ 0.62f * (float)( i % 16 ), 0.62f * (float)( ( i / 16 ) % 8 ),
 			0.62f * (float)( i / 128 ) };
 		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
-		b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+		b3ShapeDef shapeDef = b3DefaultShapeDef();
+		if ( i % 16 == 2 || i % 16 == 3 ) shapeDef.filter.groupIndex = -2;
+		if ( i % 16 == 6 || i % 16 == 7 )
+		{
+			shapeDef.filter.groupIndex = 3;
+			shapeDef.filter.maskBits = 0;
+		}
+		if ( i % 16 == 10 ) shapeDef.isSensor = true;
+		if ( i % 16 == 11 ) shapeDef.filter.maskBits = 0;
+		b3ShapeId shapeId = b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+		if ( i == 12 ) mutableShapeId = shapeId;
+		if ( i % 50 == 0 )
+		{
+			b3ShapeDef extraShapeDef = b3DefaultShapeDef();
+			b3CreateSphereShape( bodyId, &extraShapeDef, &sphere );
+		}
 	}
 
 	b3World* world = b3GetWorldFromId( worldId );
 	b3BroadPhase* broadPhase = &world->broadPhase;
 	int moveCount = broadPhase->moveArray.count;
-	ENSURE( moveCount == bodyCount );
+	ENSURE( moveCount == bodyCount + ( bodyCount + 49 ) / 50 );
 	const b3MetalPairQueryRecord* gpuRecords = NULL;
 	const b3MetalPairCandidate* gpuCandidates = NULL;
 	int gpuCandidateCount = 0;
 	b3MetalDispatchStats stats = { 0 };
-	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount,
 		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
-	ENSURE( stats.commandBufferCount == 2 );
+	ENSURE( stats.commandBufferCount == 1 );
 	ENSURE( stats.treeUploadCount == 1 );
-	double growthGpuMilliseconds = stats.gpuMilliseconds;
+	ENSURE( stats.metadataUploadCount == 1 );
+	double initialGpuMilliseconds = stats.gpuMilliseconds;
 	stats = (b3MetalDispatchStats){ 0 };
-	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount,
 		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
 	ENSURE( stats.commandBufferCount == 1 );
 	ENSURE( stats.treeUploadCount == 0 );
+	ENSURE( stats.metadataUploadCount == 0 );
 	double steadyGpuMilliseconds = stats.gpuMilliseconds;
 
 	int cpuCapacity = bodyCount * bodyCount;
 	b3MetalPairCandidate* cpuCandidates = malloc( (size_t)cpuCapacity * sizeof( b3MetalPairCandidate ) );
 	ENSURE( cpuCandidates != NULL );
-	b3PairCandidateCapture capture = { .candidates = cpuCandidates, .capacity = cpuCapacity };
+	b3PairCandidateCapture capture = {
+		.candidates = cpuCandidates, .capacity = cpuCapacity, .broadPhase = broadPhase, .world = world,
+	};
 	int totalCpuCount = 0;
 	for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
 	{
 		int proxyKey = broadPhase->moveArray.data[moveIndex];
+		capture.queryProxyKey = proxyKey;
 		b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
 		int proxyId = B3_PROXY_ID( proxyKey );
 		b3AABB fatAABB = b3DynamicTree_GetAABB( broadPhase->trees + proxyType, proxyId );
 		ENSURE( gpuRecords[moveIndex].queryShapeIndex ==
 			(int)b3DynamicTree_GetUserData( broadPhase->trees + proxyType, proxyId ) );
+		capture.queryShapeIndex = gpuRecords[moveIndex].queryShapeIndex;
 		ENSURE( gpuRecords[moveIndex].lowerX == fatAABB.lowerBound.x );
 		ENSURE( gpuRecords[moveIndex].lowerY == fatAABB.lowerBound.y );
 		ENSURE( gpuRecords[moveIndex].lowerZ == fatAABB.lowerBound.z );
@@ -515,17 +562,22 @@ static int MetalPairTraversalTest( void )
 		}
 	}
 	ENSURE( dynamicProxyKey != B3_NULL_INDEX );
+	b3Filter disabledFilter = b3DefaultFilter();
+	disabledFilter.maskBits = 0;
+	b3Shape_SetFilter( mutableShapeId, disabledFilter, false );
 	int dynamicProxyId = B3_PROXY_ID( dynamicProxyKey );
 	b3AABB expandedAABB = b3DynamicTree_GetAABB( broadPhase->trees + b3_dynamicBody, dynamicProxyId );
 	expandedAABB.lowerBound.x -= 0.01f;
 	expandedAABB.upperBound.x += 0.01f;
 	b3BroadPhase_EnlargeProxy( broadPhase, dynamicProxyKey, expandedAABB );
 	stats = (b3MetalDispatchStats){ 0 };
-	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, broadPhase, broadPhase->moveArray.data, moveCount,
+	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount,
 		&gpuRecords, &gpuCandidates, &gpuCandidateCount, &stats ) );
 	ENSURE( stats.treeUploadCount == 1 );
-	printf( "    pair traversal moves=%d candidates=%d growth=%.3f ms steady=%.3f ms exactOrder=yes\n", moveCount,
-		gpuCandidateCount, growthGpuMilliseconds, steadyGpuMilliseconds );
+	ENSURE( stats.metadataUploadCount == 1 );
+	ENSURE( VerifyResidentPairTraversal( world ) == 0 );
+	printf( "    pair traversal moves=%d candidates=%d initial=%.3f ms steady=%.3f ms exactOrder=yes\n", moveCount,
+		gpuCandidateCount, initialGpuMilliseconds, steadyGpuMilliseconds );
 
 	free( cpuCandidates );
 	b3DestroyWorld( worldId );
@@ -552,7 +604,6 @@ static int MetalPairTraversalFallbackTest( void )
 		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
 		b3CreateSphereShape( bodyId, &shapeDef, &sphere );
 	}
-
 	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
 	printf( "    dense pair traversal dispatches=%llu fallbacks=%llu\n",

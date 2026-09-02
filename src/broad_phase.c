@@ -409,9 +409,10 @@ typedef struct b3MetalFindPairsContext
 	const b3MetalPairCandidate* candidates;
 } b3MetalFindPairsContext;
 
-// Implements b3ParallelForCallback. Metal performs only the dynamic-tree
-// traversal; this task deliberately reuses the complete CPU callback for
-// de-duplication, filters, compounds, joints, sensors, and custom user code.
+// Implements b3ParallelForCallback. Metal has already traversed the trees and
+// rejected exact moved-proxy duplicates plus built-in shape filters. Reusing
+// the complete callback here is a fail-closed oracle and retains pair-set,
+// compound, joint, custom-filter, and deterministic contact behavior.
 static void b3FindPairsMetalTask( int startIndex, int endIndex, int workerIndex, void* context )
 {
 	b3TracyCZoneNC( pair_metal_consume, "Pair Metal Consume", b3_colorAquamarine, true );
@@ -505,7 +506,7 @@ void b3UpdateBroadPhasePairs( b3World* world )
 		const b3MetalPairCandidate* candidates = NULL;
 		int candidateCount = 0;
 		b3MetalDispatchStats stats = { 0 };
-		if ( b3MetalGeneratePairCandidates( world->metalContext, bp, bp->moveArray.data, moveCount, &records, &candidates,
+		if ( b3MetalGeneratePairCandidates( world->metalContext, world, bp->moveArray.data, moveCount, &records, &candidates,
 				&candidateCount, &stats ) )
 		{
 			B3_UNUSED( candidateCount );
@@ -513,6 +514,7 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			b3ParallelFor( world, b3FindPairsMetalTask, moveCount, minRange, &metalContext, "pairs metal" );
 			world->metalPairDispatchCount += 1;
 			world->metalPairTreeUploadCount += (uint64_t)stats.treeUploadCount;
+			world->metalPairMetadataUploadCount += (uint64_t)stats.metadataUploadCount;
 			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
 			usedMetalPairs = true;
 		}

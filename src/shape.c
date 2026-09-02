@@ -254,6 +254,9 @@ static b3Shape* b3CreateShapeInternal( b3World* world, b3Body* body, b3WorldTran
 	}
 
 	b3ValidateSolverSets( world );
+#if defined( BOX3D_METAL )
+	world->metalPairShapeRevision += 1;
+#endif
 
 	return shape;
 }
@@ -571,6 +574,9 @@ static void b3DestroyShapeInternal( b3World* world, b3Shape* shape, b3Body* body
 	// Return shape to free list.
 	b3FreeId( &world->shapeIdPool, shapeId );
 	shape->id = B3_NULL_INDEX;
+#if defined( BOX3D_METAL )
+	world->metalPairShapeRevision += 1;
+#endif
 
 	b3ValidateSolverSets( world );
 }
@@ -1402,6 +1408,7 @@ void b3Shape_SetFilter( b3ShapeId shapeId, b3Filter filter, bool invokeContacts 
 	shape->filter = filter;
 #if defined( BOX3D_METAL )
 	b3MetalInvalidateShapeInputCache( world->metalContext );
+	world->metalPairShapeRevision += 1;
 #endif
 
 	if ( invokeContacts )

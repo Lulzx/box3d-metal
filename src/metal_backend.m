@@ -98,6 +98,11 @@ struct b3MetalContext
 	NSUInteger pairMoveCapacity;
 	id<MTLBuffer> pairTreeBuffer;
 	NSUInteger pairTreeCapacity;
+	id<MTLBuffer> pairMovedBuffer;
+	NSUInteger pairMovedCapacity;
+	id<MTLBuffer> pairShapeBuffer;
+	NSUInteger pairShapeCapacity;
+	uint64_t pairShapeRevision;
 	uint64_t pairTreeRevision;
 	uint32_t pairTreeOffsets[b3_bodyTypeCount];
 	uint32_t pairTreeNodeCounts[b3_bodyTypeCount];
@@ -181,6 +186,16 @@ typedef struct b3MetalPairBlock
 	uint32_t padding;
 } b3MetalPairBlock;
 
+typedef struct b3MetalPairShape
+{
+	int32_t bodyId;
+	int32_t sensorIndex;
+	int32_t groupIndex;
+	uint32_t padding;
+	uint64_t categoryBits;
+	uint64_t maskBits;
+} b3MetalPairShape;
+
 _Static_assert( sizeof( b3MetalBodyProperties ) == 128, "Metal body property ABI changed" );
 _Static_assert( sizeof( b3MetalFinalizeProperties ) == 64, "Metal finalization-property ABI changed" );
 _Static_assert( sizeof( b3MetalFinalizeResult ) == 100, "Metal finalization-result ABI changed" );
@@ -196,6 +211,7 @@ _Static_assert( sizeof( b3MetalPairQueryRecord ) == 40, "Metal pair-record ABI c
 _Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI changed" );
 _Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
 _Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
+_Static_assert( sizeof( b3MetalPairShape ) == 32, "Metal pair-shape ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintPointWide ) == 192, "Metal wide contact point ABI changed" );
 _Static_assert( sizeof( b3ContactConstraintWide ) == 1696, "Metal wide contact ABI changed" );
 _Static_assert( sizeof( b3ManifoldConstraintPoint ) == 48, "Metal mesh contact-point ABI changed" );
@@ -328,9 +344,10 @@ static const char* b3_metalSource =
 	"};\n"
 	"struct PairQueryRecord { uint count,offset,flags; int queryShapeIndex; float lx,ly,lz,ux,uy,uz; };\n"
 	"struct PairCandidate { int proxyId,treeType,shapeIndex,padding; };\n"
+	"struct PairShape { int bodyId,sensorIndex,groupIndex; uint padding; ulong categoryBits,maskBits; };\n"
 	"struct PairSummary { ulong totalCount; uint flags,writeFlags; };\n"
 	"struct PairBlock { uint sum,flags,offset,padding; };\n"
-	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates; };\n"
+	"struct PairParams { int root0,root1,root2; uint offset0,offset1,offset2,moveCount,writeCandidates,shapeCount,p0,p1,p2; };\n"
 	"struct PairPrefixParams { uint moveCount,candidateCapacity,candidateLimit,padding; };\n"
 	"struct TreeOffsets { uint offset0,offset1,offset2,padding; };\n"
 	"struct TreeRefitParams { uint nodeOffset,nodeCount,targetHeight,padding; };\n"
@@ -644,13 +661,25 @@ static const char* b3_metalSource =
 	"inline bool tree_overlap(TreeNode n,float3 lo,float3 hi) {\n"
 	"  return !(n.ux<lo.x||n.lx>hi.x||n.uy<lo.y||n.ly>hi.y||n.uz<lo.z||n.lz>hi.z);\n"
 	"}\n"
-	"inline void query_pair_tree(const device TreeNode* nodes,int root,uint nodeOffset,int treeType,float3 lo,float3 hi,\n"
+	"inline bool pair_shapes_collide(PairShape a,PairShape b) {\n"
+	"  if(a.bodyId==b.bodyId||a.sensorIndex>=0||b.sensorIndex>=0)return false;\n"
+	"  if(a.groupIndex==b.groupIndex&&a.groupIndex!=0)return a.groupIndex>0;\n"
+	"  return (a.maskBits&b.categoryBits)!=0ul&&(a.categoryBits&b.maskBits)!=0ul;\n"
+	"}\n"
+	"inline void query_pair_tree(const device TreeNode* nodes,const device uint* moved,const device PairShape* shapes,\n"
+	"                            uint shapeCount,PairShape queryShape,int root,uint nodeOffset,int treeType,\n"
+	"                            int queryKey,int queryType,float3 lo,float3 hi,\n"
 	"                            device PairCandidate* candidates,uint outputOffset,uint expected,uint writeCandidates,\n"
 	"                            thread int* stack,thread uint& candidateCount,thread uint& queryFlags) {\n"
 	"  if(root<0||queryFlags!=0u) return; uint stackCount=0u; stack[stackCount++]=root;\n"
 	"  while(stackCount>0u) { int nodeId=stack[--stackCount]; TreeNode n=nodes[nodeOffset+uint(nodeId)];\n"
 	"    if(n.categoryBits==0ul||!tree_overlap(n,lo,hi)) continue;\n"
 	"    if((n.flags&4u)!=0u) {\n"
+	"      int targetKey=(nodeId<<2)|treeType;if(targetKey==queryKey)continue;\n"
+	"      bool targetMoved=moved[nodeOffset+uint(nodeId)]!=0u;\n"
+	"      if((queryType==2&&treeType==2&&targetKey<queryKey&&targetMoved)||(queryType!=2&&targetMoved))continue;\n"
+	"      uint shapeIndex=n.child1;if(shapeIndex>=shapeCount||shapes[shapeIndex].bodyId<0){queryFlags|=16u;return;}\n"
+	"      if(!pair_shapes_collide(queryShape,shapes[shapeIndex]))continue;\n"
 	"      if(writeCandidates!=0u) { if(candidateCount>=expected) { queryFlags|=2u; return; }\n"
 	"        PairCandidate c; c.proxyId=nodeId;c.treeType=treeType;c.shapeIndex=int(n.child1);c.padding=0;\n"
 	"        candidates[outputOffset+candidateCount]=c; } candidateCount+=1u;\n"
@@ -661,19 +690,23 @@ static const char* b3_metalSource =
 	"kernel void b3_pair_candidates(const device int* moves [[buffer(0)]],const device TreeNode* nodes [[buffer(1)]],\n"
 	"                               device PairQueryRecord* records [[buffer(2)]],device PairCandidate* candidates [[buffer(3)]],\n"
 	"                               constant PairParams& p [[buffer(4)]],device PairSummary* summary [[buffer(5)]],\n"
+	"                               const device uint* moved [[buffer(6)]],\n"
+	"                               const device PairShape* shapes [[buffer(7)]],\n"
 	"                               uint i [[thread_position_in_grid]]) {\n"
 	"  if(i>=p.moveCount) return; int key=moves[i];int queryType=key&3;int proxyId=key>>2;\n"
 	"  if(p.writeCandidates!=0u&&summary->flags!=0u) return;\n"
 	"  uint queryOffset=queryType==0?p.offset0:(queryType==1?p.offset1:p.offset2);\n"
 	"  TreeNode q=nodes[queryOffset+uint(proxyId)];float3 lo=float3(q.lx,q.ly,q.lz),hi=float3(q.ux,q.uy,q.uz);\n"
 	"  PairQueryRecord record=records[i];uint count=0u,flags=0u;thread int stack[64];\n"
+	"  if(q.child1>=p.shapeCount||shapes[q.child1].bodyId<0){record.flags=16u;records[i]=record;return;}\n"
+	"  PairShape queryShape=shapes[q.child1];\n"
 	"  record.queryShapeIndex=int(q.child1);record.lx=q.lx;record.ly=q.ly;record.lz=q.lz;\n"
 	"  record.ux=q.ux;record.uy=q.uy;record.uz=q.uz;\n"
 	"  if(queryType==2) {\n"
-	"    query_pair_tree(nodes,p.root1,p.offset1,1,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
-	"    query_pair_tree(nodes,p.root0,p.offset0,0,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
+	"    query_pair_tree(nodes,moved,shapes,p.shapeCount,queryShape,p.root1,p.offset1,1,key,queryType,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
+	"    query_pair_tree(nodes,moved,shapes,p.shapeCount,queryShape,p.root0,p.offset0,0,key,queryType,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
 	"  }\n"
-	"  query_pair_tree(nodes,p.root2,p.offset2,2,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
+	"  query_pair_tree(nodes,moved,shapes,p.shapeCount,queryShape,p.root2,p.offset2,2,key,queryType,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
 	"  if(p.writeCandidates==0u) record.count=count; else if(count!=record.count) flags|=2u;\n"
 	"  record.flags=flags;records[i]=record;\n"
 	"  if(p.writeCandidates!=0u&&flags!=0u) atomic_fetch_or_explicit((device atomic_uint*)&summary->writeFlags,8u,memory_order_relaxed);\n"
@@ -1309,6 +1342,8 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->shapeSummaryBuffer release];
 	[context->pairMoveBuffer release];
 	[context->pairTreeBuffer release];
+	[context->pairMovedBuffer release];
+	[context->pairShapeBuffer release];
 	[context->pairRecordBuffer release];
 	[context->pairCandidateBuffer release];
 	[context->pairSummaryBuffer release];
@@ -1527,7 +1562,7 @@ static bool b3MetalEnsureShapeCapacity( b3MetalContext* context, NSUInteger inpu
 }
 
 static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveBytes, NSUInteger treeBytes,
-	NSUInteger recordBytes, NSUInteger candidateBytes, NSUInteger blockBytes )
+	NSUInteger movedBytes, NSUInteger shapeBytes, NSUInteger recordBytes, NSUInteger candidateBytes, NSUInteger blockBytes )
 {
 	if ( context->pairSummaryBuffer == nil )
 	{
@@ -1555,6 +1590,27 @@ static bool b3MetalEnsurePairCapacity( b3MetalContext* context, NSUInteger moveB
 		context->pairTreeBuffer = buffer;
 		context->pairTreeCapacity = capacity;
 		context->pairTreeRevision = 0;
+	}
+	if ( context->pairMovedCapacity < movedBytes )
+	{
+		NSUInteger capacity = context->pairMovedCapacity > 0 ? context->pairMovedCapacity : 4096;
+		while ( capacity < movedBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->pairMovedBuffer release];
+		context->pairMovedBuffer = buffer;
+		context->pairMovedCapacity = capacity;
+	}
+	if ( context->pairShapeCapacity < shapeBytes )
+	{
+		NSUInteger capacity = context->pairShapeCapacity > 0 ? context->pairShapeCapacity : 4096;
+		while ( capacity < shapeBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->pairShapeBuffer release];
+		context->pairShapeBuffer = buffer;
+		context->pairShapeCapacity = capacity;
+		context->pairShapeRevision = UINT64_MAX;
 	}
 	if ( context->pairRecordCapacity < recordBytes )
 	{
@@ -2510,20 +2566,21 @@ bool b3MetalFinalizeBodies( b3MetalContext* context, const b3BodyState* states, 
 	}
 }
 
-bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase* broadPhase,
-	const int* moveArray, int moveCount, const b3MetalPairQueryRecord** recordsOut,
+bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* world, const int* moveArray, int moveCount,
+	const b3MetalPairQueryRecord** recordsOut,
 	const b3MetalPairCandidate** candidatesOut, int* candidateCountOut, b3MetalDispatchStats* stats )
 {
 	if ( recordsOut != NULL ) *recordsOut = NULL;
 	if ( candidatesOut != NULL ) *candidatesOut = NULL;
 	if ( candidateCountOut != NULL ) *candidateCountOut = 0;
 	if ( stats != NULL ) *stats = (b3MetalDispatchStats){ .bodyCount = moveCount };
-	if ( context == NULL || broadPhase == NULL || moveArray == NULL || moveCount < 0 || recordsOut == NULL ||
+	if ( context == NULL || world == NULL || moveArray == NULL || moveCount < 0 || recordsOut == NULL ||
 		 candidatesOut == NULL || candidateCountOut == NULL )
 	{
 		return false;
 	}
 	if ( moveCount == 0 ) return true;
+	const b3BroadPhase* broadPhase = &world->broadPhase;
 	NSUInteger scanExecutionWidth = context->pairScanBlocksPipeline.threadExecutionWidth;
 	if ( context->pairScanBlocksPipeline.maxTotalThreadsPerThreadgroup < 256 || scanExecutionWidth < 8 ||
 		 256 % scanExecutionWidth != 0 )
@@ -2553,13 +2610,18 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 		}
 		if ( totalNodeCount > UINT32_MAX ) return false;
 		NSUInteger treeBytes = (NSUInteger)totalNodeCount * sizeof( b3TreeNode );
+		NSUInteger movedBytes = (NSUInteger)totalNodeCount * sizeof( uint32_t );
+		int shapeCount = world->shapes.count;
+		if ( shapeCount <= 0 || (NSUInteger)shapeCount > NSUIntegerMax / sizeof( b3MetalPairShape ) ) return false;
+		NSUInteger shapeBytes = (NSUInteger)shapeCount * sizeof( b3MetalPairShape );
 		uint64_t candidateLimit64 = 64ull * (uint64_t)moveCount;
 		uint32_t candidateLimit = candidateLimit64 < INT32_MAX ? (uint32_t)candidateLimit64 : INT32_MAX;
 		uint64_t initialCandidateCount = 4ull * (uint64_t)moveCount;
 		if ( initialCandidateCount > candidateLimit ) initialCandidateCount = candidateLimit;
 		if ( initialCandidateCount > NSUIntegerMax / sizeof( b3MetalPairCandidate ) ) return false;
 		NSUInteger initialCandidateBytes = (NSUInteger)initialCandidateCount * sizeof( b3MetalPairCandidate );
-		if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, recordBytes, initialCandidateBytes, blockBytes ) == false )
+		if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, movedBytes, shapeBytes, recordBytes,
+			 initialCandidateBytes, blockBytes ) == false )
 		{
 			return false;
 		}
@@ -2572,6 +2634,42 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 		}
 
 		memcpy( context->pairMoveBuffer.contents, moveArray, moveBytes );
+		if ( context->pairShapeRevision != world->metalPairShapeRevision )
+		{
+			b3MetalPairShape* pairShapes = context->pairShapeBuffer.contents;
+			for ( int shapeIndex = 0; shapeIndex < shapeCount; ++shapeIndex )
+			{
+				const b3Shape* shape = world->shapes.data + shapeIndex;
+				if ( shape->id == B3_NULL_INDEX )
+				{
+					pairShapes[shapeIndex] = (b3MetalPairShape){ .bodyId = B3_NULL_INDEX, .sensorIndex = B3_NULL_INDEX };
+					continue;
+				}
+				pairShapes[shapeIndex] = (b3MetalPairShape){
+					.bodyId = shape->bodyId,
+					.sensorIndex = shape->sensorIndex,
+					.groupIndex = shape->filter.groupIndex,
+					.categoryBits = shape->filter.categoryBits,
+					.maskBits = shape->filter.maskBits,
+				};
+			}
+			context->pairShapeRevision = world->metalPairShapeRevision;
+			if ( stats != NULL ) stats->metadataUploadCount = 1;
+		}
+		uint32_t* movedNodes = context->pairMovedBuffer.contents;
+		memset( movedNodes, 0, movedBytes );
+		for ( int moveIndex = 0; moveIndex < moveCount; ++moveIndex )
+		{
+			int proxyKey = moveArray[moveIndex];
+			b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
+			int proxyId = B3_PROXY_ID( proxyKey );
+			if ( proxyType < 0 || proxyType >= b3_bodyTypeCount || proxyId < 0 ||
+				 proxyId >= broadPhase->trees[proxyType].nodeCapacity )
+			{
+				return false;
+			}
+			movedNodes[nodeOffsets[proxyType] + (uint32_t)proxyId] = 1;
+		}
 		if ( context->pairTreeRevision != broadPhase->treeRevision )
 		{
 			b3TreeNode* nodeDestination = context->pairTreeBuffer.contents;
@@ -2590,12 +2688,12 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 		struct
 		{
 			int root0, root1, root2;
-			uint32_t offset0, offset1, offset2, moveCount, writeCandidates;
+			uint32_t offset0, offset1, offset2, moveCount, writeCandidates, shapeCount, padding0, padding1, padding2;
 		} params = {
 			broadPhase->trees[0].root, broadPhase->trees[1].root, broadPhase->trees[2].root,
-			nodeOffsets[0], nodeOffsets[1], nodeOffsets[2], (uint32_t)moveCount, 0,
+			nodeOffsets[0], nodeOffsets[1], nodeOffsets[2], (uint32_t)moveCount, 0, (uint32_t)shapeCount, 0, 0, 0,
 		};
-		_Static_assert( sizeof( params ) == 32, "Metal pair parameter ABI changed" );
+		_Static_assert( sizeof( params ) == 48, "Metal pair parameter ABI changed" );
 		uint64_t availableCandidateCount64 = context->pairCandidateCapacity / sizeof( b3MetalPairCandidate );
 		uint32_t availableCandidateCount = availableCandidateCount64 < UINT32_MAX
 			? (uint32_t)availableCandidateCount64 : UINT32_MAX;
@@ -2616,6 +2714,8 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 		[encoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
 		[encoder setBytes:&params length:sizeof( params ) atIndex:4];
 		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
+		[encoder setBuffer:context->pairMovedBuffer offset:0 atIndex:6];
+		[encoder setBuffer:context->pairShapeBuffer offset:0 atIndex:7];
 		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
 		[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
@@ -2647,6 +2747,8 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 		[encoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
 		[encoder setBytes:&params length:sizeof( params ) atIndex:4];
 		[encoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
+		[encoder setBuffer:context->pairMovedBuffer offset:0 atIndex:6];
+		[encoder setBuffer:context->pairShapeBuffer offset:0 atIndex:7];
 		[encoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
 			threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
 		[encoder endEncoding];
@@ -2666,7 +2768,8 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 				return false;
 			}
 			NSUInteger candidateBytes = (NSUInteger)summary->totalCount * sizeof( b3MetalPairCandidate );
-			if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, recordBytes, candidateBytes, blockBytes ) == false ) return false;
+			if ( b3MetalEnsurePairCapacity( context, moveBytes, treeBytes, movedBytes, shapeBytes, recordBytes, candidateBytes,
+				 blockBytes ) == false ) return false;
 			summary = context->pairSummaryBuffer.contents;
 			summary->flags = 0;
 			summary->writeFlags = 0;
@@ -2680,6 +2783,8 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3BroadPhase*
 			[retryEncoder setBuffer:context->pairCandidateBuffer offset:0 atIndex:3];
 			[retryEncoder setBytes:&params length:sizeof( params ) atIndex:4];
 			[retryEncoder setBuffer:context->pairSummaryBuffer offset:0 atIndex:5];
+			[retryEncoder setBuffer:context->pairMovedBuffer offset:0 atIndex:6];
+			[retryEncoder setBuffer:context->pairShapeBuffer offset:0 atIndex:7];
 			[retryEncoder dispatchThreads:MTLSizeMake( (NSUInteger)moveCount, 1, 1 )
 				threadsPerThreadgroup:MTLSizeMake( b3MetalThreadgroupWidth( pairPipeline ), 1, 1 )];
 			[retryEncoder endEncoding];
