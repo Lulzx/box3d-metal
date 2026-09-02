@@ -22,6 +22,10 @@ Direct primitive tests separately cover packed state and integration kernels.
 - The double/VF64 route covers ten GPU records out of 13 contacts at a `1e12`
   origin with the same fallback classes. Direct error is `1.79e-7` and
   applied-manifold error is `2.19e-7`.
+- Eight supported hull shapes sharing one box geometry produce one cold
+  geometry upload, at least two stable reuses, and one unique hull. Replacing
+  one shape with `b3Shape_SetHull` produces exactly the second upload and two
+  unique hulls, proving fail-closed mutation rebuilding.
 - Integrated unconstrained worlds with 2,048 moving sphere, capsule, and hull AABBs.
 - Exact filtered pair traversal over 607 mixed bodies and 620 proxies, including
   same-body overlaps, sensors, zero masks, and equal positive/negative groups.
@@ -133,6 +137,11 @@ AddressSanitizer, and float UndefinedBehaviorSanitizer suites, plus focused
 float/double warning-as-error and double/VF64 UndefinedBehaviorSanitizer Metal
 gates. The existing high-aspect ground restitution test remains unchanged and
 passes through CPU GJK fallback.
+
+The resident hull-geometry checkpoint reran that same complete matrix after
+replacing per-contact geometry descriptors with a shader-visible persistent
+registry. Float and VF64 oracle errors and byte-identical replay stayed
+unchanged.
 
 ## What the tests do not prove
 

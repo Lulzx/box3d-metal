@@ -35,7 +35,11 @@ CPU topology and cold/topology registry rebuilds are still in the path.
 The shape-specialized narrow-phase route now batches sphere-sphere,
 capsule-sphere, capsule-capsule, and bounded compact hull-sphere local manifold
 geometry in one Metal command buffer, including ordered two-point capsule
-manifolds and feature ids. CPU workers still own manifold persistence,
+manifolds and feature ids. Compact hull points, planes, boundary triangles, and
+shape descriptors are content-deduplicated into persistent Metal buffers;
+revision-stable dispatches reuse them without world-shape traversal or geometry
+packing. Each 184-byte contact input references that registry by shape id. CPU
+workers still own manifold persistence,
 material and pre-solve callbacks, events, and graph/island state. High-aspect
 and speculative hull-sphere contacts explicitly retain CPU GJK; other shape
 pairs remain on the CPU. Double worlds use the vendored VF64 exact subtraction
@@ -103,6 +107,9 @@ evidence only, not timing from the loaded host.
 The bounded hull-sphere checkpoint likewise publishes CPU-oracle,
 deterministic replay, mixed-fallback, two-point ordering, and VF64 far-world
 evidence only. It does not publish loaded-host timing.
+The resident hull-geometry checkpoint publishes exact upload/reuse/rebuild and
+deduplication evidence only; it does not convert loaded-host kernel timings into
+a whole-world performance claim.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

@@ -49,6 +49,7 @@ for review.
 - [Enlarged-shape compaction](benchmarks/m4-pro-shape-compaction-2026-09-02.md)
 - [Private shape results](benchmarks/m4-pro-private-shape-results-2026-09-02.md)
 - [Persistent shape-input registry](benchmarks/m4-pro-shape-input-registry-2026-09-02.md)
+- [Persistent hull-geometry registry](benchmarks/m4-pro-resident-hull-geometry-2026-09-02.md)
 
 ## Repository map
 
