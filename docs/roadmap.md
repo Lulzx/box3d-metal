@@ -45,6 +45,10 @@
 
 ## Evidence-led next stages
 
+Resident contact results now carry warm starts by contact generation and feature
+ID, so supported solver correctness no longer requires a fresh CPU public
+manifold after every step.
+
 1. Make public-manifold/event synchronization lazy or exception-only. Move
    supported persistence fully on-device while returning only compact callback,
    event, topology, and unsupported-geometry exceptions.

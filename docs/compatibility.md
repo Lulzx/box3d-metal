@@ -25,6 +25,7 @@ evaluation order differs.
 | Resident convex contact preparation | Complete colored sets prepared from the private contact-id table; CPU recovery on later solver fallback |
 | Resident convex impulse extraction | 80-byte contact-ID results after restitution; CPU public-manifold and hit-event synchronization remains ordered |
 | Resident contact schedule | Reused across exact stable graph revisions/counts; contact or joint graph mutation repacks in upstream color order |
+| Resident warm-start carry | Contact generation plus feature IDs restore GPU-authored normal/friction/twist/rolling impulses on the next fresh supported collision pass |
 | Experimental broad phase | Resident leaf update/refit plus built-in filtered candidates in exact CPU visitation order |
 | Experimental narrow phase | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere local geometry; primitive records and deduplicated compact hull streams are retained across revision-stable dispatches |
 
@@ -62,6 +63,10 @@ Complete resident convex sets also write compact post-solve impulses by contact
 ID. CPU storage resolves the authoritative manifold from the contact and reads
 the compact table rather than the SIMD-wide constraints. Unsupported routes
 retain upstream CPU storage.
+Fresh supported persistence also consumes the prior compact result as warm-start
+state. Contact generation rejects reused slots, and point feature IDs preserve
+normal impulses across manifold point reordering. Recycling routes remain
+CPU-owned at this checkpoint.
 
 Body and awake-shape finalization have an experimental, separately opt-in Metal
 path for rotation, origin offset, motion/sleep metrics, world-space inverse

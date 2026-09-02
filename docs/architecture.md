@@ -233,7 +233,8 @@ That gate drives a Metal preparation kernel at the front of the existing solver
 command buffer. It reads normal and identity from the private contact-id table
 and writes the established 1,696-byte SIMD-wide constraint ABI. CPU-owned
 persistence anchors, warm-start impulses, materials, tangent velocity, body
-indices, and manifold identity live in a generation-tagged 144-byte shared table
+indices, contact generation, point feature IDs, and manifold identity live in a
+generation-tagged 152-byte shared table
 indexed by contact ID. Collision workers write disjoint records during the
 existing persistence pass. Solver submission initializes tail lanes and
 bulk-copies each active color's four-byte contact IDs without dereferencing
@@ -249,7 +250,13 @@ kernel in the same command buffer writes world-axis friction, twist, rolling,
 point normal/total impulses, and pre-solve normal velocity into a
 generation-tagged 80-byte table indexed by contact ID. CPU storage preserves
 public manifold and hit-event semantics in graph order while reading that
-compact table. Identity, generation, point count, and flags are validated;
+compact table. Identity, result generation, contact generation, and point count are validated;
 release fallback can still consume the wide records.
 The schedule buffer is reused when graph revision and exact wide/contact counts
 match. Restitution eligibility remains current step state and is not cached.
+The 80-byte result reuses padding for contact generation and two feature IDs.
+Before the next fresh supported preparation record is staged, feature-matched
+points recover normal impulses from that GPU-authored result; friction, twist,
+and rolling terms recover at manifold scope. This makes solver warm starts
+independent of freshness in the CPU public-manifold mirror while rejecting
+destroyed/recreated contact slots.

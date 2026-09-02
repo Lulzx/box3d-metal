@@ -75,7 +75,7 @@ for complete supported colored convex sets and sources normal/identity from the
 private contact-id table in the existing solver command buffer. It deliberately
 adds no new whole-world timing from the loaded host. Its follow-on retains
 post-persistence metadata by contact ID and replaces the dedicated contact walk
-and padded 144-byte lane stream with a four-byte lane schedule. The 81-contact
+and padded 152-byte lane stream with a four-byte lane schedule. The 81-contact
 fixture drops solver submission from 12,096 to 336 bytes. This remains ownership
 evidence, not a loaded-host speedup claim.
 
@@ -90,6 +90,13 @@ graph revisions. The 81-contact fixture performs one pack and three reuses;
 adding one touching contact advances topology and forces exactly one repack.
 A loaded-host 512-contact smoke recorded one pack and nine reuses across ten
 dispatches. Its wall-clock values are not accepted as performance evidence.
+
+The warm-start-carry checkpoint reuses padding in the 80-byte result for contact
+generation and feature IDs, while the persistent preparation record grows from
+144 to 152 bytes. A one-contact differential deliberately poisons the CPU
+manifold mirror between steps; resident carry recovers the correct terms and
+finishes at `4.47e-08` linear-velocity error with one schedule pack and one
+reuse. This is correctness and ownership evidence, not a loaded-host speedup.
 
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact

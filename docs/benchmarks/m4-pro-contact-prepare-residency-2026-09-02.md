@@ -8,9 +8,11 @@ kernel. It does not move Box3D manifold persistence, materials, callbacks,
 events, graph coloring, or impulse storage to the GPU.
 
 During the already-required collision/persistence pass, each authoritative
-contact writes one 144-byte record into a persistent shared table indexed by
-Box3D contact ID. Records carry a narrow-phase generation. Pre-solve callbacks,
-recycling, CPU geometry, and stale generations cannot acquire solver authority.
+contact originally wrote one 144-byte record into a persistent shared table
+indexed by Box3D contact ID. The warm-start carry follow-on expands the current
+record to 152 bytes with two point feature IDs and contact-slot generation.
+Records carry a narrow-phase generation. Pre-solve callbacks, recycling, CPU
+geometry, and stale generations cannot acquire solver authority.
 
 Solver submission now clears tail lanes and bulk-copies each active color's
 contact IDs into a four-byte-per-lane schedule. The backend performs at most one
@@ -41,11 +43,10 @@ schedule/prior-stream byte pairs were 2,048/73,728 and 32,768/1,179,648,
 respectively. Wall-clock values from those loaded-host smoke runs are not
 published as performance evidence.
 
-No whole-world timing is claimed from the loaded development host. The follow-on
-contact-impulse checkpoint now extracts compact post-solve results by contact ID;
-a future performance measurement must still compare complete world steps on a
-quiet machine. Resident graph scheduling and compact/lazy CPU exception streams
-remain next.
+No whole-world timing is claimed from the loaded development host. Follow-on
+checkpoints now extract compact impulses, retain the graph schedule, and carry
+warm-start state by feature ID. A quiet-host comparison and lazy/compact CPU
+public-manifold synchronization remain next.
 
 The reproducible whole-world harness is
 `metal_resident_contact_benchmark`. It creates independent sphere contacts,

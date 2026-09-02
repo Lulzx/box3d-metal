@@ -103,6 +103,11 @@ Direct primitive tests separately cover packed state and integration kernels.
 - Four stable 81-contact steps perform one contact-schedule pack and three
   reuses. Adding an 82nd touching contact forces exactly the second pack while
   preserving the CPU/GPU velocity differential.
+- A one-contact resident carry test validates result/contact generations and
+  feature identity, rejects a deliberately mismatched contact generation, then
+  poisons every CPU-mirror warm-start term. The next fresh supported step
+  restores GPU-authored state and ends at `4.47e-08` velocity error with one
+  schedule pack and one reuse.
 
 ## Recorded error maxima
 

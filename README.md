@@ -57,7 +57,7 @@ and topology into solver setup. Pre-solve callbacks remain CPU-owned. When every
 colored convex contact is resident-authoritative and no convex overflow exists,
 a Metal kernel now prepares Erin's SIMD-wide contact constraints in the existing
 solver command buffer. CPU persistence/material work writes a generation-tagged
-144-byte record once into a contact-ID table during the existing collision pass.
+152-byte record once into a contact-ID table during the existing collision pass.
 Solver submission bulk-copies only a deterministic four-byte ID schedule per
 SIMD lane and no longer dereferences contacts to repack those records. Mixed,
 recycled, callback, overflow, and unsupported routes fail closed, including
@@ -71,6 +71,11 @@ The constraint graph carries a monotonic topology/order revision. The four-byte
 contact-ID lane schedule remains in its Metal buffer while that revision and its
 exact wide/contact counts are unchanged; contact or joint insertion/removal
 invalidates it before the next solver submission.
+The post-solve record also retains contact-slot generation and each point's
+feature ID without growing beyond 80 bytes. On the next fresh supported
+collision pass, feature matching restores GPU-authored normal, friction, twist,
+and rolling warm-start impulses before the new preparation record is staged.
+Reused contact-ID slots cannot consume stale solver state.
 
 ## Quick start
 
@@ -150,13 +155,16 @@ under the same correctness-only timing boundary.
 The solver-ownership checkpoint establishes the fail-closed preparation gate;
 the resident contact-preparation checkpoint now uses it to skip CPU preparation
 arithmetic for complete supported sets. The metadata-residency checkpoint also
-removes the dedicated solver-time contact traversal and 144-byte lane stream;
+removes the dedicated solver-time contact traversal and 152-byte lane stream;
 CPU persistence/table writes and graph scheduling remain. Compact post-solve
 extraction reduces the 81-contact CPU impulse-input surface from 35,616 to 6,480
 bytes while retaining public manifolds and matching hit events. It adds no
 loaded-host speedup claim. The schedule-residency checkpoint performs one pack
 and three reuses across four stable steps, then exactly one repack after graph
 topology changes.
+The warm-start-carry checkpoint then proves that a deliberately stale CPU
+manifold is repaired from the resident result by contact generation and feature
+ID, ending one-step CPU/GPU comparison at `4.47e-08` velocity error.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.
