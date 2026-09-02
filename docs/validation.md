@@ -230,6 +230,13 @@ index swap, then forced exactly one CPU exception when the same body became
 fast without changing the cache key. Broader gates also caught and fixed a
 CPU-only conditional-compilation regression and a null cached-order prefetch.
 
+The contact-state traversal checkpoint reran the complete non-Metal Release,
+float Metal debug, AddressSanitizer, and UndefinedBehaviorSanitizer suites.
+Float and double/VF64 warning-as-error focused suites passed, as did focused
+double/VF64 UBSan. Stable phases preserved CPU-oracle SAT/cache and manifold
+diagnostics; hit, first-touch, and fast-body exceptions restored a nonzero
+bitset clear before CPU collision work.
+
 ## What the tests do not prove
 
 They do not prove bit-identical determinism, all future upstream revisions,

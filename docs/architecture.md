@@ -233,12 +233,20 @@ dispatch.
 That authority now survives into solver setup explicitly. Each collision worker
 clears a transient ownership bit before overlap and recycling decisions, then
 sets it only after a resident result passes through Box3D allocation, callback,
-and topology handling. Pre-solve callback contacts remain CPU-owned. Solver
-When the dispatch classifies every convex graph contact as stable and contact
+and topology handling. Pre-solve callback contacts remain CPU-owned. When the
+dispatch classifies every convex graph contact as stable and contact
 state processing leaves the graph revision unchanged, solver setup uses the
 known graph-color counts directly. Otherwise it retains the per-contact
 ownership walk. SIMD-wide coverage is exposed only when every colored convex
 contact is resident-table authoritative and no convex overflow exists.
+
+The same zero-exception proof defers each worker's contact-state bitset clear.
+No collision worker can write state bits in that phase, so worker union and the
+serial state-change traversal are skipped. Stale storage is never observed: any
+later callback, CCD, first-touch, separation, unsupported contact, or Metal
+fallback clears all worker bitsets to the current contact-ID capacity before
+dispatching CPU collision work. Diagnostic manifold and SAT counters are reset
+and aggregated independently of the bitsets.
 
 That gate drives a Metal preparation kernel at the front of the existing solver
 command buffer. It reads normal and identity from the private contact-id table

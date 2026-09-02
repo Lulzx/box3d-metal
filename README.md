@@ -45,6 +45,9 @@ generation. A revisioned contact input/order registry retains those records
 across unchanged pair-set, constraint-graph, and eligibility revisions, so
 stable steps do not gather CPU contact IDs or rewrite the input buffer. Current
 body indices and transient fast flags come from the per-step body registry.
+A zero-exception dispatch also skips capacity-linear contact-state bitset
+clears, worker unions, and the serial state-change traversal; any later CPU
+exception or fallback clears before collision workers write.
 Full 160-byte outputs stay in private Metal storage; a deterministic
 scan/prefix/scatter pass returns only ordered CPU exceptions in the same command
 buffer. Stable resident contacts finalize directly into the private contact-ID
@@ -210,6 +213,10 @@ rewrite, and per-contact solver coverage walk. At 512 and 8,192 contacts it
 reports two cold/topology packs followed by eleven reuses, zero latest input
 bytes, and complete stable coverage bypass. Timing remains withheld because a
 Python process occupied a full CPU core and host load stayed above 4.
+The contact-state follow-on then removes the remaining bitset clear/union and
+serial state traversal on zero-exception steps. Loaded-host 512 and 8,192
+contact runs cleared state only for their seed phase and reported zero latest
+clear bytes; timing remains withheld at host load near 8.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

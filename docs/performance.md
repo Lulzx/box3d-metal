@@ -136,6 +136,13 @@ collision. These are structural counters, not speedup evidence: a Python
 process consumed one full CPU core and load averages remained about 4 to 8.
 A quiet-host whole-world matrix is still required.
 
+The zero-exception contact-state checkpoint also defers worker bitset clearing
+until CPU collision work exists, and skips worker union plus serial set-bit
+traversal on stable phases. Loaded-host runs recorded 47 bypasses across 48
+Metal collision phases at 512 contacts and 27 across 28 at 8,192 contacts. Both
+latest phases cleared zero state bytes and emitted zero exceptions. The same
+loaded-host timing exclusion applies.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.
