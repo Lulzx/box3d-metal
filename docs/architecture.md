@@ -201,3 +201,12 @@ The scatter also rotates active normals and frame-A points with the resident
 body quaternion. CPU application skips matrix construction and local-to-world
 vector transforms. Points remain relative to body A's origin so exact far-world
 anchor construction and center-of-mass adjustment retain CPU semantics.
+
+The same scatter writes an identical finalized record to a persistent private
+table indexed by Box3D contact id. The 16-byte input's fourth word now carries
+that id. Compact output remains ordered by awake-contact input index for the
+current CPU application path, while the private copy sets `inputIndex` to the
+contact id so its address and identity are independent of input permutation.
+The table is exposed only through an explicit diagnostic/fallback blit; normal
+steps add no shared stream, command buffer, or wait. Entries are authoritative
+only for contacts marked eligible in the current successful dispatch.

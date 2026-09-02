@@ -14,7 +14,8 @@
   are retained across revision-stable dispatches. Static/awake/sleeping body
   transforms are retained by body id with VF64 positions. Full manifold results
   are private and only active, world-oriented records return through a shared
-  ordered stream.
+  ordered stream. Active finalized records also live in a private table indexed
+  by contact id, ready for device-side preparation.
 - Body and awake-shape finalization have an experimental Metal path, but the CPU
   still owns topology mutation, sleeping/island
   mutation, events, and CCD. Successful resident refits now use a stable

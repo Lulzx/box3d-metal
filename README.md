@@ -49,6 +49,9 @@ material and pre-solve callbacks, events, and graph/island state. High-aspect
 and speculative hull-sphere contacts explicitly retain CPU GJK; other shape
 pairs remain on the CPU. Double worlds use the vendored VF64 exact subtraction
 before narrowing relative translations to float.
+The same scatter writes active finalized records into a private table indexed
+by Box3D contact id. This adds no steady-path readback or dispatch; explicit
+table staging exists only for validation and fallback diagnostics.
 
 ## Quick start
 
@@ -123,6 +126,8 @@ The private manifold-result checkpoint adds active-only deterministic readback
 and range-linear CPU consumption under the same no-loaded-host-timing boundary.
 The manifold-finalization checkpoint fuses world-axis orientation into that
 scatter, again publishing correctness rather than loaded-host timing.
+The resident manifold-table checkpoint establishes stable contact-id addressing
+under the same correctness-only timing boundary.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.
