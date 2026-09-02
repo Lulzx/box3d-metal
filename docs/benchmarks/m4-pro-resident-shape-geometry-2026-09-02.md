@@ -44,7 +44,9 @@ UndefinedBehaviorSanitizer Metal suite also pass.
 ## Remaining ownership boundary
 
 The 120-byte stream still repeats body rotations and translations for every
-contact, and the CPU still consumes an ordered 80-byte result. A body-id-indexed
-transform registry must cover awake and static bodies without relying on the
-solver state buffer, which is populated after collision. Direct manifold
-storage remains the following cut.
+contact. The follow-on
+[`resident body-transform checkpoint`](m4-pro-resident-body-transforms-2026-09-02.md)
+retains static and awake transforms by body id and reduces the contact input to
+16 bytes. The subsequent
+[`private manifold-result checkpoint`](m4-pro-private-manifold-results-2026-09-02.md)
+moves dense outputs to private storage and returns only active ordered records.

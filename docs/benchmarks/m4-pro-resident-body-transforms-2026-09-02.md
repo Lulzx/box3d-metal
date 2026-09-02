@@ -50,7 +50,8 @@ UndefinedBehaviorSanitizer Metal suite also pass.
 ## Remaining ownership boundary
 
 The CPU still validates and writes one 16-byte record per awake contact, waits
-for the command buffer, and consumes an ordered 80-byte result per contact.
-Manifold allocation, persistence, callbacks, events, contact creation, and
-topology remain CPU-owned. Direct manifold storage or active-result compaction
-is the next ownership cut.
+for the command buffer, and consumes manifold geometry. Manifold allocation,
+persistence, callbacks, events, contact creation, and topology remain CPU-owned.
+The follow-on
+[`private manifold-result checkpoint`](m4-pro-private-manifold-results-2026-09-02.md)
+moves full results to private storage and returns only active ordered records.

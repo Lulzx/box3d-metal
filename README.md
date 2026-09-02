@@ -40,8 +40,10 @@ descriptors live in persistent Metal buffers; identical hull point, plane, and
 boundary-triangle streams are content-deduplicated. A body-id registry retains
 static and awake rotations plus VF64-capable world translations for collision.
 Revision-stable dispatches reuse both registries. Each 16-byte contact input
-contains eligibility and two shape ids. CPU
-workers still own manifold persistence,
+contains eligibility and two shape ids. Full 80-byte outputs stay in private
+Metal storage; a deterministic scan/prefix/scatter pass returns only active
+results, tagged by original contact index, in the same command buffer. CPU
+workers lower-bound once per range while retaining manifold persistence,
 material and pre-solve callbacks, events, and graph/island state. High-aspect
 and speculative hull-sphere contacts explicitly retain CPU GJK; other shape
 pairs remain on the CPU. Double worlds use the vendored VF64 exact subtraction
@@ -116,6 +118,8 @@ The resident shape-geometry checkpoint adds primitive-mutation invalidation and
 120-byte input evidence under the same no-loaded-host-timing boundary.
 The resident body-transform checkpoint reduces that input to 16 bytes and adds
 step/teleport/replay invalidation evidence, again without a loaded-host timing claim.
+The private manifold-result checkpoint adds active-only deterministic readback
+and range-linear CPU consumption under the same no-loaded-host-timing boundary.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

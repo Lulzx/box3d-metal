@@ -12,8 +12,8 @@
   manifold state application, and constraint preparation remain CPU-side.
 - Supported sphere/capsule records and content-deduplicated compact hull geometry
   are retained across revision-stable dispatches. Static/awake/sleeping body
-  transforms are retained by body id with VF64 positions. Manifold results still
-  return through a shared ordered stream.
+  transforms are retained by body id with VF64 positions. Full manifold results
+  are private and only active records return through a shared ordered stream.
 - Body and awake-shape finalization have an experimental Metal path, but the CPU
   still owns topology mutation, sleeping/island
   mutation, events, and CCD. Successful resident refits now use a stable
@@ -33,8 +33,9 @@
 
 ## Evidence-led next stages
 
-1. Write manifolds into resident storage while preserving explicit CPU
-   exception paths for compounds, callbacks, and unsupported GJK/SAT cases.
+1. Write compact geometry directly into resident manifold storage while
+   preserving explicit CPU exception paths for compounds, callbacks, and
+   unsupported GJK/SAT cases.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,
