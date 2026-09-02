@@ -32,6 +32,10 @@ typedef struct b3MetalProfile
 	/// Optimistic Metal preparation steps recovered by running CPU preparation
 	/// before the CPU solver fallback.
 	uint64_t contactPrepareFallbackCount;
+	/// Bytes in the most recent deterministic contact-id lane schedule. The
+	/// post-persistence metadata table is retained by contact id and is not
+	/// repacked into this stream.
+	uint64_t lastContactPrepareIndexBytes;
 	uint64_t jointDispatchCount;
 	uint64_t jointFallbackCount;
 	uint64_t finalizationDispatchCount;

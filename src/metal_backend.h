@@ -16,6 +16,7 @@ typedef struct b3ContactConstraint b3ContactConstraint;
 typedef struct b3ManifoldConstraint b3ManifoldConstraint;
 typedef struct b3BroadPhase b3BroadPhase;
 typedef struct b3World b3World;
+typedef struct b3Contact b3Contact;
 
 typedef struct b3MetalPairQueryRecord
 {
@@ -135,6 +136,11 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 // This submits and waits for a blit; it is not part of the steady narrow phase.
 bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalConvexManifoldResult* results,
 	int resultCapacity );
+
+// Retain post-persistence solver metadata by contact id during the existing CPU
+// collision pass. The narrow-phase dispatch preallocates the table, so parallel
+// collision workers only write disjoint records and never allocate.
+bool b3MetalStageResidentContactPrepare( b3MetalContext* context, const b3Contact* contact );
 
 // Mark the resident tree snapshot as matching CPU bounds after a successful
 // shape-result leaf update/refit and the corresponding CPU bookkeeping pass.

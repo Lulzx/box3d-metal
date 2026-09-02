@@ -69,10 +69,13 @@ staging exists only for validation and fallback diagnostics.
 When every colored convex contact remains authoritative after persistence and
 callback processing, a Metal preparation kernel now builds Erin's SIMD-wide
 contact constraints from that table in the solver command buffer. The CPU still
-packs a 144-byte persistence/material record per contact lane; normal and
-contact identity remain private on-device. Mixed, recycled, callback, overflow,
-or unsupported solver worlds fail closed to CPU preparation, including explicit
-prepare-on-fallback recovery when a later constraint rejects the Metal route.
+owns persistence and material resolution, but writes the resulting 144-byte
+record once into a generation-tagged contact-ID table during that existing pass.
+Solver submission bulk-copies only a deterministic four-byte contact-ID schedule
+per SIMD lane; it no longer walks and dereferences every contact to repack the
+records. Normal and identity remain private on-device. Mixed, recycled, callback,
+overflow, or unsupported solver worlds fail closed to CPU preparation, including
+explicit prepare-on-fallback recovery when a later constraint rejects the route.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.
@@ -90,6 +93,7 @@ cmake --build build/metal-release
 ./build/metal-release/bin/metal_fused_benchmark
 ./build/metal-release/bin/metal_world_benchmark
 ./build/metal-release/bin/metal_contact_benchmark
+./build/metal-release/bin/metal_resident_contact_benchmark
 ./build/metal-release/bin/metal_mesh_benchmark
 ./build/metal-release/bin/metal_joint_benchmark
 ./build/metal-release/bin/metal_parallel_joint_benchmark

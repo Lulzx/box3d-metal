@@ -1894,6 +1894,7 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		int wideContactCount = 0;
 		int convexContactCount = 0;
 		int residentConvexContactCount = 0;
+		bool residentConvexHasRestitution = false;
 		int contactCount = 0;
 		int manifoldCount = 0;
 		int jointCount = 0;
@@ -1921,7 +1922,9 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 			{
 				int contactId = color->convexContacts.data[j];
 				const b3Contact* contact = b3Array_Get( world->contacts, contactId );
-				residentConvexContactCount += ( contact->flags & b3_simMetalManifold ) != 0;
+				bool resident = ( contact->flags & b3_simMetalManifold ) != 0;
+				residentConvexContactCount += resident;
+				residentConvexHasRestitution = residentConvexHasRestitution || ( resident && contact->restitution != 0.0f );
 			}
 			colorWideContactCounts[c] = colorWideConstraintCount;
 
@@ -1950,11 +1953,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		stepContext->metalResidentConvexContactCount = residentConvexContactCount;
 		stepContext->metalResidentConvexComplete =
 			convexContactCount > 0 && residentConvexContactCount == convexContactCount;
+		stepContext->metalResidentConvexHasRestitution = residentConvexHasRestitution;
 		stepContext->metalResidentConvexConstraintCount =
 			stepContext->metalResidentConvexComplete ? wideContactCount : 0;
 #if defined( BOX3D_METAL )
 		world->metalLastResidentConvexContactCount = residentConvexContactCount;
 		world->metalLastResidentConvexConstraintCount = stepContext->metalResidentConvexConstraintCount;
+		world->metalLastContactPrepareIndexBytes = 0;
 #endif
 
 		// Prepare and store run as one flat parallel-for over the entire wide constraint range,

@@ -1088,6 +1088,7 @@ static int MetalResidentSolverOwnershipTest( void )
 	ENSURE( profile.lastResidentConvexConstraintCount == 1 );
 	ENSURE( profile.contactPrepareDispatchCount == 1 );
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
+	ENSURE( profile.lastContactPrepareIndexBytes == 4 * sizeof( uint32_t ) );
 	b3Vec3 cpuVelocity = b3Body_GetLinearVelocity( cpuBodyB );
 	b3Vec3 gpuVelocity = b3Body_GetLinearVelocity( bodyB );
 	ENSURE( b3Length( b3Sub( cpuVelocity, gpuVelocity ) ) <= 3.0e-5f );
@@ -1104,6 +1105,7 @@ static int MetalResidentSolverOwnershipTest( void )
 	ENSURE( profile.lastResidentConvexConstraintCount == 0 );
 	ENSURE( profile.contactPrepareDispatchCount == 1 );
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
+	ENSURE( profile.lastContactPrepareIndexBytes == 0 );
 
 	b3DestroyWorld( worldId );
 	b3DestroyWorld( cpuWorldId );
@@ -1148,6 +1150,7 @@ static int MetalContactPreparePreSolveExceptionTest( void )
 	ENSURE( profile.lastResidentConvexConstraintCount == 0 );
 	ENSURE( profile.contactPrepareDispatchCount == 0 );
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
+	ENSURE( profile.lastContactPrepareIndexBytes == 0 );
 
 	b3DestroyWorld( worldId );
 	return 0;
@@ -1263,6 +1266,7 @@ static int MetalContactPrepareFallbackTest( void )
 	ENSURE( profile.lastResidentConvexConstraintCount == 1 );
 	ENSURE( profile.contactPrepareDispatchCount == 0 );
 	ENSURE( profile.contactPrepareFallbackCount == 1 );
+	ENSURE( profile.lastContactPrepareIndexBytes == 0 );
 	ENSURE( profile.jointFallbackCount == 1 );
 	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuContactBody ),
 		b3Body_GetLinearVelocity( gpuContactBody ) ) ) <= 3.0e-5f );
@@ -1347,12 +1351,18 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 			b3Length( b3Sub( b3Body_GetAngularVelocity( cpuBodies[i] ), b3Body_GetAngularVelocity( gpuBodies[i] ) ) ) );
 	}
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
-	printf( "    resident contact prepare contacts=%d dispatches=%llu transformError=%.3g velocityError=%.3g\n",
-		count, (unsigned long long)profile.contactPrepareDispatchCount, maxTransformError, maxVelocityError );
+	printf( "    resident contact prepare contacts=%d dispatches=%llu indexBytes=%llu legacyBytes=%zu "
+		"transformError=%.3g velocityError=%.3g\n",
+		count, (unsigned long long)profile.contactPrepareDispatchCount,
+		(unsigned long long)profile.lastContactPrepareIndexBytes,
+		(size_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * 144,
+		maxTransformError, maxVelocityError );
 	ENSURE( profile.contactPrepareDispatchCount == 4 );
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
 	ENSURE( profile.lastResidentConvexContactCount == count );
 	ENSURE( profile.lastResidentConvexConstraintCount == ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH );
+	ENSURE( profile.lastContactPrepareIndexBytes ==
+		(uint64_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * sizeof( uint32_t ) );
 	ENSURE( maxTransformError <= 3.0e-4f );
 	ENSURE( maxVelocityError <= 3.0e-4f );
 	b3DestroyWorld( gpuWorld );

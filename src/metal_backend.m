@@ -156,9 +156,12 @@ struct b3MetalContext
 	uint64_t convexBodyTransformRevision;
 	id<MTLBuffer> contactConstraintBuffer;
 	NSUInteger contactConstraintCapacity;
-	id<MTLBuffer> contactPrepareInputBuffer;
-	NSUInteger contactPrepareInputCapacity;
+	id<MTLBuffer> contactPrepareTableBuffer;
+	NSUInteger contactPrepareTableCapacity;
+	id<MTLBuffer> contactPrepareIndexBuffer;
+	NSUInteger contactPrepareIndexCapacity;
 	id<MTLBuffer> contactPrepareStatusBuffer;
+	uint32_t contactPrepareGeneration;
 	id<MTLBuffer> meshContactBuffer;
 	NSUInteger meshContactCapacity;
 	id<MTLBuffer> meshManifoldBuffer;
@@ -340,7 +343,7 @@ typedef struct b3MetalContactPrepareInput
 {
 	uint32_t contactId;
 	int indexA, indexB;
-	uint32_t pointCount;
+	uint32_t generation;
 	uint64_t manifold;
 	float friction, restitution;
 	float rollingResistance, tangentVelocityX, tangentVelocityY, tangentVelocityZ;
@@ -356,7 +359,7 @@ typedef struct b3MetalContactPrepareParams
 	b3Softness contactSoftness;
 	float padding0;
 	b3Softness staticSoftness;
-	float padding1;
+	uint32_t generation;
 } b3MetalContactPrepareParams;
 
 _Static_assert( sizeof( b3MetalContactPreparePoint ) == 32, "Metal contact-prepare point ABI changed" );
@@ -1041,12 +1044,12 @@ static const char* b3_contactSource =
 	"  float p1x,p1y,p1z,separation1,p2x,p2y,p2z,separation2; uint feature1,feature2,scanOffset,contactId; };\n"
 	"struct PreparePoint { float anchorAX,anchorAY,anchorAZ,separation; float anchorBX,anchorBY,anchorBZ,normalImpulse; };\n"
 	"struct Softness { float biasRate, massScale, impulseScale; };\n"
-	"struct PrepareInput { uint contactId; int indexA,indexB; uint pointCount; ulong manifold; float friction,restitution;\n"
+	"struct PrepareInput { uint contactId; int indexA,indexB; uint generation; ulong manifold; float friction,restitution;\n"
 	"  float rollingResistance,tangentVelocityX,tangentVelocityY,tangentVelocityZ;\n"
 	"  float twistImpulse,frictionImpulseX,frictionImpulseY,frictionImpulseZ;\n"
 	"  float rollingImpulseX,rollingImpulseY,rollingImpulseZ,padding; PreparePoint points[2]; };\n"
 	"struct PrepareParams { uint wideCount,tableCount; float warmStartScale,invTau; Softness contactSoftness; float padding0;\n"
-	"  Softness staticSoftness; float padding1; };\n"
+	"  Softness staticSoftness; uint generation; };\n"
 	"struct BodyProperties { float qx,qy,qz,qw; float forceX,forceY,forceZ; float torqueX,torqueY,torqueZ; float invMass;\n"
 	"  float invInertiaLocal[9]; float invInertiaWorld[9]; float linearDamping,angularDamping,gravityScale; };\n"
 	"struct BodyW { V3W v; V3W w; V3W dp; QW dq; };\n"
@@ -1113,16 +1116,16 @@ static const char* b3_contactSource =
 	"void store_body(device BodyState* states,int index,BodyS b){if(index<0)return;BodyState s=states[index];if((s.flags&0x1000u)==0u)return;\n"
 	"  if(s.flags&1u)b.v.x=0;if(s.flags&2u)b.v.y=0;if(s.flags&4u)b.v.z=0;if(s.flags&8u)b.w.x=0;if(s.flags&16u)b.w.y=0;if(s.flags&32u)b.w.z=0;\n"
 	"  s.lvx=b.v.x;s.lvy=b.v.y;s.lvz=b.v.z;s.avx=b.w.x;s.avy=b.w.y;s.avz=b.w.z;states[index]=s;}\n"
-	"kernel void b3_prepare_contacts(const device PrepareInput* inputs [[buffer(0)]],\n"
-	"  const device ConvexManifoldResult* table [[buffer(1)]],const device BodyProperties* properties [[buffer(2)]],\n"
-	"  const device BodyState* states [[buffer(3)]],device ContactWide* constraints [[buffer(4)]],\n"
-	"  device atomic_uint* status [[buffer(5)]],constant PrepareParams& p [[buffer(6)]],uint tid [[thread_position_in_grid]]){\n"
+	"kernel void b3_prepare_contacts(const device uint* indices [[buffer(0)]],const device PrepareInput* inputs [[buffer(1)]],\n"
+	"  const device ConvexManifoldResult* table [[buffer(2)]],const device BodyProperties* properties [[buffer(3)]],\n"
+	"  const device BodyState* states [[buffer(4)]],device ContactWide* constraints [[buffer(5)]],\n"
+	"  device atomic_uint* status [[buffer(6)]],constant PrepareParams& p [[buffer(7)]],uint tid [[thread_position_in_grid]]){\n"
 	"  if(tid>=p.wideCount)return;device ContactWide& c=constraints[tid];\n"
-	"  for(uint lane=0;lane<4u;++lane){PrepareInput in=inputs[4u*tid+lane];if(in.contactId==0xffffffffu)continue;\n"
-	"    if(in.contactId>=p.tableCount){atomic_fetch_or_explicit(status,1u,memory_order_relaxed);continue;}\n"
-	"    ConvexManifoldResult mr=table[in.contactId];if(mr.eligible==0u||mr.touching==0u||mr.contactId!=in.contactId||\n"
-	"      mr.inputIndex!=in.contactId||mr.pointCount!=in.pointCount||in.pointCount==0u||in.pointCount>2u){atomic_fetch_or_explicit(status,2u,memory_order_relaxed);continue;}\n"
-	"    int ia=in.indexA,ib=in.indexB;c.indexA[lane]=ia+1;c.indexB[lane]=ib+1;c.pointCounts[lane]=int(in.pointCount);c.manifolds[lane]=in.manifold;\n"
+	"  for(uint lane=0;lane<4u;++lane){uint contactId=indices[4u*tid+lane];if(contactId==0xffffffffu)continue;\n"
+	"    if(contactId>=p.tableCount){atomic_fetch_or_explicit(status,1u,memory_order_relaxed);continue;}PrepareInput in=inputs[contactId];\n"
+	"    ConvexManifoldResult mr=table[contactId];if(in.contactId!=contactId||in.generation!=p.generation||mr.eligible==0u||mr.touching==0u||mr.contactId!=contactId||\n"
+	"      mr.inputIndex!=contactId||mr.pointCount==0u||mr.pointCount>2u){atomic_fetch_or_explicit(status,2u,memory_order_relaxed);continue;}\n"
+	"    uint pointCount=mr.pointCount;int ia=in.indexA,ib=in.indexB;c.indexA[lane]=ia+1;c.indexB[lane]=ib+1;c.pointCounts[lane]=int(pointCount);c.manifolds[lane]=in.manifold;\n"
 	"    float ma=ia>=0?properties[ia].invMass:0.0f,mb=ib>=0?properties[ib].invMass:0.0f;c.invMassA[lane]=ma;c.invMassB[lane]=mb;\n"
 	"    SM3 iA=load_inertia(properties,ia),iB=load_inertia(properties,ib);\n"
 	"    c.invIA.cxx[lane]=iA.cx.x;c.invIA.cxy[lane]=iA.cy.x;c.invIA.cxz[lane]=iA.cz.x;c.invIA.cyy[lane]=iA.cy.y;c.invIA.cyz[lane]=iA.cz.y;c.invIA.czz[lane]=iA.cz.z;\n"
@@ -1134,7 +1137,7 @@ static const char* b3_contactSource =
 	"    Softness soft=(ia<0||ib<0)?p.staticSoftness:p.contactSoftness;c.biasRate[lane]=soft.biasRate;c.massScale[lane]=soft.massScale;c.impulseScale[lane]=soft.impulseScale;\n"
 	"    BodyState sa={};BodyState sb={};if(ia>=0)sa=states[ia];if(ib>=0)sb=states[ib];S3 va=S3{sa.lvx,sa.lvy,sa.lvz},wa=S3{sa.avx,sa.avy,sa.avz};\n"
 	"    S3 vb=S3{sb.lvx,sb.lvy,sb.lvz},wb=S3{sb.avx,sb.avy,sb.avz},centerA=S3{0,0,0},centerB=S3{0,0,0};float totalWeight=0.0f;\n"
-	"    for(uint j=0;j<in.pointCount;++j){PreparePoint mp=in.points[j];device PointWide& cp=c.points[j];S3 rA=S3{mp.anchorAX,mp.anchorAY,mp.anchorAZ},rB=S3{mp.anchorBX,mp.anchorBY,mp.anchorBZ};\n"
+	"    for(uint j=0;j<pointCount;++j){PreparePoint mp=in.points[j];device PointWide& cp=c.points[j];S3 rA=S3{mp.anchorAX,mp.anchorAY,mp.anchorAZ},rB=S3{mp.anchorBX,mp.anchorBY,mp.anchorBZ};\n"
 	"      float weight=clamp(2.0f-mp.separation*p.invTau,1.0e-10f,1.0f);centerA=sadd(centerA,smul(weight,rA));centerB=sadd(centerB,smul(weight,rB));totalWeight+=weight;\n"
 	"      cp.anchorAs.X[lane]=rA.x;cp.anchorAs.Y[lane]=rA.y;cp.anchorAs.Z[lane]=rA.z;cp.anchorBs.X[lane]=rB.x;cp.anchorBs.Y[lane]=rB.y;cp.anchorBs.Z[lane]=rB.z;\n"
 	"      cp.baseSeparations[lane]=mp.separation-sdot(ssub(rB,rA),n);cp.normalImpulses[lane]=p.warmStartScale*mp.normalImpulse;cp.totalNormalImpulses[lane]=0.0f;\n"
@@ -1142,8 +1145,8 @@ static const char* b3_contactSource =
 	"      S3 vrA=sadd(va,scross(wa,rA)),vrB=sadd(vb,scross(wb,rB));cp.relativeVelocities[lane]=sdot(n,ssub(vrB,vrA));}\n"
 	"    float iw=1.0f/totalWeight;centerA=smul(iw,centerA);centerB=smul(iw,centerB);c.centerA.X[lane]=centerA.x;c.centerA.Y[lane]=centerA.y;c.centerA.Z[lane]=centerA.z;\n"
 	"    c.centerB.X[lane]=centerB.x;c.centerB.Y[lane]=centerB.y;c.centerB.Z[lane]=centerB.z;\n"
-	"    for(uint j=0;j<in.pointCount;++j){S3 rA=S3{in.points[j].anchorAX,in.points[j].anchorAY,in.points[j].anchorAZ};c.points[j].leverArms[lane]=length(float3(rA.x-centerA.x,rA.y-centerA.y,rA.z-centerA.z));}\n"
-	"    for(uint j=in.pointCount;j<4u;++j){device PointWide& cp=c.points[j];cp.anchorAs.X[lane]=0;cp.anchorAs.Y[lane]=0;cp.anchorAs.Z[lane]=0;cp.anchorBs.X[lane]=0;cp.anchorBs.Y[lane]=0;cp.anchorBs.Z[lane]=0;\n"
+	"    for(uint j=0;j<pointCount;++j){S3 rA=S3{in.points[j].anchorAX,in.points[j].anchorAY,in.points[j].anchorAZ};c.points[j].leverArms[lane]=length(float3(rA.x-centerA.x,rA.y-centerA.y,rA.z-centerA.z));}\n"
+	"    for(uint j=pointCount;j<4u;++j){device PointWide& cp=c.points[j];cp.anchorAs.X[lane]=0;cp.anchorAs.Y[lane]=0;cp.anchorAs.Z[lane]=0;cp.anchorBs.X[lane]=0;cp.anchorBs.Y[lane]=0;cp.anchorBs.Z[lane]=0;\n"
 	"      cp.baseSeparations[lane]=0;cp.normalImpulses[lane]=0;cp.totalNormalImpulses[lane]=0;cp.normalMasses[lane]=0;cp.leverArms[lane]=0;cp.relativeVelocities[lane]=0;}\n"
 	"    S3 ra1=scross(centerA,t1),ra2=scross(centerA,t2),rb1=scross(centerB,t1),rb2=scross(centerB,t2);float kxx=ma+mb+sdot(ra1,smulm(iA,ra1))+sdot(rb1,smulm(iB,rb1));\n"
 	"    float kyy=ma+mb+sdot(ra2,smulm(iA,ra2))+sdot(rb2,smulm(iB,rb2)),kxy=sdot(ra1,smulm(iA,ra2))+sdot(rb1,smulm(iB,rb2));float det=kxx*kyy-kxy*kxy;\n"
@@ -1733,7 +1736,8 @@ void b3MetalDestroyContext( b3MetalContext* context )
 	[context->convexShapeGeometryBuffer release];
 	[context->convexBodyTransformBuffer release];
 	[context->contactConstraintBuffer release];
-	[context->contactPrepareInputBuffer release];
+	[context->contactPrepareTableBuffer release];
+	[context->contactPrepareIndexBuffer release];
 	[context->contactPrepareStatusBuffer release];
 	[context->meshContactBuffer release];
 	[context->meshManifoldBuffer release];
@@ -2188,17 +2192,33 @@ static bool b3MetalEnsureContactCapacity( b3MetalContext* context, NSUInteger re
 	return true;
 }
 
-static bool b3MetalEnsureContactPrepareCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+static bool b3MetalEnsureContactPrepareTableCapacity( b3MetalContext* context, NSUInteger requiredBytes )
 {
-	if ( context->contactPrepareInputCapacity < requiredBytes )
+	if ( context->contactPrepareTableCapacity < requiredBytes )
 	{
-		NSUInteger capacity = context->contactPrepareInputCapacity > 0 ? context->contactPrepareInputCapacity : 4096;
+		NSUInteger capacity = context->contactPrepareTableCapacity > 0 ? context->contactPrepareTableCapacity : 4096;
 		while ( capacity < requiredBytes ) capacity *= 2;
 		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
 		if ( buffer == nil ) return false;
-		[context->contactPrepareInputBuffer release];
-		context->contactPrepareInputBuffer = buffer;
-		context->contactPrepareInputCapacity = capacity;
+		memset( buffer.contents, 0, capacity );
+		[context->contactPrepareTableBuffer release];
+		context->contactPrepareTableBuffer = buffer;
+		context->contactPrepareTableCapacity = capacity;
+	}
+	return true;
+}
+
+static bool b3MetalEnsureContactPrepareIndexCapacity( b3MetalContext* context, NSUInteger requiredBytes )
+{
+	if ( context->contactPrepareIndexCapacity < requiredBytes )
+	{
+		NSUInteger capacity = context->contactPrepareIndexCapacity > 0 ? context->contactPrepareIndexCapacity : 4096;
+		while ( capacity < requiredBytes ) capacity *= 2;
+		id<MTLBuffer> buffer = [context->device newBufferWithLength:capacity options:MTLResourceStorageModeShared];
+		if ( buffer == nil ) return false;
+		[context->contactPrepareIndexBuffer release];
+		context->contactPrepareIndexBuffer = buffer;
+		context->contactPrepareIndexCapacity = capacity;
 	}
 	if ( context->contactPrepareStatusBuffer == nil )
 	{
@@ -2463,7 +2483,58 @@ static void b3MetalPackBodyProperties( b3MetalBodyProperties* properties, const 
 	}
 }
 
-static bool b3MetalPackContactPrepareInputs( b3MetalContext* context, const b3StepContext* stepContext,
+bool b3MetalStageResidentContactPrepare( b3MetalContext* context, const b3Contact* contact )
+{
+	if ( context == NULL || contact == NULL || context->contactPrepareGeneration == 0 ||
+		contact->contactId < 0 || contact->contactId >= context->convexManifoldTableCount ||
+		contact->manifoldCount != 1 || contact->manifolds == NULL ||
+		contact->manifolds[0].pointCount < 1 || contact->manifolds[0].pointCount > 2 )
+	{
+		return false;
+	}
+	NSUInteger tableIndex = (NSUInteger)contact->contactId;
+	if ( tableIndex >= context->contactPrepareTableCapacity / sizeof( b3MetalContactPrepareInput ) ) return false;
+
+	const b3Manifold* manifold = contact->manifolds;
+	b3MetalContactPrepareInput input = {
+		.contactId = (uint32_t)contact->contactId,
+		.indexA = contact->bodySimIndexA,
+		.indexB = contact->bodySimIndexB,
+		.generation = context->contactPrepareGeneration,
+		.manifold = (uint64_t)(uintptr_t)manifold,
+		.friction = contact->friction,
+		.restitution = contact->restitution,
+		.rollingResistance = contact->rollingResistance,
+		.tangentVelocityX = contact->tangentVelocity.x,
+		.tangentVelocityY = contact->tangentVelocity.y,
+		.tangentVelocityZ = contact->tangentVelocity.z,
+		.twistImpulse = manifold->twistImpulse,
+		.frictionImpulseX = manifold->frictionImpulse.x,
+		.frictionImpulseY = manifold->frictionImpulse.y,
+		.frictionImpulseZ = manifold->frictionImpulse.z,
+		.rollingImpulseX = manifold->rollingImpulse.x,
+		.rollingImpulseY = manifold->rollingImpulse.y,
+		.rollingImpulseZ = manifold->rollingImpulse.z,
+	};
+	for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
+	{
+		const b3ManifoldPoint* point = manifold->points + pointIndex;
+		input.points[pointIndex] = (b3MetalContactPreparePoint){
+			.anchorAX = point->anchorA.x,
+			.anchorAY = point->anchorA.y,
+			.anchorAZ = point->anchorA.z,
+			.separation = point->separation,
+			.anchorBX = point->anchorB.x,
+			.anchorBY = point->anchorB.y,
+			.anchorBZ = point->anchorB.z,
+			.normalImpulse = point->normalImpulse,
+		};
+	}
+	( (b3MetalContactPrepareInput*)context->contactPrepareTableBuffer.contents )[tableIndex] = input;
+	return true;
+}
+
+static bool b3MetalPackContactPrepareIndices( b3MetalContext* context, const b3StepContext* stepContext,
 	bool* hasRestitution )
 {
 	if ( hasRestitution != NULL ) *hasRestitution = false;
@@ -2473,77 +2544,31 @@ static bool b3MetalPackContactPrepareInputs( b3MetalContext* context, const b3St
 		return false;
 	}
 
-	NSUInteger inputCount = (NSUInteger)stepContext->wideContactCount * B3_SIMD_WIDTH;
-	if ( inputCount > NSUIntegerMax / sizeof( b3MetalContactPrepareInput ) ) return false;
-	NSUInteger inputBytes = inputCount * sizeof( b3MetalContactPrepareInput );
-	if ( b3MetalEnsureContactPrepareCapacity( context, inputBytes ) == false ) return false;
-	b3MetalContactPrepareInput* inputs = context->contactPrepareInputBuffer.contents;
-	memset( inputs, 0, inputBytes );
-	for ( NSUInteger i = 0; i < inputCount; ++i ) inputs[i].contactId = UINT32_MAX;
+	NSUInteger indexCount = (NSUInteger)stepContext->wideContactCount * B3_SIMD_WIDTH;
+	if ( indexCount > NSUIntegerMax / sizeof( uint32_t ) ) return false;
+	NSUInteger indexBytes = indexCount * sizeof( uint32_t );
+	if ( b3MetalEnsureContactPrepareIndexCapacity( context, indexBytes ) == false ) return false;
+	uint32_t* indices = context->contactPrepareIndexBuffer.contents;
+	memset( indices, 0xff, indexBytes );
 
-	const b3World* world = stepContext->world;
-	bool restitution = false;
 	int packedCount = 0;
 	for ( int colorIndex = 0; colorIndex < stepContext->activeColorCount; ++colorIndex )
 	{
 		const b3WidePrepareSpan* span = stepContext->widePrepareSpans + colorIndex;
-		for ( int contactIndex = 0; contactIndex < span->count; ++contactIndex )
+		if ( span->count < 0 || span->start < 0 || span->start > stepContext->wideContactCount ) return false;
+		if ( span->count > 0 )
 		{
-			int contactId = span->contacts[contactIndex];
-			if ( contactId < 0 || contactId >= world->contacts.count || contactId >= context->convexManifoldTableCount )
-			{
-				return false;
-			}
-			const b3Contact* contact = world->contacts.data + contactId;
-			if ( contact->contactId != contactId || contact->manifoldCount != 1 ||
-				( contact->flags & b3_simMetalManifold ) == 0 ||
-				( contact->flags & b3_simEnablePreSolveEvents ) != 0 )
-			{
-				return false;
-			}
-			const b3Manifold* manifold = contact->manifolds;
-			if ( manifold == NULL || manifold->pointCount < 1 || manifold->pointCount > 2 ) return false;
-
-			int wideIndex = span->start + contactIndex / B3_SIMD_WIDTH;
-			int lane = contactIndex & ( B3_SIMD_WIDTH - 1 );
-			b3MetalContactPrepareInput* input = inputs + B3_SIMD_WIDTH * wideIndex + lane;
-			input->contactId = (uint32_t)contactId;
-			input->indexA = contact->bodySimIndexA;
-			input->indexB = contact->bodySimIndexB;
-			input->pointCount = (uint32_t)manifold->pointCount;
-			input->manifold = (uint64_t)(uintptr_t)manifold;
-			input->friction = contact->friction;
-			input->restitution = contact->restitution;
-			input->rollingResistance = contact->rollingResistance;
-			input->tangentVelocityX = contact->tangentVelocity.x;
-			input->tangentVelocityY = contact->tangentVelocity.y;
-			input->tangentVelocityZ = contact->tangentVelocity.z;
-			input->twistImpulse = manifold->twistImpulse;
-			input->frictionImpulseX = manifold->frictionImpulse.x;
-			input->frictionImpulseY = manifold->frictionImpulse.y;
-			input->frictionImpulseZ = manifold->frictionImpulse.z;
-			input->rollingImpulseX = manifold->rollingImpulse.x;
-			input->rollingImpulseY = manifold->rollingImpulse.y;
-			input->rollingImpulseZ = manifold->rollingImpulse.z;
-			for ( int pointIndex = 0; pointIndex < manifold->pointCount; ++pointIndex )
-			{
-				const b3ManifoldPoint* point = manifold->points + pointIndex;
-				b3MetalContactPreparePoint* output = input->points + pointIndex;
-				output->anchorAX = point->anchorA.x;
-				output->anchorAY = point->anchorA.y;
-				output->anchorAZ = point->anchorA.z;
-				output->separation = point->separation;
-				output->anchorBX = point->anchorB.x;
-				output->anchorBY = point->anchorB.y;
-				output->anchorBZ = point->anchorB.z;
-				output->normalImpulse = point->normalImpulse;
-			}
-			restitution = restitution || contact->restitution != 0.0f;
-			packedCount += 1;
+			if ( span->contacts == NULL || (NSUInteger)span->count > NSUIntegerMax / sizeof( int ) ) return false;
+			NSUInteger destination = (NSUInteger)B3_SIMD_WIDTH * (NSUInteger)span->start;
+			if ( destination > indexCount || (NSUInteger)span->count > indexCount - destination ) return false;
+			_Static_assert( sizeof( int ) == sizeof( uint32_t ), "Metal contact-id schedule ABI changed" );
+			memcpy( indices + destination, span->contacts, (NSUInteger)span->count * sizeof( int ) );
 		}
+		packedCount += span->count;
 	}
 	if ( packedCount != stepContext->metalResidentConvexContactCount ) return false;
-	if ( hasRestitution != NULL ) *hasRestitution = restitution;
+	stepContext->world->metalLastContactPrepareIndexBytes = indexBytes;
+	if ( hasRestitution != NULL ) *hasRestitution = stepContext->metalResidentConvexHasRestitution;
 	return true;
 }
 
@@ -3757,11 +3782,20 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 		NSUInteger blockBytes = (NSUInteger)blockCount * sizeof( b3MetalPairBlock );
 		NSUInteger tableCount = world->contacts.count > 0 ? (NSUInteger)world->contacts.count : 1;
 		NSUInteger tableBytes = tableCount * sizeof( b3MetalConvexManifoldResult );
+		if ( tableCount > NSUIntegerMax / sizeof( b3MetalContactPrepareInput ) ) return false;
+		NSUInteger prepareTableBytes = tableCount * sizeof( b3MetalContactPrepareInput );
 		if ( b3MetalEnsureShapeGeometryRegistry( context, world ) == false ||
 			 b3MetalEnsureBodyTransformRegistry( context, world ) == false ||
-			 b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes, resultBytes, blockBytes, tableBytes ) == false )
+			 b3MetalEnsureConvexManifoldCapacity( context, inputBytes, resultBytes, resultBytes, blockBytes, tableBytes ) == false ||
+			 b3MetalEnsureContactPrepareTableCapacity( context, prepareTableBytes ) == false )
 		{
 			return false;
+		}
+		context->contactPrepareGeneration += 1;
+		if ( context->contactPrepareGeneration == 0 )
+		{
+			memset( context->contactPrepareTableBuffer.contents, 0, prepareTableBytes );
+			context->contactPrepareGeneration = 1;
 		}
 		b3MetalConvexManifoldInput* inputs = context->convexManifoldInputBuffer.contents;
 		memset( inputs, 0, inputBytes );
@@ -4113,7 +4147,7 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 		memcpy( context->bodyStateBuffer.contents, stepContext->states, stateBytes );
 		b3MetalPackBodyProperties( context->bodyPropertiesBuffer.contents, stepContext->sims, bodyCount );
 		if ( prepareContactsOnGpu &&
-			b3MetalPackContactPrepareInputs( context, stepContext, &preparedHasRestitution ) == false )
+			b3MetalPackContactPrepareIndices( context, stepContext, &preparedHasRestitution ) == false )
 		{
 			return false;
 		}
@@ -4239,15 +4273,17 @@ bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepCo
 				.invTau = 1.0f / B3_SPECULATIVE_DISTANCE,
 				.contactSoftness = stepContext->contactSoftness,
 				.staticSoftness = stepContext->staticSoftness,
+				.generation = context->contactPrepareGeneration,
 			};
 			[encoder setComputePipelineState:context->prepareContactsPipeline];
-			[encoder setBuffer:context->contactPrepareInputBuffer offset:0 atIndex:0];
-			[encoder setBuffer:context->convexManifoldTableBuffer offset:0 atIndex:1];
-			[encoder setBuffer:context->bodyPropertiesBuffer offset:0 atIndex:2];
-			[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:3];
-			[encoder setBuffer:context->contactConstraintBuffer offset:0 atIndex:4];
-			[encoder setBuffer:context->contactPrepareStatusBuffer offset:0 atIndex:5];
-			[encoder setBytes:&params length:sizeof( params ) atIndex:6];
+			[encoder setBuffer:context->contactPrepareIndexBuffer offset:0 atIndex:0];
+			[encoder setBuffer:context->contactPrepareTableBuffer offset:0 atIndex:1];
+			[encoder setBuffer:context->convexManifoldTableBuffer offset:0 atIndex:2];
+			[encoder setBuffer:context->bodyPropertiesBuffer offset:0 atIndex:3];
+			[encoder setBuffer:context->bodyStateBuffer offset:0 atIndex:4];
+			[encoder setBuffer:context->contactConstraintBuffer offset:0 atIndex:5];
+			[encoder setBuffer:context->contactPrepareStatusBuffer offset:0 atIndex:6];
+			[encoder setBytes:&params length:sizeof( params ) atIndex:7];
 			[encoder dispatchThreads:MTLSizeMake( (NSUInteger)stepContext->wideContactCount, 1, 1 )
 				threadsPerThreadgroup:MTLSizeMake( prepareWidth, 1, 1 )];
 			[encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];

@@ -216,16 +216,21 @@ That complete-coverage gate now drives a Metal contact-preparation kernel at the
 front of the existing solver command buffer. CPU workers skip
 `b3PrepareContacts_Convex`; instead, the kernel reads normal and identity from
 the private contact-id table and writes the existing 1,696-byte SIMD-wide
-constraint ABI. A 144-byte shared input per contact lane still carries CPU-owned
-persistence anchors, warm-start impulses, materials, tangent velocity, body
-indices, and manifold storage identity. It computes Erin's tangent frame,
+constraint ABI. CPU-owned persistence anchors, warm-start impulses, materials,
+tangent velocity, body indices, and manifold storage identity are retained in a
+generation-tagged 144-byte shared table indexed by contact ID. Collision workers
+write disjoint records during the existing persistence pass. Solver submission
+then initializes tail lanes and bulk-copies one four-byte contact-ID schedule per
+active color; it does not dereference contacts or repack their metadata. The
+kernel computes Erin's tangent frame,
 softness, effective normal and tangent masses, friction centers, lever arms,
 relative velocities, twist mass, rolling mass, and projected warm-start
 impulses on Metal. A status word validates table authority without staging the
 table. If input packing or a later unsupported constraint rejects the route,
 CPU convex preparation is rerun before the CPU solver fallback. This removes
-CPU preparation arithmetic for supported resident contacts, but the CPU contact
-traversal and 144-byte metadata stream remain the next residency boundary.
+CPU preparation arithmetic plus the dedicated solver-time contact traversal and
+144-byte lane stream. CPU manifold persistence/material work, table writes, the
+graph-color schedule, impulse storage, events, and topology remain.
 
 Broad-phase topology mutation, most narrow-phase shape pairs, contact and joint preparation,
 unsupported joint solution, continuous collision, events, and sleeping/island
@@ -340,6 +345,9 @@ The solver ownership gate is recorded in
 [`benchmarks/m4-pro-resident-solver-ownership-2026-09-02.md`](benchmarks/m4-pro-resident-solver-ownership-2026-09-02.md).
 The first resident convex contact-preparation kernel is recorded in
 [`benchmarks/m4-pro-resident-contact-preparation-2026-09-02.md`](benchmarks/m4-pro-resident-contact-preparation-2026-09-02.md).
+The follow-on contact-ID metadata residency and four-byte lane schedule are
+recorded in
+[`benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md`](benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md).
 Private shape results and selective synchronization are recorded in
 [`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 Persistent shape-input reuse is recorded in

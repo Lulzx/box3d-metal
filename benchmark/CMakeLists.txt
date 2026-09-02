@@ -35,6 +35,10 @@ if(APPLE AND BOX3D_METAL)
 	set_target_properties(metal_contact_benchmark PROPERTIES C_STANDARD 17)
 	target_link_libraries(metal_contact_benchmark PRIVATE box3d)
 
+	add_executable(metal_resident_contact_benchmark metal_resident_contacts.c)
+	set_target_properties(metal_resident_contact_benchmark PROPERTIES C_STANDARD 17)
+	target_link_libraries(metal_resident_contact_benchmark PRIVATE box3d)
+
 	add_executable(metal_mesh_benchmark metal_mesh_contacts.c)
 	set_target_properties(metal_mesh_benchmark PROPERTIES C_STANDARD 17)
 	target_link_libraries(metal_mesh_benchmark PRIVATE box3d)
