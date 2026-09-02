@@ -7,12 +7,15 @@
   phase remain.
 - Manifold and constraint preparation remain CPU-side.
 - Body and awake-shape finalization have an experimental Metal path, but the CPU
-  still consumes flat shape results and owns tree mutation, sleeping/island
+  still owns topology mutation, sleeping/island
   mutation, events, and CCD. Successful resident refits now use a stable
   enlarged-only GPU stream and bypass the full-result rescan, CPU enlarged-body
   reduction, and body/shape-list traversal during proxy bookkeeping. Prior
-  Metal fat bounds are authoritative across revision-stable steps, but the full
-  result is still CPU-applied for downstream consumers.
+  Metal fat bounds are authoritative across revision-stable steps. The full
+  64-byte result is private; a bounded collision-free, non-CCD route avoids its
+  blit/apply and selectively synchronizes public queries or route changes.
+- Shape geometry, ids, filters, and proxy keys are still packed by walking awake
+  body shape lists every step.
 - Only distance and parallel joints stay in the GPU-resident constraint graph.
 - Constraint joint records are packed/unpacked each step.
 - Body state crosses the CPU/GPU ownership boundary once per world step.
@@ -21,10 +24,8 @@
 
 ## Evidence-led next stages
 
-1. Make the full shape result private and replace its unconditional CPU apply
-   with selective synchronization for queries, mesh contacts, sensors, CCD,
-   fallback, and mutations. Resident containment, leaf update, internal refit,
-   stable prefixing, and compaction are already on-device.
+1. Replace per-step `b3MetalPackShapeInputs` body/shape-list traversal with a
+   persistent shape registry updated by topology and geometry mutators.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,

@@ -102,9 +102,12 @@ counters are route evidence, not a whole-engine GPU percentage.
 offset, farthest-point motion and sleep metrics, world-space inverse inertia,
 and awake non-CCD shape AABBs. Supported fused solver paths append both kernels
 to their existing command buffer. VF64 preserves double-precision outward
-rounding on Metal. CCD, events, island sleep mutation, and public shape
-bookkeeping remain on the CPU. The stage is separately opt-in because consuming one flat
-64-byte result per shape is currently slower end to end.
+rounding on Metal. The 64-byte shape result uses private storage. A bounded
+route—continuous collision disabled, no sensors or existing contacts, and all
+awake shape contact masks disabled—encodes no full-result blit or CPU apply.
+Public AABB queries stage one record on demand; route changes and disable perform
+checked bulk synchronization. CCD, events, island sleep mutation, and general
+collision consumers remain on the CPU.
 
 ## Experimental pair traversal boundary
 
@@ -115,15 +118,16 @@ candidate volume, allocation, or dispatch failure reruns the complete CPU
 traversal. The steady path counts, scans, and writes in one command buffer. If
 the exact total exceeds the geometrically retained candidate capacity, the
 first call grows the buffer and submits one write-only retry. Supported moving
-worlds reuse the resident topology; raw candidates still return to the CPU. It
-Each per-move record now carries the resident query leaf's shape id and fat
+worlds reuse the resident topology; raw candidates still return to the CPU.
+Each per-move record carries the resident query leaf's shape id and fat
 AABB, so CPU filtering no longer dereferences the CPU tree for query metadata.
 After a successful device refit, a 256-lane hierarchical scan stably compacts
 one 32-byte record per enlarged shape. Proxy bookkeeping consumes only that
 deterministic subset, skipping the full-result rescan, enlarged-body bit-set
-merge, and second body/shape-list walk. The CPU still applies the complete
-64-byte result in parallel for public AABBs and fallback safety, so this remains
-a measured step toward residency, not yet a device-resident broad phase.
+merge, and second body/shape-list walk. Compatibility routes still stage and
+apply the complete result; the bounded resident route defers CPU materialization.
+Per-step shape geometry/input packing still walks awake body shape lists, so this
+is not yet a device-resident broad phase.
 
 On an unchanged subsequent step, shape finalization reads the previous Metal
 fat bounds as its containment oracle. Double builds therefore retain the
@@ -131,3 +135,5 @@ conservative VF64 result across steps rather than repacking a rounded CPU
 mirror. Reuse requires an identical shape count and broad-phase revision;
 buffer growth, topology changes, explicit moves, and rebuilds force a CPU-oracle
 reseed. `shapeBoundsResidentDispatchCount` reports successful resident reuse.
+`shapeResultApplyCount` and `shapeBoundsSyncCount` distinguish compatibility
+applies from selective synchronization.

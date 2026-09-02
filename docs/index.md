@@ -45,6 +45,7 @@ for review.
 - [GPU pair generation](benchmarks/m4-pro-pair-generation-2026-09-02.md)
 - [On-device pair compaction](benchmarks/m4-pro-pair-prefix-2026-09-02.md)
 - [Enlarged-shape compaction](benchmarks/m4-pro-shape-compaction-2026-09-02.md)
+- [Private shape results](benchmarks/m4-pro-private-shape-results-2026-09-02.md)
 
 ## Repository map
 

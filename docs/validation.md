@@ -26,6 +26,13 @@ Direct primitive tests separately cover packed state and integration kernels.
 - The same sparse world poisons all 512 moving CPU fat-AABB mirrors between
   steps and still emits the exact resident compact stream. A subsequent public
   body transform changes the tree revision and prevents stale resident reuse.
+- Three sparse resident dispatches perform zero full shape-result applies. A
+  deliberately corrupted CPU AABB is repaired by one selective 64-byte query
+  readback, and disabling Metal synchronizes the remaining current generation.
+- The 2,048-shape mixed world performs zero full applies and synchronizes exactly
+  2,048 records through one body query plus the existing shape-query oracle.
+- The ten-step contact world remains on the compatibility route and records ten
+  full shape-result applies with zero selective synchronizations.
 - A ten-step contact world records one initial tree upload and ten device refits.
 - At `(+1e8, -1e8)`, every VF64 AABB contains a fresh CPU oracle AABB computed
   from the same Metal-world transform; maximum inward error is zero.
@@ -80,6 +87,10 @@ The completed acceptance matrix includes:
 - shared-library build and public demo runtime;
 - CMake install audit including headers, dylib, and package configuration;
 - `git diff --check`.
+
+The private-result checkpoint reran the full CPU-only suite and focused float
+and double warning-as-error Metal suites after its final source guard fix. The
+full sanitizer and Metal matrices had already passed the same implementation.
 
 ## What the tests do not prove
 

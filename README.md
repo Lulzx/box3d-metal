@@ -22,9 +22,11 @@ Double-precision worlds use VF64 exact software binary64 translation and
 directed float narrowing for conservative far-world AABBs. On unchanged
 resident steps, the prior Metal fat bounds—not the CPU mirror—are the next
 dispatch's containment input; tree revisions fail closed to a CPU reseed.
-Both stages remain
-off by default while the CPU still owns topology and consumes shared result
-streams.
+The full 64-byte shape result now stays in private Metal storage. A bounded
+collision-free, non-CCD route avoids its full blit and CPU apply; public AABB
+queries stage individual records, while route changes synchronize explicitly.
+Both stages remain off by default while CPU topology and per-step shape-input
+packing are still in the path.
 
 ## Quick start
 
@@ -77,6 +79,8 @@ The tree-traversal speedup is historical evidence for the earlier CPU-prefix
 implementation. The current on-device scan has exact-order validation, but no
 new whole-world timing is published from the loaded development machine. The
 resident-refit and VF64 checkpoint likewise publishes correctness evidence only.
+The private-result/selective-sync checkpoint also publishes correctness evidence
+only because the development host was loaded.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.
