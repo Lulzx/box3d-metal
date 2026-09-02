@@ -48,6 +48,9 @@ body indices and transient fast flags come from the per-step body registry.
 A zero-exception dispatch also skips capacity-linear contact-state bitset
 clears, worker unions, and the serial state-change traversal; any later CPU
 exception or fallback clears before collision workers write.
+The solver likewise defers its contact-capacity hit-event bitset clears when
+the current resident compact event list is empty, restoring them before an
+event-enabled path or Metal fallback.
 Full 160-byte outputs stay in private Metal storage; a deterministic
 scan/prefix/scatter pass returns only ordered CPU exceptions in the same command
 buffer. Stable resident contacts finalize directly into the private contact-ID
@@ -217,6 +220,10 @@ The contact-state follow-on then removes the remaining bitset clear/union and
 serial state traversal on zero-exception steps. Loaded-host 512 and 8,192
 contact runs cleared state only for their seed phase and reported zero latest
 clear bytes; timing remains withheld at host load near 8.
+The empty-event solver follow-on skips all per-worker contact-sized hit-bitset
+clears: 512 and 8,192-contact runs bypassed all 48 and 28 resident solver
+phases respectively, while hit-enabled and forced-fallback tests restored the
+clear before CPU work.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

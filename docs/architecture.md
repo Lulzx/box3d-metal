@@ -248,6 +248,15 @@ fallback clears all worker bitsets to the current contact-ID capacity before
 dispatching CPU collision work. Diagnostic manifold and SAT counters are reset
 and aggregated independently of the bitsets.
 
+Solver hit-event scratch follows the same rule. Before worker launch, the
+current narrow-phase compact event-ID count is known independently of the prior
+post-solve table. A complete resident convex set with no mesh/overflow contacts
+and an empty event list defers all contact-capacity hit-event bitset clears.
+Successful Metal solve/store leaves stale bits unreachable because no worker
+can set `hasHitEvents`. An event-enabled contact clears normally; if the Metal
+solver rejects after deferral, the orchestrator clears every worker bitset
+before advancing any CPU store stage.
+
 That gate drives a Metal preparation kernel at the front of the existing solver
 command buffer. It reads normal and identity from the private contact-id table
 and writes the established 1,696-byte SIMD-wide constraint ABI. GPU-finalized

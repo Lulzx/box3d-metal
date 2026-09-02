@@ -54,8 +54,8 @@ exception list assembled during narrow-phase packing.
 
 1. Run a quiet-host whole-world matrix now that stable contact-ID gathering,
    input rewriting, shared manifold output, CPU collision, solver coverage, and
-   contact-state bitset walks are removed; use the profile to select the next
-   residency boundary.
+   contact-state walks, and empty-event solver bitset clears are removed; use
+   the profile to select the next residency boundary.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,

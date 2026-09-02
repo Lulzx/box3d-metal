@@ -143,6 +143,13 @@ Metal collision phases at 512 contacts and 27 across 28 at 8,192 contacts. Both
 latest phases cleared zero state bytes and emitted zero exceptions. The same
 loaded-host timing exclusion applies.
 
+The empty-event solver checkpoint uses the current compact resident event-ID
+count to defer all per-worker contact-capacity hit-bitset clears. The 512 and
+8,192-contact harness rows bypassed all 48 and 28 resident solver clears and
+reported zero latest hit-bitset bytes. Hit-enabled and forced Metal-fallback
+fixtures restored a nonzero clear before CPU store work. Timing remains
+excluded under load averages ranging from roughly 6 to 23.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.

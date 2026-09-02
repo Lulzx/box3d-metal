@@ -237,6 +237,13 @@ double/VF64 UBSan. Stable phases preserved CPU-oracle SAT/cache and manifold
 diagnostics; hit, first-touch, and fast-body exceptions restored a nonzero
 bitset clear before CPU collision work.
 
+The hit-event bitset residency checkpoint reran the complete non-Metal Release,
+float Metal debug, AddressSanitizer, and UndefinedBehaviorSanitizer suites.
+Focused float and double/VF64 warning-as-error suites passed, as did focused
+double/VF64 UBSan. The event-enabled fixture cleared before setting its bit and
+matched the CPU hit; the unsupported-joint fixture cleared after Metal solver
+rejection and before CPU store fallback.
+
 ## What the tests do not prove
 
 They do not prove bit-identical determinism, all future upstream revisions,

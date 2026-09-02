@@ -68,6 +68,7 @@ for review.
 - [Contact exception compaction](benchmarks/m4-pro-contact-exception-compaction-2026-09-02.md)
 - [Resident contact input/order registry](benchmarks/m4-pro-contact-input-residency-2026-09-02.md)
 - [Contact-state traversal bypass](benchmarks/m4-pro-contact-state-traversal-bypass-2026-09-02.md)
+- [Hit-event bitset residency](benchmarks/m4-pro-hit-event-bitset-residency-2026-09-02.md)
 
 ## Repository map
 
