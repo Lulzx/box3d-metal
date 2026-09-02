@@ -108,6 +108,11 @@ Direct primitive tests separately cover packed state and integration kernels.
   poisons every CPU-mirror warm-start term. The next fresh supported step
   restores GPU-authored state and ends at `4.47e-08` velocity error with one
   schedule pack and one reuse.
+- Four stable 81-contact steps report four all-contact store bypasses and zero
+  event/public synchronizations. The hit-event oracle reports one bypass and
+  exactly one exception sync. Contact, body, and shape data APIs plus recording
+  snapshot capture independently restore a poisoned CPU mirror; a CPU fallback
+  exposes no stale resident result.
 
 ## Recorded error maxima
 

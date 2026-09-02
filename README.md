@@ -63,10 +63,13 @@ SIMD lane and no longer dereferences contacts to repack those records. Mixed,
 recycled, callback, overflow, and unsupported routes fail closed, including
 explicit CPU prepare-on-fallback recovery.
 After restitution, Metal extracts one 80-byte impulse record per active contact
-into a generation-tagged contact-ID table. CPU public-manifold and hit-event
-synchronization keeps upstream order while consuming that compact table instead
-of the 1,696-byte SIMD-wide records. Invalid and unsupported routes retain the
-original CPU store path.
+into a generation-tagged contact-ID table. Successful resident steps bypass the
+all-contact CPU impulse-store traversal. Hit-enabled contact IDs are compacted
+during the existing narrow-phase input pack and only those exceptions
+synchronize before ordered event construction. Contact, body, and shape queries
+synchronize requested manifolds on demand; force debug drawing and snapshots
+are explicit boundaries. Invalid and unsupported routes retain the original
+store path, and CPU fallback invalidates prior GPU result authority.
 The constraint graph carries a monotonic topology/order revision. The four-byte
 contact-ID lane schedule remains in its Metal buffer while that revision and its
 exact wide/contact counts are unchanged; contact or joint insertion/removal
@@ -165,6 +168,9 @@ topology changes.
 The warm-start-carry checkpoint then proves that a deliberately stale CPU
 manifold is repaired from the resident result by contact generation and feature
 ID, ending one-step CPU/GPU comparison at `4.47e-08` velocity error.
+The lazy-sync checkpoint then removes the all-contact CPU store: four stable
+81-contact steps perform four bypasses and zero manifold syncs, while the hit
+event fixture synchronizes exactly one exception contact.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

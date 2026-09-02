@@ -98,6 +98,13 @@ manifold mirror between steps; resident carry recovers the correct terms and
 finishes at `4.47e-08` linear-velocity error with one schedule pack and one
 reuse. This is correctness and ownership evidence, not a loaded-host speedup.
 
+The lazy-sync checkpoint bypasses the all-contact CPU store after a successful
+resident solve. Four stable 81-contact steps perform four bypasses and zero
+event/public synchronizations; the hit-event differential performs one bypass
+and exactly one exception sync. A loaded-host 512-contact smoke records ten
+bypasses and zero syncs across ten dispatches. Its wall-clock timing is not
+accepted as performance evidence.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.

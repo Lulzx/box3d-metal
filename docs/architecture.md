@@ -21,7 +21,7 @@ For a supported constrained world, one command buffer performs:
 8. Compact resident-convex impulse extraction by contact ID.
 9. Optionally, body and awake-shape finalization using the resident solver state.
 10. Optional resident tree-leaf updates plus deterministic internal refit.
-11. One synchronization followed by CPU public-manifold/event synchronization and topology work.
+11. One synchronization followed by compact hit-event exceptions, lazy public-manifold sync, and topology work.
 
 Pair generation is currently a separate experimental command sequence. Metal
 retains the existing three dynamic-tree node arrays, counts candidates per moved
@@ -248,9 +248,8 @@ CPU solver fallback. CPU persistence/material table writes, graph scheduling,
 events, and topology remain the next residency boundary. After restitution, a
 kernel in the same command buffer writes world-axis friction, twist, rolling,
 point normal/total impulses, and pre-solve normal velocity into a
-generation-tagged 80-byte table indexed by contact ID. CPU storage preserves
-public manifold and hit-event semantics in graph order while reading that
-compact table. Identity, result generation, contact generation, and point count are validated;
+generation-tagged 80-byte table indexed by contact ID. Identity, result
+generation, contact generation, and point count are validated;
 release fallback can still consume the wide records.
 The schedule buffer is reused when graph revision and exact wide/contact counts
 match. Restitution eligibility remains current step state and is not cached.
@@ -260,3 +259,12 @@ points recover normal impulses from that GPU-authored result; friction, twist,
 and rolling terms recover at manifold scope. This makes solver warm starts
 independent of freshness in the CPU public-manifold mirror while rejecting
 destroyed/recreated contact slots.
+Successful resident solves skip the all-contact CPU impulse-store walk. During
+the already-required narrow-phase input pack, Box3D retains only IDs whose
+shapes requested hit events. One store block processes that compact exception
+list, synchronizes qualifying contacts by generation and feature ID, and sets
+the existing event bits; final construction therefore keeps contact-ID order.
+With no hit requests, the stage touches no contacts. Public contact/body/shape
+queries sync requested records, while force debug drawing and snapshots are
+explicit boundaries. CPU routes invalidate older GPU result authority before
+fallback.

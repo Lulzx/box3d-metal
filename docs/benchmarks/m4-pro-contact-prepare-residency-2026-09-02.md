@@ -45,8 +45,8 @@ published as performance evidence.
 
 No whole-world timing is claimed from the loaded development host. Follow-on
 checkpoints now extract compact impulses, retain the graph schedule, and carry
-warm-start state by feature ID. A quiet-host comparison and lazy/compact CPU
-public-manifold synchronization remain next.
+warm-start state by feature ID. The lazy-sync follow-on also removes the
+all-contact CPU store traversal. A quiet-host comparison remains next.
 
 The reproducible whole-world harness is
 `metal_resident_contact_benchmark`. It creates independent sphere contacts,

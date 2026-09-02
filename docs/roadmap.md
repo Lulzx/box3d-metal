@@ -21,11 +21,12 @@
   pre-solve callbacks, mixed/recycled sets, and convex overflow remain CPU-side.
   Post-persistence records are retained in a generation-tagged contact-ID table,
   reducing solver submission to a four-byte lane schedule. Metal also extracts
-  an 80-byte post-solve record per active contact; CPU public-manifold and event
-  synchronization consumes those contact-ID records instead of wide solver
-  constraints. The contact-ID lane schedule remains resident across unchanged
-  graph revisions and exact counts. CPU persistence, graph construction,
-  events, and topology remain.
+  an 80-byte post-solve record per active contact. Successful resident steps
+  bypass the all-contact CPU store; compact hit-enabled exceptions and explicit
+  public/debug/snapshot consumers synchronize individual records. The
+  contact-ID lane schedule remains resident across unchanged graph revisions
+  and exact counts. CPU persistence, graph construction, final event ordering,
+  and topology remain.
 - Body and awake-shape finalization have an experimental Metal path, but the CPU
   still owns topology mutation, sleeping/island
   mutation, events, and CCD. Successful resident refits now use a stable
@@ -46,12 +47,11 @@
 ## Evidence-led next stages
 
 Resident contact results now carry warm starts by contact generation and feature
-ID, so supported solver correctness no longer requires a fresh CPU public
-manifold after every step.
+ID. Public-manifold synchronization is lazy, and hit events use a compact
+exception list assembled during narrow-phase packing.
 
-1. Make public-manifold/event synchronization lazy or exception-only. Move
-   supported persistence fully on-device while returning only compact callback,
-   event, topology, and unsupported-geometry exceptions.
+1. Move supported persistence fully on-device while returning only compact
+   callback, topology, and unsupported-geometry exceptions.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,

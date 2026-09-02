@@ -15,10 +15,9 @@ the new preparation record is staged. Contact ID alone is insufficient:
 generation matching prevents a destroyed/recreated contact slot from inheriting
 stale solver state.
 
-CPU manifold persistence and public impulse synchronization still execute at
-this checkpoint. Resident carry means solver correctness no longer depends on
-that public CPU mirror being current, which is required before the bulk
-post-solve storage traversal can become lazy or exception-only.
+CPU manifold persistence still executes at this checkpoint. The follow-on lazy
+sync checkpoint uses this resident carry to remove unconditional public impulse
+synchronization and make hit events compact exceptions.
 
 ## Evidence
 

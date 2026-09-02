@@ -61,6 +61,7 @@ for review.
 - [Contact-impulse result residency](benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md)
 - [Resident contact schedule](benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md)
 - [Resident warm-start carry](benchmarks/m4-pro-resident-warm-start-2026-09-02.md)
+- [Lazy contact-impulse synchronization](benchmarks/m4-pro-lazy-contact-impulse-sync-2026-09-02.md)
 
 ## Repository map
 

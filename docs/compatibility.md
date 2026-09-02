@@ -23,7 +23,7 @@ evaluation order differs.
 | Supported contact/joint overflow | Serial GPU execution in deterministic upstream order |
 | Mixed distance/parallel colors and overflow | Supported with type-dense buffers and ordered descriptors |
 | Resident convex contact preparation | Complete colored sets prepared from the private contact-id table; CPU recovery on later solver fallback |
-| Resident convex impulse extraction | 80-byte contact-ID results after restitution; CPU public-manifold and hit-event synchronization remains ordered |
+| Resident convex impulse extraction | 80-byte contact-ID results after restitution; all-contact CPU store bypassed, with lazy public sync and compact ordered hit-event exceptions |
 | Resident contact schedule | Reused across exact stable graph revisions/counts; contact or joint graph mutation repacks in upstream color order |
 | Resident warm-start carry | Contact generation plus feature IDs restore GPU-authored normal/friction/twist/rolling impulses on the next fresh supported collision pass |
 | Experimental broad phase | Resident leaf update/refit plus built-in filtered candidates in exact CPU visitation order |
@@ -39,7 +39,7 @@ The following remain CPU work:
   manifold state application; per-contact eligibility/id validation and ordered
   manifold-result consumption;
 - mesh, joint, callback, mixed/recycled convex, and convex-overflow preparation;
-- public-manifold synchronization and event construction, islands, sleeping, and CCD;
+- explicit public/debug/snapshot manifold synchronization, final event construction, islands, sleeping, and CCD;
 - recording, queries, topology mutation, and public API calls;
 - filter, motor, prismatic, revolute, spherical, weld, and wheel joint solving;
 - any joint requesting force/torque threshold events.
@@ -60,9 +60,9 @@ can therefore cover contacts originating from both accelerated convex pairs and
 Box3D's CPU convex/mesh/height-field collision paths. Collision detection is
 partially accelerated only for the experimental narrow-phase pairs listed above.
 Complete resident convex sets also write compact post-solve impulses by contact
-ID. CPU storage resolves the authoritative manifold from the contact and reads
-the compact table rather than the SIMD-wide constraints. Unsupported routes
-retain upstream CPU storage.
+ID and bypass upstream all-contact storage. A compact hit-enabled ID list feeds
+event exceptions; public APIs synchronize individual requested records.
+Unsupported routes retain upstream CPU storage.
 Fresh supported persistence also consumes the prior compact result as warm-start
 state. Contact generation rejects reused slots, and point feature IDs preserve
 normal impulses across manifold point reordering. Recycling routes remain

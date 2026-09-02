@@ -14,6 +14,10 @@ table rather than traversing the complete 1,696-byte SIMD-wide solver records.
 Identity, generation, point count, and flags are validated. Unsupported routes
 and release-mode validation failure retain the original CPU store path.
 
+This describes the original extraction checkpoint. The lazy-sync follow-on now
+bypasses the all-contact CPU store for successful resident solves, synchronizes
+public queries on demand, and visits only compact hit-event exceptions.
+
 ## Evidence
 
 The 81-contact sphere/capsule differential fixture writes 6,480 compact bytes.
@@ -30,6 +34,6 @@ gates pass.
 
 No loaded-host whole-world speedup is claimed. The resident-contact benchmark
 now reports compact and former-wide impulse bytes so the next quiet-host run can
-measure whether the smaller CPU cache stream changes end-to-end time.
-The follow-on schedule checkpoint retains the contact-ID lanes across unchanged
-graph revisions, so repeated steps no longer recopy them.
+measure whether eliminating the CPU cache walk changes end-to-end time.
+Follow-on checkpoints retain contact-ID lanes across unchanged graph revisions,
+carry warm starts from resident results, and make public synchronization lazy.
