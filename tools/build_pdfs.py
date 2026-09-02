@@ -284,13 +284,10 @@ def architecture_story():
         p("Deterministic overflow", "h2"),
         p("Overflow constraints may share bodies. A single Metal thread walks them in upstream order. Mixed distance/parallel overflow uses an eight-byte type/index descriptor, preserving order with one launch per phase."),
         p("Experimental pair traversal", "h2"),
-        p("Metal retains Box3D tree topology, updates enlarged leaves, refits parents by height, and compacts candidates in exact upstream order. Topology changes invalidate residency; CPU filters and contact creation remain unchanged."),
+        p("Metal retains Box3D tree topology, updates enlarged leaves, refits parents by height, and compacts candidates in exact upstream order. Pair records carry resident query shape and fat-AABB metadata, avoiding CPU-tree reads during filtering. Successful refits consume enlarged results in packed order without a second body/shape-list walk. Topology changes invalidate residency; CPU filters and contact creation remain unchanged."),
         p("Apple GPU implementation choices", "h1"),
         *bullets([
-            "One command buffer per solver step amortizes submission and synchronization.",
-            "Persistent shared storage avoids redundant contact copies; pipeline-derived group widths follow device occupancy.",
-            "Conflict-free colors avoid atomics, while body-sharing overflow stays serial and ordered.",
-            "Safe Metal math reduces avoidable drift from the CPU oracle.",
+            "One command buffer amortizes submission; shared storage avoids redundant copies; device-derived group widths follow occupancy; conflict-free colors avoid atomics while body-sharing overflow stays serial.",
         ]),
     ]
 

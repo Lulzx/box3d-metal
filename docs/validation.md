@@ -15,7 +15,7 @@ Direct primitive tests separately cover packed state and integration kernels.
 - Integrated unconstrained worlds with 2,048 moving sphere, capsule, and hull AABBs.
 - Exact raw pair traversal and three-block hierarchical scan over 607 mixed body
   types and 8,081 candidates, including per-move count, offset, order, proxy id,
-  tree type, and shape id.
+  tree type, shape id, query shape id, and all six query fat-AABB bounds.
 - Capacity growth requires one safe write retry; the same steady route then
   completes in one command buffer.
 - A moving 2,048-body world reuses its resident tree with zero repeat uploads;

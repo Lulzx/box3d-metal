@@ -1726,10 +1726,10 @@ index 0000000..21b7859
 +```
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000..e4d1bd7
+index 0000000..098b549
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,197 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -1829,6 +1829,12 @@ index 0000000..e4d1bd7
 +scan computes stable per-move offsets: SIMD subgroups scan each block, a short
 +serial kernel prefixes block totals, and a parallel add applies block offsets.
 +A final traversal writes disjoint candidate ranges in the same command buffer.
++Each per-move record also carries the resident leaf's shape id and fat AABB, so
++the CPU filtering callback does not dereference the CPU dynamic tree for query
++metadata. When device leaf update and refit succeed, CPU proxy bookkeeping
++consumes enlarged flat results directly in their deterministic packed order;
++it skips the enlarged-body bit-set reduction and the second body/shape-list
++walk. The CPU tree is still enlarged for public queries and fallback safety.
 +The first unexpectedly dense call may submit one write-only retry after growing
 +the persistent candidate buffer; the steady path submits and waits once. CPU
 +consumption then reuses the complete upstream callback for moved-proxy
@@ -1853,7 +1859,7 @@ index 0000000..e4d1bd7
 +| Distance joints, including spring, limit, and motor modes | GPU-resident across all substeps |
 +| Parallel joints | GPU-resident across all substeps |
 +| Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
-+| Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; CPU topology mutation, filtering, and contact creation |
++| Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
 +| Narrow phase and manifolds | CPU |
 +| Contact preparation and impulse storage | CPU |
 +| Body and awake-shape finalization | Experimental Metal kernels; resident bounds feed tree refit while CPU still applies flat bookkeeping results and retains CCD/topology |
@@ -2058,7 +2064,7 @@ index 941c6fb..f4a6813 100644
  	message(STATUS "Box3D on Emscripten")
  	# SSE2/wasm SIMD flags are set directory-wide in the top-level CMakeLists so the
 diff --git a/src/broad_phase.c b/src/broad_phase.c
-index a369ca6..39f6de2 100644
+index a369ca6..88cc110 100644
 --- a/src/broad_phase.c
 +++ b/src/broad_phase.c
 @@ -12,9 +12,21 @@
@@ -2157,15 +2163,15 @@ index a369ca6..39f6de2 100644
 +		queryContext.moveResult->pairList = NULL;
 +
 +		int queryProxyKey = bp->moveArray.data[i];
-+		b3BodyType queryType = B3_PROXY_TYPE( queryProxyKey );
-+		int queryProxyId = B3_PROXY_ID( queryProxyKey );
-+		const b3DynamicTree* queryTree = bp->trees + queryType;
 +		queryContext.queryProxyKey = queryProxyKey;
-+		queryContext.queryShapeIndex = (int)b3DynamicTree_GetUserData( queryTree, queryProxyId );
-+		queryContext.aabb = b3DynamicTree_GetAABB( queryTree, queryProxyId );
++		const b3MetalPairQueryRecord* record = metalContext->records + i;
++		queryContext.queryShapeIndex = record->queryShapeIndex;
++		queryContext.aabb = (b3AABB){
++			{ record->lowerX, record->lowerY, record->lowerZ },
++			{ record->upperX, record->upperY, record->upperZ },
++		};
 +		B3_VALIDATE( world->shapes.data[queryContext.queryShapeIndex].type != b3_compoundShape );
 +
-+		const b3MetalPairQueryRecord* record = metalContext->records + i;
 +		for ( uint32_t candidateIndex = 0; candidateIndex < record->count; ++candidateIndex )
 +		{
 +			const b3MetalPairCandidate* candidate = metalContext->candidates + record->offset + candidateIndex;
@@ -2490,10 +2496,10 @@ index d85f233..ffa6859 100644
  int b3GetWideContactConstraintByteCount( void );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000..3838b80
+index 0000000..0d44142
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,105 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2517,7 +2523,9 @@ index 0000000..3838b80
 +	uint32_t count;
 +	uint32_t offset;
 +	uint32_t flags;
-+	uint32_t padding;
++	int queryShapeIndex;
++	float lowerX, lowerY, lowerZ;
++	float upperX, upperY, upperZ;
 +} b3MetalPairQueryRecord;
 +
 +typedef struct b3MetalPairCandidate
@@ -2599,10 +2607,10 @@ index 0000000..3838b80
 +void b3MetalCommitPairTreeRefit( b3MetalContext* context, const b3BroadPhase* broadPhase );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000..6227071
+index 0000000..a188adf
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,2950 @@
+@@ -0,0 +1,2952 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -2777,7 +2785,7 @@ index 0000000..6227071
 +_Static_assert( offsetof( b3TreeNode, children ) == 32, "Metal tree-node ABI changed" );
 +_Static_assert( offsetof( b3TreeNode, parent ) == 40, "Metal tree-node ABI changed" );
 +_Static_assert( offsetof( b3TreeNode, flags ) == 46, "Metal tree-node ABI changed" );
-+_Static_assert( sizeof( b3MetalPairQueryRecord ) == 16, "Metal pair-record ABI changed" );
++_Static_assert( sizeof( b3MetalPairQueryRecord ) == 40, "Metal pair-record ABI changed" );
 +_Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI changed" );
 +_Static_assert( sizeof( b3MetalPairSummary ) == 16, "Metal pair-summary ABI changed" );
 +_Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
@@ -2910,7 +2918,7 @@ index 0000000..6227071
 +	"struct TreeNode {\n"
 +	"  float lx,ly,lz,ux,uy,uz; ulong categoryBits; uint child1,child2; int parent; ushort height,flags;\n"
 +	"};\n"
-+	"struct PairQueryRecord { uint count,offset,flags,padding; };\n"
++	"struct PairQueryRecord { uint count,offset,flags; int queryShapeIndex; float lx,ly,lz,ux,uy,uz; };\n"
 +	"struct PairCandidate { int proxyId,treeType,shapeIndex,padding; };\n"
 +	"struct PairSummary { ulong totalCount; uint flags,writeFlags; };\n"
 +	"struct PairBlock { uint sum,flags,offset,padding; };\n"
@@ -3220,6 +3228,8 @@ index 0000000..6227071
 +	"  uint queryOffset=queryType==0?p.offset0:(queryType==1?p.offset1:p.offset2);\n"
 +	"  TreeNode q=nodes[queryOffset+uint(proxyId)];float3 lo=float3(q.lx,q.ly,q.lz),hi=float3(q.ux,q.uy,q.uz);\n"
 +	"  PairQueryRecord record=records[i];uint count=0u,flags=0u;thread int stack[64];\n"
++	"  record.queryShapeIndex=int(q.child1);record.lx=q.lx;record.ly=q.ly;record.lz=q.lz;\n"
++	"  record.ux=q.ux;record.uy=q.uy;record.uz=q.uz;\n"
 +	"  if(queryType==2) {\n"
 +	"    query_pair_tree(nodes,p.root1,p.offset1,1,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
 +	"    query_pair_tree(nodes,p.root0,p.offset0,0,lo,hi,candidates,record.offset,record.count,p.writeCandidates,stack,count,flags);\n"
@@ -6903,7 +6913,7 @@ index 8bd3df8..e378548 100644
  }
 -
 diff --git a/src/solver.c b/src/solver.c
-index d8aace0..9d61dce 100644
+index d8aace0..35e52de 100644
 --- a/src/solver.c
 +++ b/src/solver.c
 @@ -19,6 +19,9 @@
@@ -7599,21 +7609,115 @@ index d8aace0..9d61dce 100644
  
  		world->profile.transforms = b3GetMilliseconds( transformTicks );
  		b3TracyCZoneEnd( update_transforms );
-@@ -2083,7 +2485,12 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2083,25 +2485,48 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  			world->activeTaskCount -= 1;
  		}
  
 -		b3ValidateNoEnlarged( &world->broadPhase );
+-
+-		// Gather bits for all sim bodies that have enlarged AABBs
+-		b3BitSet* enlargedBodyBitSet = &world->taskContexts.data[0].enlargedSimBitSet;
+-		for ( int i = 1; i < world->workerCount; ++i )
 +#if defined( BOX3D_METAL )
 +		if ( world->metalBroadPhaseEnabled == false )
 +#endif
-+		{
+ 		{
+-			b3InPlaceUnion( enlargedBodyBitSet, &world->taskContexts.data[i].enlargedSimBitSet );
 +			b3ValidateNoEnlarged( &world->broadPhase );
-+		}
+ 		}
  
- 		// Gather bits for all sim bodies that have enlarged AABBs
- 		b3BitSet* enlargedBodyBitSet = &world->taskContexts.data[0].enlargedSimBitSet;
-@@ -2178,7 +2585,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+-		// Enlarge broad-phase proxies and build move array
+-		// Apply shape AABB changes to broad-phase. This also create the move array which must be
+-		// in deterministic order. I'm tracking sim bodies because the number of shape ids can be huge.
+-		// This has to happen before bullets are processed.
++		// Enlarge broad-phase proxies and build move array. A successful Metal tree refit has no
++		// fast bodies, and its flat shape results are packed in the same deterministic sim/shape
++		// order as the CPU body walk. Consume that order directly so the resident path does not
++		// merge body bit sets and traverse body shape lists a second time.
++#if defined( BOX3D_METAL )
++		if ( stepContext->metalTreeRefit )
+ 		{
++			b3BroadPhase* broadPhase = &world->broadPhase;
++			for ( int resultIndex = 0; resultIndex < stepContext->metalShapeResultCount; ++resultIndex )
++			{
++				const b3MetalShapeAABBResult* result = stepContext->metalShapeResults + resultIndex;
++				if ( result->enlarged != 0 )
++				{
++					b3Shape* shape = world->shapes.data + result->shapeId;
++					B3_ASSERT( shape->flags & b3_enlargedAABB );
++					b3BroadPhase_EnlargeProxy( broadPhase, shape->proxyKey, shape->fatAABB );
++					shape->flags &= ~b3_enlargedAABB;
++				}
++			}
++		}
++		else
++#endif
++		{
++			// Gather bits for all sim bodies that have enlarged AABBs.
++			b3BitSet* enlargedBodyBitSet = &world->taskContexts.data[0].enlargedSimBitSet;
++			for ( int i = 1; i < world->workerCount; ++i )
++			{
++				b3InPlaceUnion( enlargedBodyBitSet, &world->taskContexts.data[i].enlargedSimBitSet );
++			}
++
++			// The fallback path tracks sim bodies because the number of shape ids can be huge.
++			// This must happen before bullets are processed.
+ 			b3BroadPhase* broadPhase = &world->broadPhase;
+ 			uint32_t wordCount = enlargedBodyBitSet->blockCount;
+ 			uint64_t* bits = enlargedBodyBitSet->bits;
+-
+-			// Fast array access is important here
+ 			b3Body* bodyArray = world->bodies.data;
+ 			b3BodySim* bodySimArray = awakeSet->bodySims.data;
+ 			b3Shape* shapeArray = world->shapes.data;
+@@ -2113,24 +2538,15 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+ 				{
+ 					uint32_t ctz = b3CTZ64( word );
+ 					uint32_t bodySimIndex = 64 * k + ctz;
+-
+ 					b3BodySim* bodySim = bodySimArray + bodySimIndex;
+-
+ 					b3Body* body = bodyArray + bodySim->bodyId;
+-
+ 					int shapeId = body->headShapeId;
+ 					if ( ( bodySim->flags & ( b3_isBullet | b3_isFast ) ) == ( b3_isBullet | b3_isFast ) )
+ 					{
+-						// Fast bullet bodies don't have their final AABB yet
+ 						while ( shapeId != B3_NULL_INDEX )
+ 						{
+ 							b3Shape* shape = shapeArray + shapeId;
+-
+-							// Shape is fast. It's aabb will be enlarged in continuous collision.
+-							// Update the move array here for determinism because bullets are processed
+-							// below in non-deterministic order.
+ 							b3BufferMove( broadPhase, shape->proxyKey );
+-
+ 							shapeId = shape->nextShapeId;
+ 						}
+ 					}
+@@ -2139,21 +2555,14 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+ 						while ( shapeId != B3_NULL_INDEX )
+ 						{
+ 							b3Shape* shape = shapeArray + shapeId;
+-
+-							// The AABB may not have been enlarged, despite the body being flagged as enlarged.
+-							// For example, a body with multiple shapes may have not have all shapes enlarged.
+-							// A fast body may have been flagged as enlarged despite having no shapes enlarged.
+ 							if ( shape->flags & b3_enlargedAABB )
+ 							{
+ 								b3BroadPhase_EnlargeProxy( broadPhase, shape->proxyKey, shape->fatAABB );
+ 								shape->flags &= ~b3_enlargedAABB;
+ 							}
+-
+ 							shapeId = shape->nextShapeId;
+ 						}
+ 					}
+-
+-					// Clear the smallest set bit
+ 					word = word & ( word - 1 );
+ 				}
+ 			}
+@@ -2178,7 +2587,6 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  		// Serially enlarge broad-phase proxies for bullet shapes
  		b3BroadPhase* broadPhase = &world->broadPhase;
@@ -7621,7 +7725,7 @@ index d8aace0..9d61dce 100644
  
  		// Fast array access is important here
  		b3Body* bodyArray = world->bodies.data;
-@@ -2219,12 +2625,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2219,12 +2627,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  
  				int proxyKey = shape->proxyKey;
  				int proxyId = B3_PROXY_ID( proxyKey );
@@ -7636,7 +7740,7 @@ index d8aace0..9d61dce 100644
  
  				shapeId = shape->nextShapeId;
  			}
-@@ -2234,6 +2641,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
+@@ -2234,6 +2643,13 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
  		b3TracyCZoneEnd( bullets );
  	}
  
@@ -7760,10 +7864,10 @@ index bd00ecb..93e58e2 100644
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000..8c5e9e7
+index 0000000..385b6ca
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,1605 @@
+@@ -0,0 +1,1621 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -7835,6 +7939,14 @@ index 0000000..8c5e9e7
 +		b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
 +		int proxyId = B3_PROXY_ID( proxyKey );
 +		b3AABB aabb = b3DynamicTree_GetAABB( broadPhase->trees + proxyType, proxyId );
++		ENSURE( records[moveIndex].queryShapeIndex ==
++			(int)b3DynamicTree_GetUserData( broadPhase->trees + proxyType, proxyId ) );
++		ENSURE( records[moveIndex].lowerX == aabb.lowerBound.x );
++		ENSURE( records[moveIndex].lowerY == aabb.lowerBound.y );
++		ENSURE( records[moveIndex].lowerZ == aabb.lowerBound.z );
++		ENSURE( records[moveIndex].upperX == aabb.upperBound.x );
++		ENSURE( records[moveIndex].upperY == aabb.upperBound.y );
++		ENSURE( records[moveIndex].upperZ == aabb.upperBound.z );
 +		capture.count = 0;
 +		if ( proxyType == b3_dynamicBody )
 +		{
@@ -8228,6 +8340,14 @@ index 0000000..8c5e9e7
 +		b3BodyType proxyType = B3_PROXY_TYPE( proxyKey );
 +		int proxyId = B3_PROXY_ID( proxyKey );
 +		b3AABB fatAABB = b3DynamicTree_GetAABB( broadPhase->trees + proxyType, proxyId );
++		ENSURE( gpuRecords[moveIndex].queryShapeIndex ==
++			(int)b3DynamicTree_GetUserData( broadPhase->trees + proxyType, proxyId ) );
++		ENSURE( gpuRecords[moveIndex].lowerX == fatAABB.lowerBound.x );
++		ENSURE( gpuRecords[moveIndex].lowerY == fatAABB.lowerBound.y );
++		ENSURE( gpuRecords[moveIndex].lowerZ == fatAABB.lowerBound.z );
++		ENSURE( gpuRecords[moveIndex].upperX == fatAABB.upperBound.x );
++		ENSURE( gpuRecords[moveIndex].upperY == fatAABB.upperBound.y );
++		ENSURE( gpuRecords[moveIndex].upperZ == fatAABB.upperBound.z );
 +		capture.count = 0;
 +		if ( proxyType == b3_dynamicBody )
 +		{
