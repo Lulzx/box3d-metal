@@ -22,10 +22,10 @@ index e5d603b5e15a38d050450891b3acbb461c0d7e0b..5545d63fe1396d21255442b6d2a8aeec
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..3c79b6a77f72979ae64d50065ed0198e9b6f233d 100644
+index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..c125d96596a33bd519f3d8d9b3a6dd61bea2bc0b 100644
 --- a/README.md
 +++ b/README.md
-@@ -9,6 +9,120 @@ Box3D is a 3D physics engine for games.
+@@ -9,6 +9,124 @@ Box3D is a 3D physics engine for games.
  
  [![Introducing Box3D](https://img.youtube.com/vi/jr_Fzl2XwKU/maxresdefault.jpg)](https://www.youtube.com/watch?v=jr_Fzl2XwKU)
  
@@ -101,6 +101,10 @@ index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..3c79b6a77f72979ae64d50065ed0198e
 +synchronizes public manifolds and constructs hit events in upstream order, but
 +reads these compact records instead of traversing the full 1,696-byte SIMD-wide
 +solver constraints. Invalid or unsupported routes retain the original store path.
++The constraint graph carries a monotonic topology/order revision. The four-byte
++contact-ID lane schedule remains in its Metal buffer while that revision and its
++exact wide/contact counts are unchanged; contact or joint insertion/removal
++invalidates it before the next solver submission.
 +The stages remain off by default;
 +cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 +crosses over only in large measured worlds.
@@ -1004,10 +1008,10 @@ index 0000000000000000000000000000000000000000..9f2dcfab868438c01fd57f3c1dd56b07
 +}
 diff --git a/benchmark/metal_resident_contacts.c b/benchmark/metal_resident_contacts.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c0b4f5731a78abce55ce1b145b1519e603d8cf90
+index 0000000000000000000000000000000000000000..94ca814182dc988a465ecf7f98f168d1aa0e2e1c
 --- /dev/null
 +++ b/benchmark/metal_resident_contacts.c
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,105 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -1083,7 +1087,7 @@ index 0000000000000000000000000000000000000000..c0b4f5731a78abce55ce1b145b1519e6
 +
 +	printf( "# operation=whole_world_resident_sphere_contacts substeps=4 workers=%d timing=wall_clock_step\n",
 +		workerCount );
-+	printf( "contacts,repeats,cpu_ms,gpu_ms,speedup,prepare_dispatches,index_bytes,prior_stream_bytes,impulse_bytes,prior_impulse_bytes\n" );
++	printf( "contacts,repeats,cpu_ms,gpu_ms,speedup,prepare_dispatches,schedule_packs,schedule_reuses,index_bytes,prior_stream_bytes,impulse_bytes,prior_impulse_bytes\n" );
 +	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
 +	{
 +		int contactCount = requestedCount > 0 ? requestedCount : counts[testIndex];
@@ -1103,8 +1107,10 @@ index 0000000000000000000000000000000000000000..c0b4f5731a78abce55ce1b145b1519e6
 +		b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 +		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
 +		uint64_t priorImpulseBytes = (uint64_t)profile.lastResidentConvexConstraintCount * 1696;
-+		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu\n", contactCount, repeats, cpuMs, gpuMs,
++		printf( "%d,%d,%.6f,%.6f,%.3f,%llu,%llu,%llu,%llu,%llu,%llu,%llu\n", contactCount, repeats, cpuMs, gpuMs,
 +			cpuMs / gpuMs, (unsigned long long)profile.contactPrepareDispatchCount,
++			(unsigned long long)profile.contactSchedulePackCount,
++			(unsigned long long)profile.contactScheduleReuseCount,
 +			(unsigned long long)profile.lastContactPrepareIndexBytes, (unsigned long long)priorBytes,
 +			(unsigned long long)profile.lastContactImpulseResultBytes, (unsigned long long)priorImpulseBytes );
 +		b3DestroyWorld( gpuWorld );
@@ -1288,10 +1294,10 @@ index 0000000000000000000000000000000000000000..bb2756a124e56de72533d4dbc8c017eb
 +are still needed to remove both streams.
 diff --git a/docs/benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md b/docs/benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..cb71e9d1278c6791d454aa25938cdc2a8851817a
+index 0000000000000000000000000000000000000000..1a8f1e406a40509f2eaf1181a974f9e53605eea4
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,48 @@
 +# Contact-impulse result residency (2026-09-02)
 +
 +## Scope
@@ -1336,8 +1342,10 @@ index 0000000000000000000000000000000000000000..cb71e9d1278c6791d454aa25938cdc2a
 +equivalent former wide-record traversal, alongside its contact-ID preparation
 +schedule. A future measurement must determine whether the smaller CPU cache
 +stream changes end-to-end time. The next ownership reduction is to retain the
-+graph schedule and make public-manifold/event synchronization lazy or exception
-+only; topology and event ordering remain CPU responsibilities at this checkpoint.
++make public-manifold/event synchronization lazy or exception only; topology and
++event ordering remain CPU responsibilities at this checkpoint. The follow-on
++schedule checkpoint retains the contact-ID lanes across unchanged graph
++revisions, so repeated steps no longer recopy them.
 diff --git a/docs/benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md b/docs/benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md
 new file mode 100644
 index 0000000000000000000000000000000000000000..a896810e7b35ff47e12441c7f9fc601cfea0b66a
@@ -2282,6 +2290,44 @@ index 0000000000000000000000000000000000000000..19b0a6e1f14a1d0c26e59e2a29a3bad0
 +the Apple M4 Pro. Repository-wide CPU and sanitizer gates are recorded with the
 +source checkpoint. Timing was deliberately omitted because the host was not
 +quiet enough for a defensible end-to-end comparison.
+diff --git a/docs/benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md b/docs/benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md
+new file mode 100644
+index 0000000000000000000000000000000000000000..f5b70dc105c96b912ecc1c333303e5927bafe6c0
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md
+@@ -0,0 +1,32 @@
++# Resident contact schedule (2026-09-02)
++
++## Scope
++
++This checkpoint retains the deterministic four-byte-per-lane contact-ID
++schedule in its Metal buffer across unchanged solver topology. `b3ConstraintGraph`
++now carries a monotonic 64-bit revision advanced at every contact or joint graph
++insertion and removal, including swap-removal reorderings.
++
++Schedule reuse requires the same graph revision, SIMD-wide constraint count,
++and authoritative resident contact count. Any mismatch performs the original
++upstream-color-order pack before command submission. Mixed, callback, recycled,
++overflow, and unsupported routes still submit no resident schedule. Restitution
++eligibility remains current step data and is not cached with topology.
++
++## Evidence
++
++The 81-contact sphere/capsule differential fixture performs one 336-byte pack
++and three resident reuses over four successful steps. It retains the existing
++float maximum transform/velocity errors of `5.96e-08`/`3.58e-07`. Adding an
++82nd independent touching contact advances the graph revision and produces
++exactly the second pack, with no extra reuse; the added body's CPU/GPU velocity
++remains within `3.0e-05`.
++
++`b3MetalProfile.contactSchedulePackCount` and
++`contactScheduleReuseCount` distinguish topology uploads from unchanged-step
++reuse. `lastContactPrepareIndexBytes` remains the logical schedule size rather
++than claiming a new upload on reuse.
++
++No loaded-host speedup is claimed. The whole-world resident-contact harness now
++prints schedule packs and reuses so a quiet-host run can isolate this ownership
++change from compact impulse extraction and the remaining CPU persistence work.
 diff --git a/docs/benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md b/docs/benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md
 new file mode 100644
 index 0000000000000000000000000000000000000000..5217950a7409148be6dfab70dd70cfe8f44c8b95
@@ -2909,10 +2955,10 @@ index 0000000000000000000000000000000000000000..1e74458571cada9e4d648bbce49dffb5
 +needed before the shared narrow-phase streams can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..9647be4ec886e4360c362d4bdc0262d081d9ffc1
+index 0000000000000000000000000000000000000000..eb88df66a8df7a037cce23a8015f9a02d23be196
 --- /dev/null
 +++ b/docs/metal_architecture.md
-@@ -0,0 +1,356 @@
+@@ -0,0 +1,358 @@
 +# Box3D Metal architecture
 +
 +## Compatibility contract
@@ -3164,7 +3210,7 @@ index 0000000000000000000000000000000000000000..9647be4ec886e4360c362d4bdc0262d0
 +| Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 +| Broad phase | Experimental Metal leaf update, internal refit, stable traversal, and compaction; resident pair records carry query metadata, while CPU topology mutation, filtering, and contact creation remain |
 +| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere local geometry is batched on Metal; compact hull geometry is deduplicated and retained across revision-stable dispatches. CPU applies persistence, materials, callbacks, and state transitions. High-aspect/speculative hull-sphere, other hull pairs, meshes, height fields, and compounds remain CPU |
-+| Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. After restitution, Metal extracts an 80-byte result per active contact into a generation-tagged contact-ID table; CPU public-manifold/event synchronization consumes that table instead of rereading 1,696-byte SIMD records. Mixed/recycled/callback/overflow sets remain CPU |
++| Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts an 80-byte result per active contact into a generation-tagged contact-ID table; CPU public-manifold/event synchronization consumes that table instead of rereading 1,696-byte SIMD records. Mixed/recycled/callback/overflow sets remain CPU |
 +| Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 +| CCD, sleeping/island mutation, events, recording, queries | CPU |
 +| Double-precision world positions | VF64 exact add plus directed narrowing produces conservative far-world AABBs on Metal |
@@ -3265,6 +3311,8 @@ index 0000000000000000000000000000000000000000..9647be4ec886e4360c362d4bdc0262d0
 +[`benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md`](benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md).
 +Compact post-solve impulse extraction and hit-event equivalence are recorded in
 +[`benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md`](benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md).
++Constraint-graph revisioning and unchanged-step schedule reuse are recorded in
++[`benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md`](benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md).
 +Private shape results and selective synchronization are recorded in
 +[`benchmarks/m4-pro-private-shape-results-2026-09-02.md`](benchmarks/m4-pro-private-shape-results-2026-09-02.md).
 +Persistent shape-input reuse is recorded in
@@ -3285,10 +3333,10 @@ index 2e8259039a9ed575b8b0e59c1ea7064245517b42..cd49acff561bfc6d9b781415209a5560
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a52accf217d647d632bd303aebb91e88f282ded2
+index 0000000000000000000000000000000000000000..2dfa194252200e927f290e1d697fec17c1588ce5
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,118 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -3330,6 +3378,10 @@ index 0000000000000000000000000000000000000000..a52accf217d647d632bd303aebb91e88
 +	/// Bytes Metal authored for active contact-id-indexed impulse results in the
 +	/// latest successful resident convex solve.
 +	uint64_t lastContactImpulseResultBytes;
++	/// Contact-ID schedule uploads after a topology/order change.
++	uint64_t contactSchedulePackCount;
++	/// Successful solver steps that reused the resident contact-ID schedule.
++	uint64_t contactScheduleReuseCount;
 +	uint64_t jointDispatchCount;
 +	uint64_t jointFallbackCount;
 +	uint64_t finalizationDispatchCount;
@@ -3894,6 +3946,63 @@ index dcd626b3a420e6e2eecd472931c79527eebd0d1b..a3d47a3424160019ee3ebf0d825394f8
  bool b3BroadPhase_TestOverlap( const b3BroadPhase* bp, int proxyKeyA, int proxyKeyB );
  
  void b3ValidateBroadPhase( const b3BroadPhase* bp );
+diff --git a/src/constraint_graph.c b/src/constraint_graph.c
+index 9f06e9e4e841773ce780e37ebcaad741e1b3bd9a..dd0c770cd413980d58fbb23b05cfeab815d09e4e 100644
+--- a/src/constraint_graph.c
++++ b/src/constraint_graph.c
+@@ -43,6 +43,7 @@ void b3CreateGraph( b3ConstraintGraph* graph, int bodyCapacity )
+ 	_Static_assert( B3_OVERFLOW_INDEX == B3_GRAPH_COLOR_COUNT - 1, "bad over flow index" );
+ 
+ 	*graph = (b3ConstraintGraph){ 0 };
++	graph->revision = 1;
+ 
+ 	bodyCapacity = b3MaxInt( bodyCapacity, 8 );
+ 
+@@ -166,6 +167,7 @@ void b3AddContactToGraph( b3World* world, b3Contact* contact )
+ 	{
+ 		b3Array_Push( color->convexContacts, contact->contactId );
+ 	}
++	graph->revision += 1;
+ }
+ 
+ void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int colorIndex, int localIndex, bool meshContact )
+@@ -211,6 +213,7 @@ void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int col
+ 			movedContact->localIndex = localIndex;
+ 		}
+ 	}
++	graph->revision += 1;
+ }
+ 
+ static int b3AssignJointColor( b3ConstraintGraph* graph, int bodyIdA, int bodyIdB, b3BodyType typeA, b3BodyType typeB )
+@@ -290,6 +293,7 @@ b3JointSim* b3CreateJointInGraph( b3World* world, b3Joint* joint )
+ 
+ 	joint->colorIndex = colorIndex;
+ 	joint->localIndex = graph->colors[colorIndex].jointSims.count - 1;
++	graph->revision += 1;
+ 	return jointSim;
+ }
+ 
+@@ -325,4 +329,5 @@ void b3RemoveJointFromGraph( b3World* world, int bodyIdA, int bodyIdB, int color
+ 		B3_ASSERT( movedJoint->localIndex == movedIndex );
+ 		movedJoint->localIndex = localIndex;
+ 	}
++	graph->revision += 1;
+ }
+diff --git a/src/constraint_graph.h b/src/constraint_graph.h
+index ab17e9ac8179cda237d9fee946bcc29dc02e5e23..7da9347642f10ff9744af600196930583eca3d4d 100644
+--- a/src/constraint_graph.h
++++ b/src/constraint_graph.h
+@@ -62,6 +62,10 @@ typedef struct b3GraphColor
+ 
+ typedef struct b3ConstraintGraph
+ {
++	// Monotonic topology/order revision for resident solver schedules. Any
++	// contact or joint insertion/removal advances this value.
++	uint64_t revision;
++
+ 	// including overflow at the end
+ 	b3GraphColor colors[B3_GRAPH_COLOR_COUNT];
+ } b3ConstraintGraph;
 diff --git a/src/contact.c b/src/contact.c
 index 1506bdbe563f73734e98873cf1c8e66546f3167a..8bae6dba13080ac0e7545cff765136b68d0dacf9 100644
 --- a/src/contact.c
@@ -4669,10 +4778,10 @@ index 0000000000000000000000000000000000000000..8084e155223ba71002632ede9d43d80d
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000000000000000000000000000000000000..bde3b33d809cd7058838eab233854af8b6c58d96
+index 0000000000000000000000000000000000000000..c0906f9cd850858bc668a75249c6ce5670dfd4f9
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,4749 @@
+@@ -0,0 +1,4766 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -4836,6 +4945,9 @@ index 0000000000000000000000000000000000000000..bde3b33d809cd7058838eab233854af8
 +	NSUInteger contactPrepareTableCapacity;
 +	id<MTLBuffer> contactPrepareIndexBuffer;
 +	NSUInteger contactPrepareIndexCapacity;
++	uint64_t contactPrepareScheduleRevision;
++	int contactPrepareScheduleWideCount;
++	int contactPrepareScheduleContactCount;
 +	id<MTLBuffer> contactPrepareStatusBuffer;
 +	uint32_t contactPrepareGeneration;
 +	id<MTLBuffer> contactImpulseResultBuffer;
@@ -7283,6 +7395,16 @@ index 0000000000000000000000000000000000000000..bde3b33d809cd7058838eab233854af8
 +	NSUInteger indexCount = (NSUInteger)stepContext->wideContactCount * B3_SIMD_WIDTH;
 +	if ( indexCount > NSUIntegerMax / sizeof( uint32_t ) ) return false;
 +	NSUInteger indexBytes = indexCount * sizeof( uint32_t );
++	uint64_t graphRevision = stepContext->graph->revision;
++	if ( context->contactPrepareIndexBuffer != nil && context->contactPrepareScheduleRevision == graphRevision &&
++		context->contactPrepareScheduleWideCount == stepContext->wideContactCount &&
++		context->contactPrepareScheduleContactCount == stepContext->metalResidentConvexContactCount )
++	{
++		stepContext->world->metalLastContactPrepareIndexBytes = indexBytes;
++		stepContext->world->metalContactScheduleReuseCount += 1;
++		if ( hasRestitution != NULL ) *hasRestitution = stepContext->metalResidentConvexHasRestitution;
++		return true;
++	}
 +	if ( b3MetalEnsureContactPrepareIndexCapacity( context, indexBytes ) == false ) return false;
 +	uint32_t* indices = context->contactPrepareIndexBuffer.contents;
 +	memset( indices, 0xff, indexBytes );
@@ -7303,7 +7425,11 @@ index 0000000000000000000000000000000000000000..bde3b33d809cd7058838eab233854af8
 +		packedCount += span->count;
 +	}
 +	if ( packedCount != stepContext->metalResidentConvexContactCount ) return false;
++	context->contactPrepareScheduleRevision = graphRevision;
++	context->contactPrepareScheduleWideCount = stepContext->wideContactCount;
++	context->contactPrepareScheduleContactCount = stepContext->metalResidentConvexContactCount;
 +	stepContext->world->metalLastContactPrepareIndexBytes = indexBytes;
++	stepContext->world->metalContactSchedulePackCount += 1;
 +	if ( hasRestitution != NULL ) *hasRestitution = stepContext->metalResidentConvexHasRestitution;
 +	return true;
 +}
@@ -10563,7 +10689,7 @@ index 0000000000000000000000000000000000000000..a4424e54a1931d1ca2b31611744fa848
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..7f3f130d2e1a0ae8212485b5c1e62b19e07dd974 100644
+index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..6c95d6db7cef1b9d2fe0d8cb5813ceaa7d949c6a 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -10590,7 +10716,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..7f3f130d2e1a0ae8212485b5c1e62b19
  	// Detach any recording before teardown. The user owns and frees the recording buffer.
  	b3StopRecordingInternal( world );
  
-@@ -538,6 +548,168 @@ int b3GetWorldCount( void )
+@@ -538,6 +548,170 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -10709,6 +10835,8 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..7f3f130d2e1a0ae8212485b5c1e62b19
 +	profile.contactPrepareFallbackCount = world->metalContactPrepareFallbackCount;
 +	profile.lastContactPrepareIndexBytes = world->metalLastContactPrepareIndexBytes;
 +	profile.lastContactImpulseResultBytes = world->metalLastContactImpulseResultBytes;
++	profile.contactSchedulePackCount = world->metalContactSchedulePackCount;
++	profile.contactScheduleReuseCount = world->metalContactScheduleReuseCount;
 +	profile.jointDispatchCount = world->metalJointDispatchCount;
 +	profile.jointFallbackCount = world->metalJointFallbackCount;
 +	profile.finalizationDispatchCount = world->metalFinalizationDispatchCount;
@@ -10759,7 +10887,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..7f3f130d2e1a0ae8212485b5c1e62b19
  int b3GetMaxWorldCount( void )
  {
  	return b3_maxWorldCount;
-@@ -582,8 +754,38 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -582,8 +756,38 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  	const int contactPrefetchDistance = 4;
  	int prefetchEnd = endIndex - contactPrefetchDistance;
  
@@ -10798,7 +10926,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..7f3f130d2e1a0ae8212485b5c1e62b19
  		if ( i < prefetchEnd )
  		{
  			b3PrefetchContact( contacts + contactIndices[i + contactPrefetchDistance] );
-@@ -594,6 +796,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -594,6 +798,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  
  		b3Contact* contact = contacts + contactIndex;
  		B3_VALIDATE( contact->contactId == contactIndex );
@@ -10806,7 +10934,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..7f3f130d2e1a0ae8212485b5c1e62b19
  
  		b3Shape* shapeA = shapes + contact->shapeIdA;
  		b3Shape* shapeB = shapes + contact->shapeIdB;
-@@ -741,9 +944,52 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -741,9 +946,52 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
  		contact->flags |= b3_relativeTransformValid;
  
@@ -10861,7 +10989,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..7f3f130d2e1a0ae8212485b5c1e62b19
  
  		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
  		if ( bucketIndex > 0 )
-@@ -873,6 +1119,8 @@ static void b3Collide( b3StepContext* context )
+@@ -873,6 +1121,8 @@ static void b3Collide( b3StepContext* context )
  	}
  
  	context->awakeContactIndices = contactIndices;
@@ -10870,7 +10998,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..7f3f130d2e1a0ae8212485b5c1e62b19
  
  	// Contact bit set on ids because contact pointers are unstable as they move between touching and not touching.
  	int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
-@@ -886,12 +1134,39 @@ static void b3Collide( b3StepContext* context )
+@@ -886,12 +1136,39 @@ static void b3Collide( b3StepContext* context )
  		memset( taskContext->manifoldCounts, 0, sizeof( taskContext->manifoldCounts ) );
  	}
  
@@ -10910,7 +11038,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..7f3f130d2e1a0ae8212485b5c1e62b19
  	contactIndices = NULL;
  
  	// Serially update contact state
-@@ -1039,6 +1314,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1316,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -10933,7 +11061,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..7f3f130d2e1a0ae8212485b5c1e62b19
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -3473,6 +3764,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +3766,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -10946,10 +11074,10 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..7f3f130d2e1a0ae8212485b5c1e62b19
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8656bec015b96bbfac2caacdde8013b489..5b8bb508313ae58cb00b79642989d6ce2bbc347d 100644
+index 8bd3df8656bec015b96bbfac2caacdde8013b489..e60441792fee2740816dd95487a7c44e7751422e 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
-@@ -266,6 +266,67 @@ typedef struct b3World
+@@ -266,6 +266,69 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
@@ -10967,6 +11095,8 @@ index 8bd3df8656bec015b96bbfac2caacdde8013b489..5b8bb508313ae58cb00b79642989d6ce
 +	uint64_t metalContactPrepareFallbackCount;
 +	uint64_t metalLastContactPrepareIndexBytes;
 +	uint64_t metalLastContactImpulseResultBytes;
++	uint64_t metalContactSchedulePackCount;
++	uint64_t metalContactScheduleReuseCount;
 +	uint64_t metalJointDispatchCount;
 +	uint64_t metalJointFallbackCount;
 +	uint64_t metalFinalizationDispatchCount;
@@ -11017,7 +11147,7 @@ index 8bd3df8656bec015b96bbfac2caacdde8013b489..5b8bb508313ae58cb00b79642989d6ce
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -347,4 +408,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +410,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
@@ -12261,10 +12391,10 @@ index bd00ecb5a3542c885e1212eddfa82b99852c394d..93e58e2dafcad8f8967efe2fcf4d6aff
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..932d8cd3191ed077077415a5d761e69c1a588238
+index 0000000000000000000000000000000000000000..be2aa02fd6ed5e4dbca349c0f7d4d7d77f473285
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,2704 @@
+@@ -0,0 +1,2737 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -13358,6 +13488,8 @@ index 0000000000000000000000000000000000000000..932d8cd3191ed077077415a5d761e69c
 +	ENSURE( profile.contactPrepareFallbackCount == 0 );
 +	ENSURE( profile.lastContactPrepareIndexBytes == 4 * sizeof( uint32_t ) );
 +	ENSURE( profile.lastContactImpulseResultBytes == sizeof( b3MetalContactImpulseResult ) );
++	ENSURE( profile.contactSchedulePackCount == 1 );
++	ENSURE( profile.contactScheduleReuseCount == 0 );
 +	b3Vec3 cpuVelocity = b3Body_GetLinearVelocity( cpuBodyB );
 +	b3Vec3 gpuVelocity = b3Body_GetLinearVelocity( bodyB );
 +	ENSURE( b3Length( b3Sub( cpuVelocity, gpuVelocity ) ) <= 3.0e-5f );
@@ -13376,6 +13508,8 @@ index 0000000000000000000000000000000000000000..932d8cd3191ed077077415a5d761e69c
 +	ENSURE( profile.contactPrepareFallbackCount == 0 );
 +	ENSURE( profile.lastContactPrepareIndexBytes == 0 );
 +	ENSURE( profile.lastContactImpulseResultBytes == 0 );
++	ENSURE( profile.contactSchedulePackCount == 1 );
++	ENSURE( profile.contactScheduleReuseCount == 0 );
 +
 +	b3DestroyWorld( worldId );
 +	b3DestroyWorld( cpuWorldId );
@@ -13621,9 +13755,11 @@ index 0000000000000000000000000000000000000000..932d8cd3191ed077077415a5d761e69c
 +			b3Length( b3Sub( b3Body_GetAngularVelocity( cpuBodies[i] ), b3Body_GetAngularVelocity( gpuBodies[i] ) ) ) );
 +	}
 +	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
-+	printf( "    resident contact prepare contacts=%d dispatches=%llu indexBytes=%llu legacyBytes=%zu "
++	printf( "    resident contact prepare contacts=%d dispatches=%llu schedule=%llu/%llu indexBytes=%llu legacyBytes=%zu "
 +		"impulseBytes=%llu legacyImpulseBytes=%zu transformError=%.3g velocityError=%.3g\n",
 +		count, (unsigned long long)profile.contactPrepareDispatchCount,
++		(unsigned long long)profile.contactSchedulePackCount,
++		(unsigned long long)profile.contactScheduleReuseCount,
 +		(unsigned long long)profile.lastContactPrepareIndexBytes,
 +		(size_t)( ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * 144,
 +		(unsigned long long)profile.lastContactImpulseResultBytes,
@@ -13631,6 +13767,8 @@ index 0000000000000000000000000000000000000000..932d8cd3191ed077077415a5d761e69c
 +		maxTransformError, maxVelocityError );
 +	ENSURE( profile.contactPrepareDispatchCount == 4 );
 +	ENSURE( profile.contactPrepareFallbackCount == 0 );
++	ENSURE( profile.contactSchedulePackCount == 1 );
++	ENSURE( profile.contactScheduleReuseCount == 3 );
 +	ENSURE( profile.lastResidentConvexContactCount == count );
 +	ENSURE( profile.lastResidentConvexConstraintCount == ( count + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH );
 +	ENSURE( profile.lastContactPrepareIndexBytes ==
@@ -13638,6 +13776,31 @@ index 0000000000000000000000000000000000000000..932d8cd3191ed077077415a5d761e69c
 +	ENSURE( profile.lastContactImpulseResultBytes == (uint64_t)count * sizeof( b3MetalContactImpulseResult ) );
 +	ENSURE( maxTransformError <= 3.0e-4f );
 +	ENSURE( maxVelocityError <= 3.0e-4f );
++
++	// A graph insertion changes color-array topology/order and must force one
++	// deterministic schedule rebuild before reuse can resume.
++	b3BodyDef addedStaticDef = b3DefaultBodyDef();
++	addedStaticDef.position = (b3Pos){ 0.0, 0.0, 3.0 * (double)count };
++	b3BodyId cpuAddedStatic = b3CreateBody( cpuWorld, &addedStaticDef );
++	b3BodyId gpuAddedStatic = b3CreateBody( gpuWorld, &addedStaticDef );
++	b3CreateSphereShape( cpuAddedStatic, &staticShapeDef, &sphere );
++	b3CreateSphereShape( gpuAddedStatic, &staticShapeDef, &sphere );
++	b3BodyDef addedDynamicDef = b3DefaultBodyDef();
++	addedDynamicDef.type = b3_dynamicBody;
++	addedDynamicDef.enableSleep = false;
++	addedDynamicDef.position = (b3Pos){ 0.96, 0.0, 3.0 * (double)count };
++	b3BodyId cpuAddedDynamic = b3CreateBody( cpuWorld, &addedDynamicDef );
++	b3BodyId gpuAddedDynamic = b3CreateBody( gpuWorld, &addedDynamicDef );
++	b3CreateSphereShape( cpuAddedDynamic, &dynamicShapeDef, &sphere );
++	b3CreateSphereShape( gpuAddedDynamic, &dynamicShapeDef, &sphere );
++	b3World_Step( cpuWorld, 1.0f / 60.0f, 4 );
++	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
++	profile = b3World_GetMetalProfile( gpuWorld );
++	ENSURE( profile.contactSchedulePackCount == 2 );
++	ENSURE( profile.contactScheduleReuseCount == 3 );
++	ENSURE( profile.lastResidentConvexContactCount == count + 1 );
++	ENSURE( b3Length( b3Sub( b3Body_GetLinearVelocity( cpuAddedDynamic ),
++		b3Body_GetLinearVelocity( gpuAddedDynamic ) ) ) <= 3.0e-5f );
 +	b3DestroyWorld( gpuWorld );
 +	b3DestroyWorld( cpuWorld );
 +	return 0;

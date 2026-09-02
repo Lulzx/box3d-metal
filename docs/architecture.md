@@ -56,6 +56,9 @@ still use the independent Metal position stage if they meet the threshold.
 - Complete resident convex sets extract an 80-byte post-solve record per active
   contact. CPU manifold/event synchronization resolves the manifold by contact
   ID and does not traverse the 1,696-byte SIMD-wide solver records.
+- A monotonic constraint-graph revision retains the contact-ID lane schedule
+  across unchanged steps. Contact/joint insertion or removal, wide-count
+  changes, and authoritative-contact-count changes force an ordered repack.
 - Distance and parallel joints are packed into compact type-dense records and
   only their accumulated solver state is unpacked after the command buffer.
 - Capacities grow geometrically and buffers are reused.
@@ -248,3 +251,5 @@ generation-tagged 80-byte table indexed by contact ID. CPU storage preserves
 public manifold and hit-event semantics in graph order while reading that
 compact table. Identity, generation, point count, and flags are validated;
 release fallback can still consume the wide records.
+The schedule buffer is reused when graph revision and exact wide/contact counts
+match. Restitution eligibility remains current step state and is not cached.

@@ -85,6 +85,12 @@ restitution. The same 81-contact fixture exposes 6,480 compact bytes instead of
 the CPU impulse-storage input surface; public-manifold and event synchronization
 still runs on the CPU. Loaded-host smoke timing is not published as speedup.
 
+The schedule-residency checkpoint retains the 336-byte lane schedule for stable
+graph revisions. The 81-contact fixture performs one pack and three reuses;
+adding one touching contact advances topology and forces exactly one repack.
+A loaded-host 512-contact smoke recorded one pack and nine reuses across ten
+dispatches. Its wall-clock values are not accepted as performance evidence.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.

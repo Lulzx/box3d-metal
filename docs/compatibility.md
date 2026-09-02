@@ -24,6 +24,7 @@ evaluation order differs.
 | Mixed distance/parallel colors and overflow | Supported with type-dense buffers and ordered descriptors |
 | Resident convex contact preparation | Complete colored sets prepared from the private contact-id table; CPU recovery on later solver fallback |
 | Resident convex impulse extraction | 80-byte contact-ID results after restitution; CPU public-manifold and hit-event synchronization remains ordered |
+| Resident contact schedule | Reused across exact stable graph revisions/counts; contact or joint graph mutation repacks in upstream color order |
 | Experimental broad phase | Resident leaf update/refit plus built-in filtered candidates in exact CPU visitation order |
 | Experimental narrow phase | Sphere-sphere, capsule-sphere, capsule-capsule, and bounded compact hull-sphere local geometry; primitive records and deduplicated compact hull streams are retained across revision-stable dispatches |
 

@@ -100,6 +100,9 @@ Direct primitive tests separately cover packed state and integration kernels.
   maxima. Every resident lane resolves to a current contact-ID record.
 - A resident sphere impact matches the CPU hit-event point, normal, and 10 m/s
   approach speed while reporting one 80-byte result.
+- Four stable 81-contact steps perform one contact-schedule pack and three
+  reuses. Adding an 82nd touching contact forces exactly the second pack while
+  preserving the CPU/GPU velocity differential.
 
 ## Recorded error maxima
 
@@ -180,6 +183,9 @@ The resident contact-preparation checkpoint passed the portable CPU suite,
 float and double/VF64 warning-as-error Metal suites, full AddressSanitizer and
 float UndefinedBehaviorSanitizer suites, and focused double/VF64
 UndefinedBehaviorSanitizer Metal suite.
+
+The resident-schedule checkpoint reran the same matrix. Its 512-contact harness
+smoke recorded one pack and nine reuses over ten successful dispatches.
 
 The contact-prepare metadata-residency checkpoint reran the same matrix after
 moving record writes into the existing parallel persistence pass and replacing

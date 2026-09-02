@@ -67,6 +67,10 @@ into a generation-tagged contact-ID table. CPU public-manifold and hit-event
 synchronization keeps upstream order while consuming that compact table instead
 of the 1,696-byte SIMD-wide records. Invalid and unsupported routes retain the
 original CPU store path.
+The constraint graph carries a monotonic topology/order revision. The four-byte
+contact-ID lane schedule remains in its Metal buffer while that revision and its
+exact wide/contact counts are unchanged; contact or joint insertion/removal
+invalidates it before the next solver submission.
 
 ## Quick start
 
@@ -150,7 +154,9 @@ removes the dedicated solver-time contact traversal and 144-byte lane stream;
 CPU persistence/table writes and graph scheduling remain. Compact post-solve
 extraction reduces the 81-contact CPU impulse-input surface from 35,616 to 6,480
 bytes while retaining public manifolds and matching hit events. It adds no
-loaded-host speedup claim.
+loaded-host speedup claim. The schedule-residency checkpoint performs one pack
+and three reuses across four stable steps, then exactly one repack after graph
+topology changes.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

@@ -31,3 +31,5 @@ gates pass.
 No loaded-host whole-world speedup is claimed. The resident-contact benchmark
 now reports compact and former-wide impulse bytes so the next quiet-host run can
 measure whether the smaller CPU cache stream changes end-to-end time.
+The follow-on schedule checkpoint retains the contact-ID lanes across unchanged
+graph revisions, so repeated steps no longer recopy them.
