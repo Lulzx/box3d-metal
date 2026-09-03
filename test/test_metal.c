@@ -817,9 +817,12 @@ static int MetalConvexManifoldTest( void )
 
 	const b3MetalConvexManifoldResult* gpu = NULL;
 	int eligibleCount = 0;
+	const b3MetalContactTransition* directTransitions = NULL;
+	int directTransitionCount = 0;
 	b3MetalDispatchStats stats = { 0 };
 	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &gpu, &eligibleCount, NULL,
-										   &stats ) );
+										   &directTransitions, &directTransitionCount, &stats ) );
+	ENSURE( directTransitionCount == 0 );
 	ENSURE( eligibleCount == expectedEligibleCount + boxPairCount + 1 );
 	ENSURE( stats.commandBufferCount == 1 );
 	float maxError = 0.0f;
@@ -981,7 +984,8 @@ static int MetalConvexManifoldTest( void )
 	ENSURE( first != NULL );
 	memcpy( first, gpu, (size_t)firstEligibleCount * sizeof( b3MetalConvexManifoldResult ) );
 	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &gpu, &eligibleCount, NULL,
-										   &stats ) );
+										   &directTransitions, &directTransitionCount, &stats ) );
+	ENSURE( directTransitionCount == 0 );
 	ENSURE( eligibleCount == firstEligibleCount );
 	int faceCacheHitCount = 0;
 	for ( int i = 0; i < firstEligibleCount; ++i )
@@ -998,7 +1002,8 @@ static int MetalConvexManifoldTest( void )
 		B3_SWAP( contactIndices[i], contactIndices[contactCount - 1 - i] );
 	}
 	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &gpu, &eligibleCount, NULL,
-										   &stats ) );
+										   &directTransitions, &directTransitionCount, &stats ) );
+	ENSURE( directTransitionCount == 0 );
 	ENSURE( eligibleCount == firstEligibleCount );
 	b3MetalConvexManifoldResult* reorderedTable = malloc( (size_t)world->contacts.count * sizeof( b3MetalConvexManifoldResult ) );
 	ENSURE( reorderedTable != NULL );
@@ -1345,6 +1350,39 @@ static int ComparePairTopology( const b3World* cpu, const b3World* gpu )
 	return 0;
 }
 
+static int CompareTouchingGraphTopology( const b3World* cpu, const b3World* gpu )
+{
+	for ( int contactId = 0; contactId < cpu->contacts.count; ++contactId )
+	{
+		const b3Contact* a = cpu->contacts.data + contactId;
+		const b3Contact* b = gpu->contacts.data + contactId;
+		if ( a->contactId == B3_NULL_INDEX )
+			continue;
+		ENSURE( ( a->flags & b3_contactTouchingFlag ) != 0 );
+		ENSURE( ( b->flags & b3_contactTouchingFlag ) != 0 );
+		ENSURE( a->setIndex == b->setIndex );
+		ENSURE( a->colorIndex == b->colorIndex );
+		ENSURE( a->localIndex == b->localIndex );
+		ENSURE( a->islandId == b->islandId );
+		ENSURE( a->islandIndex == b->islandIndex );
+		ENSURE( a->bodySimIndexA == b->bodySimIndexA );
+		ENSURE( a->bodySimIndexB == b->bodySimIndexB );
+	}
+
+	for ( int colorIndex = 0; colorIndex < B3_GRAPH_COLOR_COUNT; ++colorIndex )
+	{
+		const b3GraphColor* a = cpu->constraintGraph.colors + colorIndex;
+		const b3GraphColor* b = gpu->constraintGraph.colors + colorIndex;
+		ENSURE( a->bodySet.blockCount == b->bodySet.blockCount );
+		ENSURE( memcmp( a->bodySet.bits, b->bodySet.bits,
+				(size_t)a->bodySet.blockCount * sizeof( uint64_t ) ) == 0 );
+		ENSURE( a->convexContacts.count == b->convexContacts.count );
+		ENSURE( memcmp( a->convexContacts.data, b->convexContacts.data,
+				(size_t)a->convexContacts.count * sizeof( int ) ) == 0 );
+	}
+	return 0;
+}
+
 static int MetalFinalPairPlanOrderTest( void )
 {
 	b3WorldDef worldDef = b3DefaultWorldDef();
@@ -1397,12 +1435,12 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( profile.pairPrivateScratchDispatchCount == 1 );
 	ENSURE( profile.lastPairRawSharedBytes == 0 );
 
-	// Consume the creation-time identity stream. The GPU must author the full
-	// private 40-byte input records without a gathered contact-id array or CPU
-	// input pack, while the first-touch state transition remains CPU-owned.
+	// Consume the creation-time identity stream. Metal authors both the private
+	// 40-byte inputs and the compact 16-byte first-touch transitions.
 	b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
 	b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
 	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
+	ENSURE( CompareTouchingGraphTopology( cpu, gpu ) == 0 );
 	profile = b3World_GetMetalProfile( gpuWorldId );
 	ENSURE( profile.narrowPhaseFallbackCount == 0 );
 	ENSURE( profile.contactInputBootstrapDispatchCount == 1 );
@@ -1411,12 +1449,46 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( profile.contactInputPackCount == 0 );
 	ENSURE( profile.contactInputReuseCount == 0 );
 	ENSURE( profile.lastContactInputBytes == 0 );
-	ENSURE( profile.contactCollisionCpuCount == (uint64_t)contactCount );
+	ENSURE( sizeof( b3MetalContactTransition ) == 16u );
+	ENSURE( profile.lastContactTransitionCount == (uint64_t)contactCount );
+	ENSURE( profile.lastContactTransitionBytes == (uint64_t)contactCount * sizeof( b3MetalContactTransition ) );
+	ENSURE( profile.lastContactExceptionBytes == 0 );
+	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
+	ENSURE( profile.contactCollisionCpuCount == 0 );
+
+	// The CPU manifold is only a placeholder until a public consumer asks for
+	// it. One GetData call must materialize exactly that contact from the private
+	// resident table without perturbing topology.
+	int contactId = gpu->constraintGraph.colors[cpu->contacts.data[0].colorIndex].convexContacts.data[0];
+	b3Contact* gpuContact = gpu->contacts.data + contactId;
+	const b3Contact* cpuContact = cpu->contacts.data + contactId;
+	ENSURE( ( gpuContact->flags & b3_simMetalManifold ) != 0 );
+	ENSURE( ( gpuContact->flags & b3_simMetalManifoldStale ) != 0 );
+	ENSURE( profile.contactManifoldSyncCount == 0 );
+	b3ContactId publicContactId = { contactId + 1, gpu->worldId, 0, gpuContact->generation };
+	b3ContactData publicData = b3Contact_GetData( publicContactId );
+	ENSURE( publicData.manifoldCount == 1 && publicData.manifolds == gpuContact->manifolds );
+	ENSURE( ( gpuContact->flags & b3_simMetalManifoldStale ) == 0 );
+	profile = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( profile.contactManifoldSyncCount == 1 );
+	ENSURE( cpuContact->manifoldCount == 1 );
+	ENSURE( publicData.manifolds[0].pointCount == cpuContact->manifolds[0].pointCount );
+	ENSURE( b3Length( b3Sub( publicData.manifolds[0].normal, cpuContact->manifolds[0].normal ) ) <= 1.0e-5f );
+	for ( int pointIndex = 0; pointIndex < publicData.manifolds[0].pointCount; ++pointIndex )
+	{
+		const b3ManifoldPoint* a = cpuContact->manifolds[0].points + pointIndex;
+		const b3ManifoldPoint* b = publicData.manifolds[0].points + pointIndex;
+		ENSURE( b3Length( b3Sub( a->anchorA, b->anchorA ) ) <= 1.0e-5f );
+		ENSURE( b3Length( b3Sub( a->anchorB, b->anchorB ) ) <= 1.0e-5f );
+		ENSURE( fabsf( a->separation - b->separation ) <= 1.0e-5f );
+		ENSURE( a->featureId == b->featureId );
+	}
 	printf( "    final pair plan contacts=%d direct=%d pairSeedBytes=%llu inputSeedBytes=%llu inputPrivateBytes=%llu "
-			"recordTraversal=bypassed inputPack=bypassed exactTopology=yes\n",
+			"recordTraversal=bypassed inputPack=bypassed exceptions=0 transitionBytes=%zu lazySync=1 exactTopology=yes\n",
 			contactCount, profile.lastPairDirectCreateCount, (unsigned long long)profile.lastPairContactSeedBytes,
 			(unsigned long long)profile.lastContactInputBootstrapBytes,
-			(unsigned long long)profile.lastContactInputPrivateBytes );
+			(unsigned long long)profile.lastContactInputPrivateBytes,
+			(size_t)contactCount * sizeof( b3MetalContactTransition ) );
 
 	b3DestroyWorld( gpuWorldId );
 	b3DestroyWorld( cpuWorldId );
@@ -1494,14 +1566,35 @@ static int MetalColdContactInputRecycleTest( void )
 	b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
 	b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
 	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
+	ENSURE( CompareTouchingGraphTopology( cpu, gpu ) == 0 );
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorldId );
 	ENSURE( profile.contactInputBootstrapDispatchCount == 1 );
 	ENSURE( profile.lastContactInputBootstrapBytes == 3u * sizeof( b3MetalContactInputSeed ) );
 	ENSURE( profile.lastContactInputPrivateBytes == 3u * 40u );
 	ENSURE( profile.contactInputPackCount == 0 );
-	printf( "    cold contact bootstrap recycledOrder=2,1,0 generations=incremented inputSeedBytes=%llu privateBytes=%llu\n",
+	ENSURE( profile.lastContactTransitionCount == 3 );
+	ENSURE( profile.lastContactTransitionBytes == 3u * sizeof( b3MetalContactTransition ) );
+	ENSURE( profile.lastContactExceptionBytes == 0 );
+	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
+	ENSURE( profile.contactCollisionCpuCount == 0 );
+	int graphContactCount = 0;
+	for ( int colorIndex = 0; colorIndex < B3_GRAPH_COLOR_COUNT; ++colorIndex )
+	{
+		const b3GraphColor* color = gpu->constraintGraph.colors + colorIndex;
+		for ( int i = 0; i < color->convexContacts.count; ++i )
+		{
+			// The creation input was 2,1,0 after LIFO recycling. Serial first-touch
+			// topology must still consume the contact-state bitset in ascending ID order.
+			ENSURE( color->convexContacts.data[i] == graphContactCount );
+			graphContactCount += 1;
+		}
+	}
+	ENSURE( graphContactCount == 3 );
+	printf( "    cold contact bootstrap recycledInput=2,1,0 graphOrder=0,1,2 generations=incremented "
+			"inputSeedBytes=%llu privateBytes=%llu transitionBytes=%zu exceptions=0\n",
 			(unsigned long long)profile.lastContactInputBootstrapBytes,
-			(unsigned long long)profile.lastContactInputPrivateBytes );
+			(unsigned long long)profile.lastContactInputPrivateBytes,
+			3u * sizeof( b3MetalContactTransition ) );
 	b3DestroyWorld( gpuWorldId );
 	b3DestroyWorld( cpuWorldId );
 	return 0;
@@ -1549,18 +1642,22 @@ static int MetalColdContactInputFailureTest( void )
 	const b3MetalConvexManifoldResult* results = (const b3MetalConvexManifoldResult*)(uintptr_t)1;
 	int resultCount = -1;
 	int residentBypassCount = -1;
+	const b3MetalContactTransition* transitions = (const b3MetalContactTransition*)(uintptr_t)1;
+	int transitionCount = -1;
 	b3MetalDispatchStats stats = { 0 };
 	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, NULL, 1, &results, &resultCount,
-			&residentBypassCount, &stats ) == false );
+			&residentBypassCount, &transitions, &transitionCount, &stats ) == false );
 	ENSURE( results == NULL && resultCount == 0 && residentBypassCount == 0 );
+	ENSURE( transitions == NULL && transitionCount == 0 );
 	ENSURE( b3MetalCanBootstrapConvexManifoldInputs( world->metalContext, world, 1 ) == false );
 	ENSURE( b3MetalCanReuseConvexManifoldInputs( world->metalContext, world, 1 ) == false );
 	ENSURE( contact->contactId == contactId && contact->generation == contactGeneration );
 	ENSURE( world->broadPhase.pairSetRevision == pairRevision );
 	int contactIndices[1] = { contactId };
 	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, 1, &results, &resultCount,
-			&residentBypassCount, &stats ) );
+			&residentBypassCount, &transitions, &transitionCount, &stats ) );
 	ENSURE( results != NULL && resultCount == 1 && residentBypassCount == 0 );
+	ENSURE( transitionCount == 0 );
 	ENSURE( b3MetalCanReuseConvexManifoldInputs( world->metalContext, world, 1 ) );
 
 	seed = b3MetalBeginContactInputBootstrap( world->metalContext, 1 );
@@ -1576,14 +1673,18 @@ static int MetalColdContactInputFailureTest( void )
 	results = (const b3MetalConvexManifoldResult*)(uintptr_t)1;
 	resultCount = -1;
 	residentBypassCount = -1;
+	transitions = (const b3MetalContactTransition*)(uintptr_t)1;
+	transitionCount = -1;
 	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, NULL, 1, &results, &resultCount,
-			&residentBypassCount, &stats ) == false );
+			&residentBypassCount, &transitions, &transitionCount, &stats ) == false );
 	ENSURE( results == NULL && resultCount == 0 && residentBypassCount == 0 );
+	ENSURE( transitions == NULL && transitionCount == 0 );
 	ENSURE( b3MetalCanBootstrapConvexManifoldInputs( world->metalContext, world, 1 ) == false );
 	ENSURE( b3MetalCanReuseConvexManifoldInputs( world->metalContext, world, 1 ) == false );
 	ENSURE( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, 1, &results, &resultCount,
-			&residentBypassCount, &stats ) );
+			&residentBypassCount, &transitions, &transitionCount, &stats ) );
 	ENSURE( results != NULL && resultCount == 1 && residentBypassCount == 0 );
+	ENSURE( transitionCount == 0 );
 	ENSURE( contact->contactId == contactId && contact->generation == contactGeneration );
 	ENSURE( world->broadPhase.pairSetRevision == pairRevision );
 	printf( "    cold contact bootstrap corruptSeed=closed revisionMismatch=closed cpuPackRecovery=twice topologyStable=yes\n" );
@@ -2490,9 +2591,9 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 			maxVelocityError );
 	ENSURE( profile.contactPrepareDispatchCount == 4 );
 	ENSURE( profile.contactPrepareFallbackCount == 0 );
-	ENSURE( profile.contactPrepareDeviceRefreshCount == 3 * count );
+	ENSURE( profile.contactPrepareDeviceRefreshCount == 4 * count );
 	ENSURE( profile.contactCollisionBypassCount == 3 * count );
-	ENSURE( profile.contactCollisionCpuCount == count );
+	ENSURE( profile.contactCollisionCpuCount == 0 );
 	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
 	ENSURE( profile.lastNarrowPhaseResultCount == 0 );
 	ENSURE( profile.lastNarrowPhaseResultBytes == 0 );
@@ -2538,7 +2639,7 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
 	profile = b3World_GetMetalProfile( gpuWorld );
 	ENSURE( profile.contactCollisionBypassCount == 4 * count - 1 );
-	ENSURE( profile.contactCollisionCpuCount == count + 1 );
+	ENSURE( profile.contactCollisionCpuCount == 1 );
 	ENSURE( profile.lastContactCollisionExceptionCount == 1 );
 	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
 	ENSURE( profile.lastNarrowPhaseResultBytes == sizeof( b3MetalConvexManifoldResult ) );
@@ -2575,7 +2676,7 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.contactScheduleReuseCount == 4 );
 	ENSURE( profile.contactImpulseStoreBypassCount == 6 );
 	ENSURE( profile.contactCollisionBypassCount == 5 * count - 1 );
-	ENSURE( profile.contactCollisionCpuCount == count + 2 );
+	ENSURE( profile.contactCollisionCpuCount == 2 );
 	ENSURE( profile.lastContactCollisionExceptionCount == 1 );
 	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
 	ENSURE( profile.lastNarrowPhaseResultBytes == sizeof( b3MetalConvexManifoldResult ) );
@@ -2748,6 +2849,13 @@ static int MetalResidentContactHitEventTest( void )
 	ENSURE( profile.contactInputBootstrapDispatchCount == 0 );
 	ENSURE( profile.contactInputPackCount == 1 );
 	ENSURE( profile.lastContactInputBytes == 40u );
+	ENSURE( profile.lastContactCollisionExceptionCount == 1 );
+	ENSURE( profile.lastContactTransitionCount == 0 );
+	ENSURE( profile.lastContactTransitionBytes == 0 );
+	ENSURE( profile.lastContactExceptionBytes == sizeof( b3MetalConvexManifoldResult ) );
+	ENSURE( profile.contactCollisionCpuCount == 1 );
+	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
+	ENSURE( profile.lastNarrowPhaseResultBytes == sizeof( b3MetalConvexManifoldResult ) );
 	ENSURE( profile.contactPrepareDispatchCount == 1 );
 	ENSURE( profile.lastContactImpulseResultBytes == sizeof( b3MetalContactImpulseResult ) );
 	ENSURE( profile.contactImpulseStoreBypassCount == 1 );
@@ -4610,7 +4718,7 @@ static int MetalResidentBoxContactTest( void )
 		(unsigned long long)profile.lastContactCollisionExceptionCount,
 		(unsigned long long)profile.contactPersistenceMatchCount, maxTransformError, maxVelocityError );
 	ENSURE( profile.contactCollisionBypassCount == 3u * count );
-	ENSURE( profile.contactCollisionCpuCount == (uint64_t)count );
+	ENSURE( profile.contactCollisionCpuCount == 0 );
 	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
 	ENSURE( profile.lastNarrowPhaseResultBytes == 0 );
 	ENSURE( profile.lastResidentConvexContactCount == count );

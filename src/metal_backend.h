@@ -58,6 +58,16 @@ typedef struct b3MetalContactInputSeed
 	uint32_t shapeIdB;
 } b3MetalContactInputSeed;
 
+// Minimal CPU topology transition for a cold contact whose complete manifold
+// and prepare input remain resident. Records are compacted in input order.
+typedef struct b3MetalContactTransition
+{
+	uint32_t contactId;
+	uint32_t contactGeneration;
+	uint32_t inputIndex;
+	uint32_t pointCount;
+} b3MetalContactTransition;
+
 // Finalized sphere/capsule/compact-hull geometry in world axes, with point
 // anchors relative to each body's center of mass. The record also carries GPU-authored point
 // persistence and warm-start impulses matched against the prior resident solve.
@@ -139,6 +149,9 @@ typedef struct b3MetalDispatchStats
 	int contactInputBootstrapDispatchCount;
 	uint64_t contactInputBootstrapSharedBytes;
 	uint64_t contactInputPrivateBytes;
+	int contactTransitionCount;
+	uint64_t contactTransitionSharedBytes;
+	uint64_t contactExceptionSharedBytes;
 } b3MetalDispatchStats;
 
 // Returns false when there is no usable Metal device or the shader pipeline
@@ -230,6 +243,10 @@ b3MetalContactInputSeed* b3MetalBeginContactInputBootstrap( b3MetalContext* cont
 bool b3MetalCommitContactInputBootstrap( b3MetalContext* context, const b3World* world, int count );
 void b3MetalCancelContactInputBootstrap( b3MetalContext* context );
 bool b3MetalCanBootstrapConvexManifoldInputs( const b3MetalContext* context, const b3World* world, int contactCount );
+// Complete a GPU-authored cold prepare record after the CPU allocates the stale
+// placeholder manifold required by contact graph and public API invariants.
+bool b3MetalPatchContactPrepareManifold( b3MetalContext* context, int contactId, uint32_t contactGeneration,
+	const b3Manifold* manifold );
 // Diagnostic access to the current device-refreshed transform registry. This
 // does not pack or synchronize CPU body sims and fails when the registry is not
 // authoritative for the world's current step and revision.
@@ -244,6 +261,7 @@ bool b3MetalSyncBodySims( const b3MetalContext* context, b3World* world );
 bool b3MetalSyncBodyMoveEvents( b3MetalContext* context, b3World* world, b3BodyMoveEvent* events, int eventCount );
 bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* world, const int* contactIndices, int contactCount,
 									const b3MetalConvexManifoldResult** results, int* resultCount, int* residentBypassCount,
+									const b3MetalContactTransition** transitions, int* transitionCount,
 									b3MetalDispatchStats* stats );
 
 // Explicit diagnostic/fallback staging of the private contact-id-indexed table.

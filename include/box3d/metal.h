@@ -69,6 +69,13 @@ typedef struct b3MetalProfile
 	uint64_t lastContactInputBootstrapBytes;
 	/// Logical bytes in the authoritative private contact-input table.
 	uint64_t lastContactInputPrivateBytes;
+	/// Cold touching contacts represented by the compact topology-transition
+	/// stream on the latest Metal narrow phase.
+	uint64_t lastContactTransitionCount;
+	/// CPU-visible bytes in the compact first-touch transition stream.
+	uint64_t lastContactTransitionBytes;
+	/// CPU-visible bytes in full manifold exception records on the latest step.
+	uint64_t lastContactExceptionBytes;
 	/// Bytes written into the 40-byte shared contact input stream on the latest step.
 	/// Revision-stable reuse reports zero.
 	uint64_t lastContactInputBytes;

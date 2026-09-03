@@ -294,6 +294,9 @@ typedef struct b3World
 	uint64_t metalContactInputBootstrapDispatchCount;
 	uint64_t metalLastContactInputBootstrapBytes;
 	uint64_t metalLastContactInputPrivateBytes;
+	uint64_t metalLastContactTransitionCount;
+	uint64_t metalLastContactTransitionBytes;
+	uint64_t metalLastContactExceptionBytes;
 	uint64_t metalLastContactInputBytes;
 	uint64_t metalContactCoverageBypassCount;
 	uint64_t metalContactStateTraversalBypassCount;
@@ -541,6 +544,30 @@ static inline b3Manifold* b3AllocateManifolds( b3World* world, int count )
 	b3BlockAllocator* allocator = b3Array_Get( world->manifoldAllocators, index );
 	b3Manifold* manifolds = (b3Manifold*)b3AllocateElement( allocator );
 	b3UnlockMutex( world->manifoldAllocatorMutex );
+	memset( manifolds, 0, count * sizeof( b3Manifold ) );
+	return manifolds;
+}
+
+// Serial contact-state paths may allocate structural placeholders before any
+// collision task is launched. Avoid taking the parallel narrow-phase mutex once
+// per contact at that boundary.
+static inline b3Manifold* b3AllocateManifoldsSerial( b3World* world, int count )
+{
+	if ( count == 0 )
+	{
+		return NULL;
+	}
+
+	int index = count - 1;
+	int currentCount = world->manifoldAllocators.count;
+	for ( int i = currentCount; i < count; ++i )
+	{
+		b3BlockAllocator allocator = b3CreateBlockAllocator( ( i + 1 ) * sizeof( b3Manifold ), 2 * B3_BLOCK_SIZE );
+		b3Array_Push( world->manifoldAllocators, allocator );
+	}
+
+	b3BlockAllocator* allocator = b3Array_Get( world->manifoldAllocators, index );
+	b3Manifold* manifolds = (b3Manifold*)b3AllocateElement( allocator );
 	memset( manifolds, 0, count * sizeof( b3Manifold ) );
 	return manifolds;
 }

@@ -92,12 +92,14 @@ content-deduplicated. A second body-id registry retains static and awake body
 rotations, local centers, and VF64-capable world translations for the collision
 step. Each 40-byte contact record carries eligibility, shape/contact identity,
 contact generation, and a CPU-seeded SAT cache. Full 240-byte outputs stay in private Metal storage; a stable scan/prefix/scatter pass
-returns only active results, tagged by original contact index, in the same
-command buffer. The scatter rotates normals into world axes, produces both
+returns only CPU exceptions, tagged by original contact index, in the same
+command buffer. A complete ordinary cold bootstrap instead returns a 16-byte
+identity/point-count transition while keeping geometry private. The scatter rotates normals into world axes, produces both
 center-of-mass-relative anchors with VF64 translation subtraction, mixes default
 friction/restitution/rolling parameters and tangent velocity, and feature-matches
-warm starts against the prior GPU result. CPU workers consume this finalized
-state while retaining manifold allocation, custom material callbacks,
+warm starts against the prior GPU result. CPU workers consume exception results;
+the compact cold path installs zeroed structural placeholders and preserves the
+existing ascending contact-ID topology transition. The CPU retains manifold allocation, custom material callbacks,
 pre-solve callbacks, event exceptions, and island mutation. Other shape pairs stay on the
 unchanged CPU path. High-aspect and speculative hull-sphere contacts explicitly
 retain CPU GJK. Double worlds use VF64 exact subtraction before narrowing
@@ -119,8 +121,9 @@ preparation record, the collision worker bypasses CPU manifold application and
 leaves the finalized manifold authoritative in the private contact-ID table.
 The CPU manifold becomes a lazy mirror. Public/debug/snapshot access, sleep
 transitions, Metal disable, and CPU solver fallback materialize required
-geometry by contact ID and generation. Fast/CCD, hit-event, recording,
-callback, first-touch, and topology-changing contacts stay on the CPU path.
+geometry by contact ID and generation. Ordinary complete cold first-touch plans
+use the compact transition path. Fast/CCD, hit-event, recording, callback,
+sleeping-body, separated, and mixed topology-changing contacts stay on the CPU path.
 Solver submission bulk-copies only a deterministic four-byte contact-ID schedule
 per SIMD lane; it no longer walks and dereferences every contact to repack the
 records. Normal and identity remain private on-device. Mixed, recycled, callback,

@@ -1640,6 +1640,15 @@ static void b3SolverTask( void* taskContext )
 		jointSyncIndex += 1;
 
 		// Prepare convex contact constraints
+#if defined( BOX3D_METAL )
+		// A private cold first-touch can enter the graph with only a stale CPU
+		// placeholder. If overflow prevents device preparation, materialize those
+		// resident records before any CPU preparation worker dereferences them.
+		if ( context->metalPrepareConvexOnGpu == false && context->metalResidentConvexContactCount > 0 )
+		{
+			b3RefreshStaleContactManifoldsAfterMetalFallback( context );
+		}
+#endif
 		uint32_t convexSyncIndex = 1;
 		syncBits = ( convexSyncIndex << 16 ) | stageIndex;
 		B3_ASSERT( stages[stageIndex].type == b3_stagePrepareWideContacts );

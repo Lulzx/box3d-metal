@@ -777,6 +777,9 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.contactInputBootstrapDispatchCount = world->metalContactInputBootstrapDispatchCount;
 	profile.lastContactInputBootstrapBytes = world->metalLastContactInputBootstrapBytes;
 	profile.lastContactInputPrivateBytes = world->metalLastContactInputPrivateBytes;
+	profile.lastContactTransitionCount = world->metalLastContactTransitionCount;
+	profile.lastContactTransitionBytes = world->metalLastContactTransitionBytes;
+	profile.lastContactExceptionBytes = world->metalLastContactExceptionBytes;
 	profile.lastContactInputBytes = world->metalLastContactInputBytes;
 	profile.contactCoverageBypassCount = world->metalContactCoverageBypassCount;
 	profile.contactStateTraversalBypassCount = world->metalContactStateTraversalBypassCount;
@@ -1358,6 +1361,124 @@ static int* b3GatherAwakeContactIndices( b3World* world, int touchingCount, int 
 	return contactIndices;
 }
 
+#if defined( BOX3D_METAL )
+static bool b3ValidateMetalContactTransitions( const b3World* world, const b3SolverSet* awakeSet,
+	const b3MetalContactTransition* transitions, int transitionCount, int contactCount, int touchingCount,
+	int exceptionCount, int residentBypassCount, bool bootstrapContactInputs )
+{
+	if ( transitionCount == 0 )
+	{
+		return true;
+	}
+	if ( transitions == NULL || bootstrapContactInputs == false || touchingCount != 0 || residentBypassCount != 0 ||
+		transitionCount < 0 || transitionCount > contactCount || transitionCount + exceptionCount != contactCount ||
+		awakeSet->contactIndices.count != contactCount || world->contactRecycleDistance != 0.0f ||
+		world->recording != NULL || world->metalDefaultFrictionCallback == false ||
+		world->metalDefaultRestitutionCallback == false )
+	{
+		return false;
+	}
+
+	uint32_t previousInputIndex = UINT32_MAX;
+	for ( int i = 0; i < transitionCount; ++i )
+	{
+		const b3MetalContactTransition* transition = transitions + i;
+		if ( transition->inputIndex >= (uint32_t)contactCount ||
+			( i > 0 && transition->inputIndex <= previousInputIndex ) || transition->contactId >= (uint32_t)world->contacts.count ||
+			transition->pointCount < 1 || transition->pointCount > B3_MAX_MANIFOLD_POINTS ||
+			awakeSet->contactIndices.data[transition->inputIndex] != (int)transition->contactId )
+		{
+			return false;
+		}
+		previousInputIndex = transition->inputIndex;
+
+		const b3Contact* contact = world->contacts.data + transition->contactId;
+		if ( contact->contactId != (int)transition->contactId || contact->generation != transition->contactGeneration ||
+			contact->setIndex != b3_awakeSet || contact->colorIndex != B3_NULL_INDEX ||
+			contact->localIndex != (int)transition->inputIndex || contact->manifolds != NULL || contact->manifoldCount != 0 ||
+			( contact->flags & ( b3_contactTouchingFlag | b3_contactEnableContactEvents |
+				b3_simTouchingFlag | b3_simDisjoint | b3_simStartedTouching | b3_simStoppedTouching |
+				b3_simEnableHitEvent | b3_simEnablePreSolveEvents | b3_simMeshContact ) ) != 0 ||
+			contact->shapeIdA < 0 || contact->shapeIdA >= world->shapes.count || contact->shapeIdB < 0 ||
+			contact->shapeIdB >= world->shapes.count )
+		{
+			return false;
+		}
+
+		const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
+		const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
+		const uint32_t eventMask = b3_enableContactEvents | b3_enableHitEvents | b3_enablePreSolveEvents;
+		if ( ( shapeA->flags & eventMask ) != 0 || ( shapeB->flags & eventMask ) != 0 || shapeA->bodyId < 0 ||
+			shapeA->bodyId >= world->bodies.count || shapeB->bodyId < 0 || shapeB->bodyId >= world->bodies.count )
+		{
+			return false;
+		}
+
+		const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
+		const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
+		bool validSetA = bodyA->setIndex == b3_awakeSet || bodyA->setIndex == b3_staticSet;
+		bool validSetB = bodyB->setIndex == b3_awakeSet || bodyB->setIndex == b3_staticSet;
+		if ( validSetA == false || validSetB == false ||
+			( bodyA->setIndex == b3_staticSet && bodyB->setIndex == b3_staticSet ) )
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+static bool b3ApplyMetalContactTransitions( b3World* world, const b3MetalContactTransition* transitions,
+	int transitionCount )
+{
+	// Allocate every placeholder before exposing any touching/contact-graph state.
+	// Allocation is infallible under Box3D's allocator contract; backend patching
+	// remains a checked boundary.
+	for ( int i = 0; i < transitionCount; ++i )
+	{
+		b3Contact* contact = world->contacts.data + transitions[i].contactId;
+		contact->manifolds = b3AllocateManifoldsSerial( world, 1 );
+		contact->manifoldCount = 1;
+		contact->manifolds[0].pointCount = (int)transitions[i].pointCount;
+	}
+
+	for ( int i = 0; i < transitionCount; ++i )
+	{
+		const b3MetalContactTransition* transition = transitions + i;
+		b3Contact* contact = world->contacts.data + transition->contactId;
+		if ( b3MetalPatchContactPrepareManifold( world->metalContext, (int)transition->contactId,
+				 transition->contactGeneration, contact->manifolds ) == false )
+		{
+			// Keep the allocated placeholders for the ordinary CPU fallback, but do
+			// not expose a partially transitioned batch.
+			for ( int j = 0; j < transitionCount; ++j )
+			{
+				b3Contact* pending = world->contacts.data + transitions[j].contactId;
+				pending->manifolds[0].pointCount = 0;
+			}
+			return false;
+		}
+	}
+
+	b3BitSet* stateBits = &world->taskContexts.data[0].contactStateBitSet;
+	for ( int i = 0; i < transitionCount; ++i )
+	{
+		const b3MetalContactTransition* transition = transitions + i;
+		b3Contact* contact = world->contacts.data + transition->contactId;
+		const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
+		const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
+		const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
+		const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
+		contact->bodySimIndexA = bodyA->setIndex == b3_staticSet ? B3_NULL_INDEX : bodyA->localIndex;
+		contact->bodySimIndexB = bodyB->setIndex == b3_staticSet ? B3_NULL_INDEX : bodyB->localIndex;
+		contact->flags |= b3_simTouchingFlag | b3_simStartedTouching | b3_simMetalManifold | b3_simMetalManifoldStale;
+		contact->metalSyncGeneration = 0;
+		b3SetBit( stateBits, (int)transition->contactId );
+	}
+	world->taskContexts.data[0].manifoldCounts[0] += transitionCount;
+	return true;
+}
+#endif
+
 // Narrow-phase collision
 static bool b3Collide( b3StepContext* context )
 {
@@ -1433,6 +1554,11 @@ static bool b3Collide( b3StepContext* context )
 #if defined( BOX3D_METAL )
 	bool metalCollisionDispatched = false;
 	int metalResidentBypassCount = 0;
+	const b3MetalContactTransition* metalContactTransitions = NULL;
+	int metalContactTransitionCount = 0;
+	world->metalLastContactTransitionCount = 0;
+	world->metalLastContactTransitionBytes = 0;
+	world->metalLastContactExceptionBytes = 0;
 	uint64_t metalCollisionGraphRevision = world->constraintGraph.revision;
 	if ( world->metalContext != NULL && contactCount >= world->metalMinimumBodyCount )
 	{
@@ -1440,12 +1566,24 @@ static bool b3Collide( b3StepContext* context )
 		int resultCount = 0;
 		int residentBypassCount = 0;
 		b3MetalDispatchStats stats = { 0 };
-		if ( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &convexResults,
-											&resultCount, &residentBypassCount, &stats ) )
+		bool metalSuccess = b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount,
+			&convexResults, &resultCount, &residentBypassCount, &metalContactTransitions, &metalContactTransitionCount, &stats );
+		if ( metalSuccess &&
+			b3ValidateMetalContactTransitions( world, awakeSet, metalContactTransitions, metalContactTransitionCount,
+				contactCount, touchingCount, resultCount, residentBypassCount, bootstrapContactInputs ) == false )
+		{
+			metalSuccess = false;
+			metalContactTransitions = NULL;
+			metalContactTransitionCount = 0;
+		}
+		if ( metalSuccess )
 		{
 			world->metalContactInputBootstrapDispatchCount += (uint64_t)stats.contactInputBootstrapDispatchCount;
 			world->metalLastContactInputBootstrapBytes = stats.contactInputBootstrapSharedBytes;
 			world->metalLastContactInputPrivateBytes = stats.contactInputPrivateBytes;
+			world->metalLastContactTransitionCount = (uint64_t)stats.contactTransitionCount;
+			world->metalLastContactTransitionBytes = stats.contactTransitionSharedBytes;
+			world->metalLastContactExceptionBytes = stats.contactExceptionSharedBytes;
 			if ( stats.commandBufferCount > 0 )
 			{
 				metalCollisionDispatched = true;
@@ -1469,6 +1607,9 @@ static bool b3Collide( b3StepContext* context )
 			world->metalNarrowPhaseFallbackCount += 1;
 			world->metalLastContactInputBootstrapBytes = 0;
 			world->metalLastContactInputPrivateBytes = 0;
+			world->metalLastContactTransitionCount = 0;
+			world->metalLastContactTransitionBytes = 0;
+			world->metalLastContactExceptionBytes = 0;
 			if ( contactIndices == NULL )
 			{
 				contactIndices = b3GatherAwakeContactIndices( world, touchingCount, nonTouchingCount );
@@ -1497,10 +1638,16 @@ static bool b3Collide( b3StepContext* context )
 			return false;
 		}
 #endif
+	}
+#if defined( BOX3D_METAL )
+	if ( cpuContactCount > 0 || metalContactTransitionCount > 0 )
+#else
+	if ( cpuContactCount > 0 )
+#endif
+	{
 		// Contact bits are indexed by id because contact pointers may move during
 		// state transitions. Defer this capacity-linear clear until CPU collision
-		// work actually exists; stable resident phases leave the stale bits
-		// unreachable and clear them before the next exception or fallback.
+		// work or a private first-touch transition actually exists.
 		int contactIdCapacity = b3GetIdCapacity( &world->contactIdPool );
 		for ( int i = 0; i < world->workerCount; ++i )
 		{
@@ -1511,10 +1658,45 @@ static bool b3Collide( b3StepContext* context )
 		world->metalLastContactStateBitSetBytes =
 			blockCount * sizeof( uint64_t ) * (uint64_t)world->workerCount;
 #endif
+	}
+#if defined( BOX3D_METAL )
+	if ( metalContactTransitionCount > 0 &&
+		b3ApplyMetalContactTransitions( world, metalContactTransitions, metalContactTransitionCount ) == false )
+	{
+		// No contact state was exposed. Re-run the complete batch through the CPU
+		// oracle; allocated zero-point placeholders are safe inputs to that path.
+		world->metalNarrowPhaseFallbackCount += 1;
+		metalCollisionDispatched = false;
+		metalResidentBypassCount = 0;
+		metalContactTransitions = NULL;
+		metalContactTransitionCount = 0;
+		context->metalConvexManifolds = NULL;
+		context->metalConvexManifoldCount = 0;
+		context->metalCollisionExceptionsOnly = false;
+		cpuContactCount = contactCount;
+		if ( contactIndices == NULL )
+		{
+			contactIndices = b3GatherAwakeContactIndices( world, touchingCount, nonTouchingCount );
+			context->awakeContactIndices = contactIndices;
+		}
+		if ( b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 && b3MaterializeBodySims( world ) == false )
+		{
+			b3TracyCZoneEnd( collide );
+			return false;
+		}
+		if ( world->metalShapeCpuBoundsStale && b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
+		{
+			b3TracyCZoneEnd( collide );
+			return false;
+		}
+	}
+#endif
+	if ( cpuContactCount > 0 )
+	{
 		b3ParallelFor( world, b3CollideTask, cpuContactCount, minRange, context, "collide" );
 	}
 #if defined( BOX3D_METAL )
-	else
+	else if ( metalContactTransitionCount == 0 )
 	{
 		world->metalContactStateTraversalBypassCount += 1;
 		world->metalLastContactStateBitSetBytes = 0;
@@ -1548,7 +1730,12 @@ static bool b3Collide( b3StepContext* context )
 	// Aggregate diagnostics independently of the state bitsets. A stable
 	// resident phase has current diagnostic counts but deliberately leaves its
 	// stale contact bits untouched.
+#if defined( BOX3D_METAL )
+	b3BitSet* bitSet = cpuContactCount > 0 || metalContactTransitionCount > 0 ?
+		&world->taskContexts.data[0].contactStateBitSet : NULL;
+#else
 	b3BitSet* bitSet = cpuContactCount > 0 ? &world->taskContexts.data[0].contactStateBitSet : NULL;
+#endif
 	world->satCallCount = satMultiplier * world->taskContexts.data[0].satCallCount;
 	world->satCacheHitCount = satMultiplier * world->taskContexts.data[0].satCacheHitCount;
 	memcpy( world->manifoldCounts, world->taskContexts.data[0].manifoldCounts,

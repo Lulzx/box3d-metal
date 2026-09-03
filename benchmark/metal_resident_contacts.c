@@ -89,7 +89,8 @@ int main( void )
 		useBoxes ? "box" : "sphere", coldPair ? "cold_pair" : "steady", workerCount );
 	printf( "contacts,repeats,cpu_ms,gpu_ms,speedup,prepare_dispatches,device_prepare_refreshes,collision_bypasses,cpu_collision_"
 			"contacts,last_collision_exceptions,manifold_exception_bytes,input_packs,input_reuses,last_input_bytes,input_bootstrap_"
-			"dispatches,last_input_bootstrap_bytes,last_input_private_bytes,coverage_"
+			"dispatches,last_input_bootstrap_bytes,last_input_private_bytes,last_contact_transition_count,"
+			"last_contact_transition_bytes,last_contact_exception_bytes,coverage_"
 			"bypasses,state_walk_bypasses,last_state_clear_bytes,hit_clear_bypasses,last_hit_clear_bytes,awake_island_clear_"
 			"bypasses,last_awake_island_clear_bytes,manifold_syncs,body_walk_bypasses,shape_applies,state_syncs,last_state_bytes,"
 			"sim_syncs,last_sim_count,shape_syncs,"
@@ -135,11 +136,15 @@ int main( void )
 		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
 			(unsigned long long)profile.lastContactInputBootstrapBytes,
 			(unsigned long long)profile.lastContactInputPrivateBytes,
+			(unsigned long long)profile.lastContactTransitionCount,
+			(unsigned long long)profile.lastContactTransitionBytes,
+			(unsigned long long)profile.lastContactExceptionBytes,
 			(unsigned long long)profile.contactCoverageBypassCount,
 			(unsigned long long)profile.contactStateTraversalBypassCount,
 			(unsigned long long)profile.lastContactStateBitSetBytes,
 			(unsigned long long)profile.contactHitEventBitSetClearBypassCount,
-			(unsigned long long)profile.lastContactHitEventBitSetBytes,
+			(unsigned long long)profile.lastContactHitEventBitSetBytes );
+		printf( ",%llu,%llu,%llu",
 			(unsigned long long)profile.awakeIslandBitSetClearBypassCount,
 			(unsigned long long)profile.lastAwakeIslandBitSetBytes,
 			(unsigned long long)profile.contactManifoldSyncCount );
