@@ -978,7 +978,7 @@ void b3RecAccumulateBounds( b3Recording* rec, b3AABB bounds )
 	rec->haveBounds = true;
 }
 
-void b3StartRecordingIntoBuffer( b3World* world, b3Recording* recording )
+bool b3StartRecordingIntoBuffer( b3World* world, b3Recording* recording )
 {
 	// Reset so a recording handle can be reused for a fresh session
 	recording->buffer.size = 0;
@@ -1010,24 +1010,29 @@ void b3StartRecordingIntoBuffer( b3World* world, b3Recording* recording )
 	hdr.registryOffset = 0; // backpatched in b3StopRecordingInternal
 	hdr.registryByteCount = 0;
 
-	world->recording = recording;
-
 	// Every recording is snapshot-seeded. The seed blob follows the header so replay restores in
 	// place and the world id stays stable across a restart or backward scrub. An empty world still
 	// serializes a valid blob, so there is no from-creation special case.
 	b3RecBuffer snapBuf = { 0 };
-	b3SerializeWorld( world, &snapBuf, recording );
-	hdr.snapshotSize = (uint64_t)snapBuf.size;
+	int snapshotSize = b3SerializeWorld( world, &snapBuf, recording );
+	if ( snapshotSize <= 0 )
+	{
+		b3RecBufFree( &snapBuf );
+		return false;
+	}
+	hdr.snapshotSize = (uint64_t)snapshotSize;
 
 	b3RecBufAppend( &recording->buffer, &hdr, (int)sizeof( hdr ) );
-	b3RecBufAppend( &recording->buffer, snapBuf.data, snapBuf.size );
+	b3RecBufAppend( &recording->buffer, snapBuf.data, snapshotSize );
 	b3RecBufFree( &snapBuf );
+	world->recording = recording;
 
 	// Anchor the recording with the current world state hash so replay can assert
 	// determinism from the very first step.
 	b3WorldId worldId = { (uint16_t)( world->worldId + 1 ), world->generation };
 	b3RecArgs_StateHash stateHash = { worldId, b3HashWorldState( world ) };
 	b3RecWrite_StateHash( recording, &stateHash );
+	return true;
 }
 
 void b3StopRecordingInternal( b3World* world )

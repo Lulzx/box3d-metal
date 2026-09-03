@@ -92,7 +92,8 @@ int main( void )
 			"dispatches,last_input_bootstrap_bytes,last_input_private_bytes,last_contact_transition_count,"
 			"last_contact_transition_bytes,last_contact_exception_bytes,coverage_"
 			"bypasses,state_walk_bypasses,last_state_clear_bytes,hit_clear_bypasses,last_hit_clear_bytes,awake_island_clear_"
-			"bypasses,last_awake_island_clear_bytes,manifold_syncs,body_walk_bypasses,shape_applies,state_syncs,last_state_bytes,"
+			"bypasses,last_awake_island_clear_bytes,manifold_syncs,resident_contacts_without_cpu_manifolds,body_walk_bypasses,"
+			"shape_applies,state_syncs,last_state_bytes,"
 			"sim_syncs,last_sim_count,shape_syncs,"
 			"schedule_packs,schedule_reuses,store_bypasses,event_syncs,public_syncs,index_bytes,prior_stream_bytes,impulse_bytes,"
 			"prior_impulse_bytes,resident_pair_moves,enlarged_shape_traversal_bypasses,last_pair_moves,last_pair_candidates,"
@@ -144,10 +145,11 @@ int main( void )
 			(unsigned long long)profile.lastContactStateBitSetBytes,
 			(unsigned long long)profile.contactHitEventBitSetClearBypassCount,
 			(unsigned long long)profile.lastContactHitEventBitSetBytes );
-		printf( ",%llu,%llu,%llu",
+		printf( ",%llu,%llu,%llu,%llu",
 			(unsigned long long)profile.awakeIslandBitSetClearBypassCount,
 			(unsigned long long)profile.lastAwakeIslandBitSetBytes,
-			(unsigned long long)profile.contactManifoldSyncCount );
+			(unsigned long long)profile.contactManifoldSyncCount,
+			(unsigned long long)profile.residentContactNoCpuManifoldCount );
 		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
 			(unsigned long long)profile.finalizationBodyTraversalBypassCount,
 			(unsigned long long)profile.shapeResultApplyCount,

@@ -1448,7 +1448,7 @@ static const char* b3_metalSource =
 	"inline uint b3_manifold_stable(const ConvexManifoldResult r,const ConvexManifoldInput in,const device ImpulseResult* previous,const device PrepareInput* prepareTable,constant ManifoldCompactParams& p){\n"
 	"  if(p.p0==0u||r.eligible==0u||r.touching==0u||r.pointCount==0u||r.pointCount>4u||(r.residentFlags&4u)!=0u||(in.prepareEligible&2u)==0u||in.contactId>=p.previousCount)return 0u;\n"
 	"  ImpulseResult old=previous[in.contactId];if(old.contactId!=in.contactId||old.generation!=p.previousGeneration||old.contactGeneration!=in.contactGeneration||old.pointCount==0u||old.pointCount>4u)return 0u;\n"
-	"  PrepareInput prep=prepareTable[in.contactId];return prep.contactId==in.contactId&&prep.contactGeneration==in.contactGeneration&&prep.manifold!=0ul; }\n"
+	"  PrepareInput prep=prepareTable[in.contactId];return prep.contactId==in.contactId&&prep.contactGeneration==in.contactGeneration&&prep.generation!=0u; }\n"
 	"inline uint b3_manifold_matches(const ConvexManifoldResult r,const ConvexManifoldInput in,const device ImpulseResult* previous){ImpulseResult old=previous[in.contactId];uint claimed=0u,matches=0u;\n"
 	"  for(uint pointIndex=0u;pointIndex<r.pointCount;++pointIndex){uint feature=pointIndex==0u?r.feature1:(pointIndex==1u?r.feature2:(pointIndex==2u?r.feature3:r.feature4));for(uint oldIndex=0u;oldIndex<old.pointCount;++oldIndex){uint bit=1u<<oldIndex;if((claimed&bit)==0u&&feature==old.points[oldIndex].featureId){claimed|=bit;matches+=1u;break;}}}return matches;}\n"
 	"inline uint b3_manifold_cold_transition(const ConvexManifoldResult r,const ConvexManifoldInput in,constant ManifoldCompactParams& p){return p.p1!=0u&&(in.prepareEligible&1u)!=0u&&r.eligible!=0u&&r.touching!=0u&&r.pointCount>0u&&r.pointCount<=4u&&(r.residentFlags&4u)==0u;}\n"
@@ -1503,7 +1503,7 @@ static const char* b3_metalSource =
 	"          if(pointIndex==0u)r.normalImpulse1=old.points[oldIndex].normalImpulse;else if(pointIndex==1u)r.normalImpulse2=old.points[oldIndex].normalImpulse;else if(pointIndex==2u)r.normalImpulse3=old.points[oldIndex].normalImpulse;else r.normalImpulse4=old.points[oldIndex].normalImpulse;\n"
 	"          r.persistedBits|=1u<<pointIndex;claimed|=bit;break;}}}}}\n"
 	"  if(oldValid!=0u&&(inputs[i].prepareEligible&1u)!=0u&&r.touching!=0u&&r.pointCount>0u&&r.pointCount<=4u){PrepareInput prep=prepareTable[contactId];\n"
-	"    if(prep.contactId==contactId&&prep.contactGeneration==inputs[i].contactGeneration&&prep.manifold!=0ul){prep.indexA=transformA.index;prep.indexB=transformB.index;prep.generation=p.currentGeneration;\n"
+	"    if(prep.contactId==contactId&&prep.contactGeneration==inputs[i].contactGeneration&&prep.generation!=0u){prep.indexA=transformA.index;prep.indexB=transformB.index;prep.generation=p.currentGeneration;\n"
 	"      prep.friction=r.friction;prep.restitution=r.restitution;prep.rollingResistance=r.rollingResistance;prep.tangentVelocityX=r.tangentVelocityX;prep.tangentVelocityY=r.tangentVelocityY;prep.tangentVelocityZ=r.tangentVelocityZ;\n"
 	"      prep.twistImpulse=old.twistImpulse;prep.frictionImpulseX=old.frictionX;prep.frictionImpulseY=old.frictionY;prep.frictionImpulseZ=old.frictionZ;\n"
 	"      prep.rollingImpulseX=old.rollingX;prep.rollingImpulseY=old.rollingY;prep.rollingImpulseZ=old.rollingZ;\n"
@@ -5396,26 +5396,6 @@ bool b3MetalCanBootstrapConvexManifoldInputs( const b3MetalContext* context, con
 		context->contactInputBootstrapRevision == world->metalContactInputRevision;
 }
 
-bool b3MetalPatchContactPrepareManifold( b3MetalContext* context, int contactId, uint32_t contactGeneration,
-	const b3Manifold* manifold )
-{
-	if ( context == NULL || manifold == NULL || contactId < 0 || context->contactPrepareGeneration == 0 ||
-		context->contactPrepareTableBuffer == nil || context->contactTransitionCount <= 0 ||
-		(NSUInteger)contactId >= context->contactPrepareTableCapacity / sizeof( b3MetalContactPrepareInput ) )
-	{
-		return false;
-	}
-	b3MetalContactPrepareInput* input =
-		( (b3MetalContactPrepareInput*)context->contactPrepareTableBuffer.contents ) + contactId;
-	if ( input->contactId != (uint32_t)contactId || input->contactGeneration != contactGeneration ||
-		input->generation != context->contactPrepareGeneration || input->manifold != 0 )
-	{
-		return false;
-	}
-	input->manifold = (uint64_t)(uintptr_t)manifold;
-	return true;
-}
-
 bool b3MetalCanReuseConvexManifoldInputs( const b3MetalContext* context, const b3World* world, int contactCount )
 {
 	return context != NULL && world != NULL && contactCount > 0 &&
@@ -5611,7 +5591,7 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 				bool isFast = ( simA->flags & b3_isFast ) != 0 || ( simB->flags & b3_isFast ) != 0;
 				bool bypassEligible = prepareEligible && ( contact->flags & b3_simTouchingFlag ) != 0 &&
 					( contact->flags & b3_simMetalManifold ) != 0 && contact->manifoldCount == 1 &&
-					contact->manifolds != NULL && isFast == false && ( shapeA->flags & b3_enableHitEvents ) == 0 &&
+					isFast == false && ( shapeA->flags & b3_enableHitEvents ) == 0 &&
 					( shapeB->flags & b3_enableHitEvents ) == 0 && world->recording == NULL;
 				input->prepareEligible |= bypassEligible ? 2u : 0u;
 			}
@@ -5900,16 +5880,23 @@ bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalCon
 	return true;
 }
 
-static bool b3MetalApplyContactManifoldResult( b3Contact* contact, const b3MetalConvexManifoldResult* result )
+static bool b3MetalApplyContactManifoldResult( b3World* world, b3Contact* contact,
+	const b3MetalConvexManifoldResult* result )
 {
-	if ( contact == NULL || result == NULL || contact->contactId < 0 || contact->manifoldCount != 1 ||
-		contact->manifolds == NULL || result->eligible == 0 || result->touching == 0 || result->pointCount < 1 ||
+	if ( world == NULL || contact == NULL || result == NULL || contact->contactId < 0 || contact->manifoldCount != 1 ||
+		result->eligible == 0 || result->touching == 0 || result->pointCount < 1 ||
 		result->pointCount > B3_MAX_MANIFOLD_POINTS || result->contactId != (uint32_t)contact->contactId ||
 		result->inputIndex != (uint32_t)contact->contactId || result->contactGeneration != contact->generation )
 	{
 		return false;
 	}
 
+	if ( contact->manifolds == NULL )
+	{
+		// Cold resident contacts deliberately have no CPU manifold allocation.
+		// Materialize exactly one only at this explicit CPU readback boundary.
+		contact->manifolds = b3AllocateManifoldsSerial( world, 1 );
+	}
 	b3Manifold* manifold = contact->manifolds;
 	manifold->normal = (b3Vec3){ result->normalX, result->normalY, result->normalZ };
 	manifold->pointCount = (int)result->pointCount;
@@ -5968,13 +5955,13 @@ static bool b3MetalApplyContactManifoldResult( b3Contact* contact, const b3Metal
 	return true;
 }
 
-bool b3MetalSyncContactManifold( b3MetalContext* context, b3Contact* contact )
+bool b3MetalSyncContactManifold( b3MetalContext* context, b3World* world, b3Contact* contact )
 {
-	if ( context == NULL || contact == NULL ) return false;
+	if ( context == NULL || world == NULL || contact == NULL ) return false;
 	if ( contact->contactId < 0 || contact->contactId >= context->convexManifoldTableCount ) return false;
 	NSUInteger offset = (NSUInteger)contact->contactId * sizeof( b3MetalConvexManifoldResult );
 	if ( b3MetalReadbackConvexManifoldRange( context, offset, sizeof( b3MetalConvexManifoldResult ) ) == false ) return false;
-	return b3MetalApplyContactManifoldResult( contact, context->convexManifoldTableReadbackBuffer.contents );
+	return b3MetalApplyContactManifoldResult( world, contact, context->convexManifoldTableReadbackBuffer.contents );
 }
 
 bool b3MetalSyncAllContactManifolds( b3MetalContext* context, b3World* world )
@@ -5998,7 +5985,7 @@ bool b3MetalSyncAllContactManifolds( b3MetalContext* context, b3World* world )
 		b3Contact* contact = world->contacts.data + contactId;
 		if ( contact->contactId != contactId || b3IsContactManifoldStale( world, contact ) == false ) continue;
 		if ( contactId >= context->convexManifoldTableCount ||
-			b3MetalApplyContactManifoldResult( contact, results + contactId ) == false ) return false;
+			b3MetalApplyContactManifoldResult( world, contact, results + contactId ) == false ) return false;
 		contact->metalSyncGeneration = world->metalContactManifoldGeneration;
 		world->metalContactManifoldSyncCount += 1;
 	}

@@ -18,6 +18,9 @@
 #include "id_pool.h"
 #include "island.h"
 #include "joint.h"
+#if defined( BOX3D_METAL )
+#include "metal_backend.h"
+#endif
 #include "physics_world.h"
 #include "recording.h"
 #include "sensor.h"
@@ -791,10 +794,6 @@ static void b3SerContacts( b3RecBuffer* buf, b3World* world )
 	{
 		b3Contact* c = world->contacts.data + i;
 		bool isLive = ( c->contactId == i );
-		if ( isLive )
-		{
-			b3SyncContactImpulses( world, c );
-		}
 
 		// Write raw struct with pointer fields zeroed
 		b3Contact copy = *c;
@@ -985,6 +984,27 @@ static void b3FreeLiveSimElements( b3World* world )
 
 int b3SerializeWorld( b3World* world, b3RecBuffer* buf, b3Recording* rec )
 {
+#if defined( BOX3D_METAL )
+	// Snapshots own a complete CPU image. Resident contacts can defer their CPU
+	// manifold allocation until this explicit observation boundary.
+	if ( world->metalContext != NULL && b3MetalSyncAllContactManifolds( world->metalContext, world ) == false )
+	{
+		return 0;
+	}
+	if ( world->metalContext != NULL )
+	{
+		for ( int contactId = 0; contactId < world->contacts.count; ++contactId )
+		{
+			b3Contact* contact = world->contacts.data + contactId;
+			if ( contact->contactId == contactId && contact->manifoldCount > 0 &&
+				( contact->flags & b3_simMetalManifold ) != 0 && b3SyncContactImpulses( world, contact ) == false )
+			{
+				return 0;
+			}
+		}
+	}
+#endif
+
 	int startSize = buf->size;
 
 	// Snapshot header

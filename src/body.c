@@ -524,7 +524,7 @@ int b3Body_GetContactData( b3BodyId bodyId, b3ContactData* contactData, int capa
 			contactData[index].shapeIdA = (b3ShapeId){ shapeA->id + 1, bodyId.world0, shapeA->generation };
 			contactData[index].shapeIdB = (b3ShapeId){ shapeB->id + 1, bodyId.world0, shapeB->generation };
 			contactData[index].manifolds = contact->manifolds;
-			contactData[index].manifoldCount = contact->manifoldCount;
+			contactData[index].manifoldCount = contact->manifolds != NULL ? contact->manifoldCount : 0;
 			index += 1;
 		}
 

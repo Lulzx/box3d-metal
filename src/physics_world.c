@@ -789,6 +789,15 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.awakeIslandBitSetClearBypassCount = world->metalAwakeIslandBitSetClearBypassCount;
 	profile.lastAwakeIslandBitSetBytes = world->metalLastAwakeIslandBitSetBytes;
 	profile.contactManifoldSyncCount = world->metalContactManifoldSyncCount;
+	for ( int contactId = 0; contactId < world->contacts.count; ++contactId )
+	{
+		const b3Contact* contact = world->contacts.data + contactId;
+		bool deviceOnly = contact->contactId == contactId && contact->setIndex == b3_awakeSet &&
+			contact->manifoldCount == 1 && contact->manifolds == NULL &&
+			( contact->flags & ( b3_contactTouchingFlag | b3_simMetalManifold | b3_simMetalManifoldStale ) ) ==
+				( b3_contactTouchingFlag | b3_simMetalManifold | b3_simMetalManifoldStale );
+		profile.residentContactNoCpuManifoldCount += deviceOnly;
+	}
 	profile.contactImpulseStoreBypassCount = world->metalContactImpulseStoreBypassCount;
 	profile.contactImpulseEventSyncCount = world->metalContactImpulseEventSyncCount;
 	profile.contactImpulseSyncCount = world->metalContactImpulseSyncCount;
@@ -1151,7 +1160,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void* 
 			metalResult != NULL && metalResult->eligible != 0 && metalResult->touching != 0 && metalResult->pointCount >= 1 &&
 			metalResult->pointCount <= B3_MAX_MANIFOLD_POINTS && metalResult->contactGeneration == contact->generation &&
 			( metalResult->residentFlags & 2u ) != 0 && wasTouching && contact->manifoldCount == 1 &&
-			contact->manifolds != NULL && isFast == false && ( shapeA->flags & b3_enableHitEvents ) == 0 &&
+			isFast == false && ( shapeA->flags & b3_enableHitEvents ) == 0 &&
 			( shapeB->flags & b3_enableHitEvents ) == 0 && world->recording == NULL;
 		if ( residentCollisionBypass )
 		{
@@ -1427,38 +1436,9 @@ static bool b3ValidateMetalContactTransitions( const b3World* world, const b3Sol
 	return true;
 }
 
-static bool b3ApplyMetalContactTransitions( b3World* world, const b3MetalContactTransition* transitions,
+static void b3ApplyMetalContactTransitions( b3World* world, const b3MetalContactTransition* transitions,
 	int transitionCount )
 {
-	// Allocate every placeholder before exposing any touching/contact-graph state.
-	// Allocation is infallible under Box3D's allocator contract; backend patching
-	// remains a checked boundary.
-	for ( int i = 0; i < transitionCount; ++i )
-	{
-		b3Contact* contact = world->contacts.data + transitions[i].contactId;
-		contact->manifolds = b3AllocateManifoldsSerial( world, 1 );
-		contact->manifoldCount = 1;
-		contact->manifolds[0].pointCount = (int)transitions[i].pointCount;
-	}
-
-	for ( int i = 0; i < transitionCount; ++i )
-	{
-		const b3MetalContactTransition* transition = transitions + i;
-		b3Contact* contact = world->contacts.data + transition->contactId;
-		if ( b3MetalPatchContactPrepareManifold( world->metalContext, (int)transition->contactId,
-				 transition->contactGeneration, contact->manifolds ) == false )
-		{
-			// Keep the allocated placeholders for the ordinary CPU fallback, but do
-			// not expose a partially transitioned batch.
-			for ( int j = 0; j < transitionCount; ++j )
-			{
-				b3Contact* pending = world->contacts.data + transitions[j].contactId;
-				pending->manifolds[0].pointCount = 0;
-			}
-			return false;
-		}
-	}
-
 	b3BitSet* stateBits = &world->taskContexts.data[0].contactStateBitSet;
 	for ( int i = 0; i < transitionCount; ++i )
 	{
@@ -1468,6 +1448,7 @@ static bool b3ApplyMetalContactTransitions( b3World* world, const b3MetalContact
 		const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
 		const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
 		const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
+		contact->manifoldCount = 1;
 		contact->bodySimIndexA = bodyA->setIndex == b3_staticSet ? B3_NULL_INDEX : bodyA->localIndex;
 		contact->bodySimIndexB = bodyB->setIndex == b3_staticSet ? B3_NULL_INDEX : bodyB->localIndex;
 		contact->flags |= b3_simTouchingFlag | b3_simStartedTouching | b3_simMetalManifold | b3_simMetalManifoldStale;
@@ -1475,7 +1456,6 @@ static bool b3ApplyMetalContactTransitions( b3World* world, const b3MetalContact
 		b3SetBit( stateBits, (int)transition->contactId );
 	}
 	world->taskContexts.data[0].manifoldCounts[0] += transitionCount;
-	return true;
 }
 #endif
 
@@ -1660,35 +1640,9 @@ static bool b3Collide( b3StepContext* context )
 #endif
 	}
 #if defined( BOX3D_METAL )
-	if ( metalContactTransitionCount > 0 &&
-		b3ApplyMetalContactTransitions( world, metalContactTransitions, metalContactTransitionCount ) == false )
+	if ( metalContactTransitionCount > 0 )
 	{
-		// No contact state was exposed. Re-run the complete batch through the CPU
-		// oracle; allocated zero-point placeholders are safe inputs to that path.
-		world->metalNarrowPhaseFallbackCount += 1;
-		metalCollisionDispatched = false;
-		metalResidentBypassCount = 0;
-		metalContactTransitions = NULL;
-		metalContactTransitionCount = 0;
-		context->metalConvexManifolds = NULL;
-		context->metalConvexManifoldCount = 0;
-		context->metalCollisionExceptionsOnly = false;
-		cpuContactCount = contactCount;
-		if ( contactIndices == NULL )
-		{
-			contactIndices = b3GatherAwakeContactIndices( world, touchingCount, nonTouchingCount );
-			context->awakeContactIndices = contactIndices;
-		}
-		if ( b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 && b3MaterializeBodySims( world ) == false )
-		{
-			b3TracyCZoneEnd( collide );
-			return false;
-		}
-		if ( world->metalShapeCpuBoundsStale && b3MetalSyncAllShapeBounds( world->metalContext, world ) == false )
-		{
-			b3TracyCZoneEnd( collide );
-			return false;
-		}
+		b3ApplyMetalContactTransitions( world, metalContactTransitions, metalContactTransitionCount );
 	}
 #endif
 	if ( cpuContactCount > 0 )
@@ -2420,7 +2374,10 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
 					// avoid double draw
 					if ( b3GetBit( &world->debugContactSet, contactId ) == false )
 					{
-						b3SyncContactManifold( world, contact );
+						if ( b3SyncContactManifold( world, contact ) == false )
+						{
+							continue;
+						}
 						if ( draw->drawContactForces )
 						{
 							b3SyncContactImpulses( world, contact );
@@ -3236,8 +3193,10 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
 		return;
 	}
 
-	b3StartRecordingIntoBuffer( world, recording );
-	b3BumpMetalContactInputRevision( world );
+	if ( b3StartRecordingIntoBuffer( world, recording ) )
+	{
+		b3BumpMetalContactInputRevision( world );
+	}
 }
 
 void b3World_StopRecording( b3WorldId worldId )
@@ -4919,6 +4878,11 @@ void b3ValidateContacts( b3World* world )
 		{
 			if ( touching )
 			{
+				bool deferredMetalManifold = contact->manifolds == NULL && contact->manifoldCount == 1 &&
+					( contact->flags & ( b3_simMetalManifold | b3_simMetalManifoldStale ) ) ==
+						( b3_simMetalManifold | b3_simMetalManifoldStale ) &&
+					( contact->flags & b3_simMeshContact ) == 0;
+				B3_ASSERT( contact->manifolds != NULL || deferredMetalManifold );
 				B3_ASSERT( 0 <= contact->colorIndex && contact->colorIndex < B3_GRAPH_COLOR_COUNT );
 				// Validate body sim indices
 				b3Shape* shapeA = b3Array_Get( world->shapes, contact->shapeIdA );

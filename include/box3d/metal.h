@@ -103,6 +103,9 @@ typedef struct b3MetalProfile
 	/// Individual resident manifolds materialized into the CPU mirror on a
 	/// public, debug, snapshot, route-change, or solver-fallback boundary.
 	uint64_t contactManifoldSyncCount;
+	/// Current awake resident contacts whose logical manifold remains entirely
+	/// device-owned and has no CPU b3Manifold allocation.
+	uint64_t residentContactNoCpuManifoldCount;
 	/// Resident convex steps that skipped the all-contact CPU impulse-store walk.
 	uint64_t contactImpulseStoreBypassCount;
 	/// Hit-event exception contacts synchronized during the compact store path.

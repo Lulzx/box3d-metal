@@ -82,10 +82,10 @@ bool b3SyncContactManifold( b3World* world, b3Contact* contact )
 	if ( contact == NULL )
 		return false;
 	if ( b3IsContactManifoldStale( world, contact ) == false )
-		return true;
+		return contact->manifoldCount == 0 || contact->manifolds != NULL;
 	if ( world != NULL && world->metalContext != NULL )
 	{
-		if ( b3MetalSyncContactManifold( world->metalContext, contact ) == false )
+		if ( b3MetalSyncContactManifold( world->metalContext, world, contact ) == false )
 			return false;
 		contact->metalSyncGeneration = world->metalContactManifoldGeneration;
 		world->metalContactManifoldSyncCount += 1;
@@ -137,7 +137,7 @@ b3ContactData b3Contact_GetData( b3ContactId contactId )
 		.generation = shapeB->generation,
 	};
 
-	if ( contact->manifoldCount > 0 )
+	if ( contact->manifoldCount > 0 && contact->manifolds != NULL )
 	{
 		data.manifolds = contact->manifolds;
 		data.manifoldCount = contact->manifoldCount;
@@ -650,7 +650,7 @@ static bool b3ComputeConvexManifold( b3World* world, int workerIndex, b3Contact*
 	b3ManifoldPoint oldPoints[B3_MAX_MANIFOLD_POINTS];
 	int oldCount = 0;
 
-	if ( contact->manifoldCount == 0 )
+	if ( contact->manifoldCount == 0 || contact->manifolds == NULL )
 	{
 		contact->manifolds = b3AllocateManifolds( world, 1 );
 		contact->manifoldCount = 1;

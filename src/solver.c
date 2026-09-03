@@ -1641,10 +1641,10 @@ static void b3SolverTask( void* taskContext )
 
 		// Prepare convex contact constraints
 #if defined( BOX3D_METAL )
-		// A private cold first-touch can enter the graph with only a stale CPU
-		// placeholder. If overflow prevents device preparation, materialize those
-		// resident records before any CPU preparation worker dereferences them.
-		if ( context->metalPrepareConvexOnGpu == false && context->metalResidentConvexContactCount > 0 )
+		// A private cold first-touch can enter the graph without CPU manifold
+		// storage. Materialize every stale resident contact before any CPU prepare
+		// worker (including graph overflow) can dereference it.
+		if ( context->metalPrepareConvexOnGpu == false && context->world->metalContext != NULL )
 		{
 			b3RefreshStaleContactManifoldsAfterMetalFallback( context );
 		}

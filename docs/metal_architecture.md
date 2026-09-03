@@ -365,8 +365,9 @@ For an already-touching, non-fast contact whose current record was refreshed by
 the device, no collision worker runs. The contact-ID table remains
 authoritative, and a world generation makes its CPU manifold a lazy mirror
 without writing a stale flag on every stable contact. Ordinary complete cold
-first touches install zeroed structural CPU placeholders, patch GPU-authored
-prepare records, and feed the existing ascending contact-ID state transition.
+first touches set the logical manifold count without allocating CPU storage and
+feed the existing ascending contact-ID state transition. GPU-authored prepare
+records accept a null mirror address until an explicit materialization boundary.
 Separations, hit-event contacts, recording, callbacks, recycling, CCD, sleeping
 bodies, and mixed topology transitions continue through Erin's CPU contact path
 as full exceptions. If the collision graph revision remains unchanged and every convex
@@ -420,11 +421,10 @@ front of the existing solver command buffer. CPU workers skip
 the private contact-id table and writes the existing 1,696-byte SIMD-wide
 constraint ABI. Finalized anchors, point persistence, default materials, tangent
 velocity, and normal warm starts come from the private result. Body indices,
-custom callback results, contact-scope impulses, and manifold storage identity are retained in a
+custom callback results, contact-scope impulses, and an optional CPU manifold address are retained in a
 generation-tagged 224-byte shared table indexed by contact ID. The CPU seeds a
 record when a contact first becomes eligible; the cold transition scatter can
-author that first record directly and the CPU patches only its checked manifold
-pointer. On later generation-stable steps,
+author that first record directly without a CPU allocation. On later generation-stable steps,
 the manifold scatter validates the prior impulse and preparation records, then
 refreshes the table in place with current body indices, finalized anchors and
 materials, contact-scope impulses, feature IDs, persistence, and normal warm
@@ -439,7 +439,7 @@ impulses on Metal. A status word validates table authority without staging the
 table. If input packing or a later unsupported constraint rejects the route,
 CPU convex preparation is rerun before the CPU solver fallback. This removes
 CPU preparation arithmetic plus the dedicated solver-time contact traversal and
-144-byte lane stream. CPU manifold allocation, custom callbacks, exceptional table writes,
+144-byte lane stream. CPU manifold materialization at explicit observation and fallback boundaries, custom callbacks, exceptional table writes,
 the graph-color schedule, events, and topology remain.
 The 112-byte post-solve record carries contact generation plus each point's
 feature ID. The next manifold scatter validates contact identity and generation,
@@ -460,6 +460,9 @@ sleeping contacts, custom materials, pre-solve/hit events, and partial plans
 fail closed to the legacy path. The implementation and M4 Pro cold measurements
 are recorded in
 [`benchmarks/m4-pro-private-first-touch-2026-09-03.md`](benchmarks/m4-pro-private-first-touch-2026-09-03.md).
+The follow-up removal of ordinary cold-contact CPU manifold allocation is
+recorded in
+[`benchmarks/m4-pro-deferred-cpu-manifolds-2026-09-03.md`](benchmarks/m4-pro-deferred-cpu-manifolds-2026-09-03.md).
 Successful resident solves now skip the all-contact CPU impulse-store walk.
 During the already-required narrow-phase input pack, Box3D retains only IDs whose
 shapes requested hit events. The store stage processes that compact exception
@@ -486,7 +489,7 @@ paths, not yet the final performance architecture.
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 | Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, private raw candidate scratch for ordinary worlds, exact blocked-joint body-pair rejection, residual-filter move compaction, and flat contact-seed emission. Zero-exception plans expose only the summary and seed stream; custom/compound worlds, dense materialization, and deterministic contact topology creation retain explicit CPU-visible paths |
-| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Completely cold ordinary plans expand a 16-byte CPU identity stream into private 40-byte inputs, then return only a 16-byte touching transition while the 240-byte manifold remains private. Ordered island/graph mutation remains CPU-owned. Lazy CPU mirrors synchronize only at explicit boundaries. CPU retains non-ordinary/revision packing, structural manifold allocation, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
+| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Completely cold ordinary plans expand a 16-byte CPU identity stream into private 40-byte inputs, then return only a 16-byte touching transition while the 240-byte manifold remains private. Ordered island/graph mutation remains CPU-owned. Ordinary resident contacts need no CPU manifold allocation; lazy CPU mirrors materialize only at explicit observation, sleep, disable, or fallback boundaries. CPU retains non-ordinary/revision packing, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
 | Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts a 112-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |

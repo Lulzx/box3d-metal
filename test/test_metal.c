@@ -1455,15 +1455,27 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( profile.lastContactExceptionBytes == 0 );
 	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
 	ENSURE( profile.contactCollisionCpuCount == 0 );
+	ENSURE( profile.residentContactNoCpuManifoldCount == (uint64_t)contactCount );
+	for ( int i = 0; i < gpu->contacts.count; ++i )
+	{
+		const b3Contact* contact = gpu->contacts.data + i;
+		if ( contact->contactId != i )
+			continue;
+		ENSURE( contact->manifoldCount == 1 );
+		ENSURE( contact->manifolds == NULL );
+		ENSURE( ( contact->flags & ( b3_simMetalManifold | b3_simMetalManifoldStale ) ) ==
+				( b3_simMetalManifold | b3_simMetalManifoldStale ) );
+	}
 
-	// The CPU manifold is only a placeholder until a public consumer asks for
-	// it. One GetData call must materialize exactly that contact from the private
-	// resident table without perturbing topology.
+	// No CPU manifold exists until a public consumer asks for it. One GetData
+	// call must materialize exactly that contact from the private resident table
+	// without perturbing topology.
 	int contactId = gpu->constraintGraph.colors[cpu->contacts.data[0].colorIndex].convexContacts.data[0];
 	b3Contact* gpuContact = gpu->contacts.data + contactId;
 	const b3Contact* cpuContact = cpu->contacts.data + contactId;
 	ENSURE( ( gpuContact->flags & b3_simMetalManifold ) != 0 );
 	ENSURE( ( gpuContact->flags & b3_simMetalManifoldStale ) != 0 );
+	ENSURE( gpuContact->manifoldCount == 1 && gpuContact->manifolds == NULL );
 	ENSURE( profile.contactManifoldSyncCount == 0 );
 	b3ContactId publicContactId = { contactId + 1, gpu->worldId, 0, gpuContact->generation };
 	b3ContactData publicData = b3Contact_GetData( publicContactId );
@@ -1471,6 +1483,7 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( ( gpuContact->flags & b3_simMetalManifoldStale ) == 0 );
 	profile = b3World_GetMetalProfile( gpuWorldId );
 	ENSURE( profile.contactManifoldSyncCount == 1 );
+	ENSURE( profile.residentContactNoCpuManifoldCount == (uint64_t)contactCount - 1u );
 	ENSURE( cpuContact->manifoldCount == 1 );
 	ENSURE( publicData.manifolds[0].pointCount == cpuContact->manifolds[0].pointCount );
 	ENSURE( b3Length( b3Sub( publicData.manifolds[0].normal, cpuContact->manifolds[0].normal ) ) <= 1.0e-5f );
@@ -1483,6 +1496,11 @@ static int MetalFinalPairPlanOrderTest( void )
 		ENSURE( fabsf( a->separation - b->separation ) <= 1.0e-5f );
 		ENSURE( a->featureId == b->featureId );
 	}
+	b3ContactData repeatedData = b3Contact_GetData( publicContactId );
+	ENSURE( repeatedData.manifolds == publicData.manifolds && repeatedData.manifoldCount == 1 );
+	ENSURE( b3World_GetMetalProfile( gpuWorldId ).contactManifoldSyncCount == 1 );
+	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
+	ENSURE( CompareTouchingGraphTopology( cpu, gpu ) == 0 );
 	printf( "    final pair plan contacts=%d direct=%d pairSeedBytes=%llu inputSeedBytes=%llu inputPrivateBytes=%llu "
 			"recordTraversal=bypassed inputPack=bypassed exceptions=0 transitionBytes=%zu lazySync=1 exactTopology=yes\n",
 			contactCount, profile.lastPairDirectCreateCount, (unsigned long long)profile.lastPairContactSeedBytes,
@@ -2540,6 +2558,7 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( residentProfile.bodySimSyncCount == 0 );
 	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodyStateCpuStale ) != 0 );
 	ENSURE( b3AtomicLoadInt( &gpuWorldInternal->metalBodySimCpuStale ) != 0 );
+	ENSURE( residentProfile.residentContactNoCpuManifoldCount == count );
 	b3AABB cpuResidentAABB = b3Shape_GetAABB( cpuDynamicShapes[count - 1] );
 	b3AABB gpuResidentAABB = b3Shape_GetAABB( gpuDynamicShapes[count - 1] );
 	ENSURE( b3World_GetMetalProfile( gpuWorld ).shapeBoundsSyncCount == 1 );
@@ -3026,6 +3045,7 @@ static int MetalResidentCollisionBypassFallbackTest( void )
 	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
 	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
+	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, true ) );
 	b3World_SetContactRecycleDistance( cpuWorld, 0.0f );
 	b3World_SetContactRecycleDistance( gpuWorld, 0.0f );
 	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
@@ -3046,6 +3066,15 @@ static int MetalResidentCollisionBypassFallbackTest( void )
 	b3CreateSphereShape( gpuDynamic, &shapeDef, &sphere );
 	b3World_Step( cpuWorld, 1.0f / 60.0f, 1 );
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 1 );
+	b3World* gpu = b3GetWorldFromId( gpuWorld );
+	b3Contact* contact = NULL;
+	for ( int contactId = 0; contactId < gpu->contacts.count; ++contactId )
+	{
+		if ( gpu->contacts.data[contactId].contactId == contactId )
+			contact = gpu->contacts.data + contactId;
+	}
+	ENSURE( contact != NULL && contact->manifoldCount == 1 && contact->manifolds == NULL );
+	ENSURE( b3World_GetMetalProfile( gpuWorld ).residentContactNoCpuManifoldCount == 1 );
 
 	dynamicDef.position = (b3Pos){ -0.5, 5.0, 0.0 };
 	dynamicDef.linearVelocity = b3Vec3_zero;
@@ -3068,19 +3097,13 @@ static int MetalResidentCollisionBypassFallbackTest( void )
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	ENSURE( profile.contactPrepareDispatchCount == 1 );
 	ENSURE( profile.contactPrepareFallbackCount == 1 );
-	ENSURE( profile.contactPrepareDeviceRefreshCount == 1 );
+	ENSURE( profile.contactPrepareDeviceRefreshCount == 2 );
 	ENSURE( profile.contactCollisionBypassCount == 1 );
-	ENSURE( profile.contactCollisionCpuCount == 1 );
+	ENSURE( profile.contactCollisionCpuCount == 0 );
 	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
 	ENSURE( profile.contactManifoldSyncCount == 1 );
-	b3World* gpu = b3GetWorldFromId( gpuWorld );
-	b3Contact* contact = NULL;
-	for ( int contactId = 0; contactId < gpu->contacts.count; ++contactId )
-	{
-		if ( gpu->contacts.data[contactId].contactId == contactId )
-			contact = gpu->contacts.data + contactId;
-	}
-	ENSURE( contact != NULL && b3IsContactManifoldStale( gpu, contact ) == false );
+	ENSURE( profile.residentContactNoCpuManifoldCount == 0 );
+	ENSURE( contact->manifolds != NULL && b3IsContactManifoldStale( gpu, contact ) == false );
 	float velocityError = b3Length( b3Sub( b3Body_GetLinearVelocity( cpuDynamic ), b3Body_GetLinearVelocity( gpuDynamic ) ) );
 	ENSURE( velocityError <= 3.0e-5f );
 	printf( "    collision bypass fallback bypasses=1 manifoldSyncs=1 prepareFallbacks=1 velocityError=%.3g\n", velocityError );
@@ -3096,6 +3119,7 @@ static int MetalResidentCollisionBypassTransitionTest( void )
 	worldDef.enableSleep = false;
 	b3WorldId worldId = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	ENSURE( b3World_SetMetalBroadPhase( worldId, true ) );
 	b3World_SetContactRecycleDistance( worldId, 0.0f );
 	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
@@ -3121,11 +3145,15 @@ static int MetalResidentCollisionBypassTransitionTest( void )
 	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
 	ENSURE( profile.contactCollisionBypassCount == 1 );
 	ENSURE( profile.contactManifoldSyncCount == 0 );
+	ENSURE( profile.residentContactNoCpuManifoldCount == 1 );
+	ENSURE( contact->manifoldCount == 1 && contact->manifolds == NULL );
 	b3Body_SetAwake( dynamicBody, false );
 	ENSURE( b3Body_IsAwake( dynamicBody ) == false );
 	ENSURE( b3IsContactManifoldStale( world, contact ) == false );
 	profile = b3World_GetMetalProfile( worldId );
 	ENSURE( profile.contactManifoldSyncCount == 1 );
+	ENSURE( profile.residentContactNoCpuManifoldCount == 0 );
+	ENSURE( contact->manifolds != NULL );
 	b3Body_SetAwake( dynamicBody, true );
 	b3World_Step( worldId, 1.0f / 60.0f, 1 );
 	ENSURE( b3IsContactManifoldStale( world, contact ) );
@@ -3135,6 +3163,93 @@ static int MetalResidentCollisionBypassTransitionTest( void )
 	ENSURE( profile.contactManifoldSyncCount == 2 );
 	ENSURE( b3IsContactManifoldStale( world, contact ) == false );
 	printf( "    collision bypass transitions sleepSync=1 disableSync=1\n" );
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
+static int MetalDeferredManifoldLifecycleTest( void )
+{
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	ENSURE( b3World_SetMetalBroadPhase( worldId, true ) );
+	b3World_SetContactRecycleDistance( worldId, 0.0f );
+
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3BodyDef staticDef = b3DefaultBodyDef();
+	b3BodyId staticBody = b3CreateBody( worldId, &staticDef );
+	b3CreateSphereShape( staticBody, &shapeDef, &sphere );
+	b3BodyDef dynamicDef = b3DefaultBodyDef();
+	dynamicDef.type = b3_dynamicBody;
+	dynamicDef.enableSleep = false;
+	dynamicDef.position = (b3Pos){ 0.98, 0.0, 0.0 };
+
+	// Separation must remove a logical contact whose CPU manifold was never allocated.
+	b3BodyId separatingBody = b3CreateBody( worldId, &dynamicDef );
+	b3CreateSphereShape( separatingBody, &shapeDef, &sphere );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	b3World* world = b3GetWorldFromId( worldId );
+	b3Contact* contact = NULL;
+	for ( int contactId = 0; contactId < world->contacts.count; ++contactId )
+	{
+		if ( world->contacts.data[contactId].contactId == contactId )
+			contact = world->contacts.data + contactId;
+	}
+	ENSURE( contact != NULL && contact->manifoldCount == 1 && contact->manifolds == NULL );
+	ENSURE( b3World_GetMetalProfile( worldId ).residentContactNoCpuManifoldCount == 1 );
+	b3Body_SetTransform( separatingBody, (b3Pos){ 4.0, 0.0, 0.0 }, b3Quat_identity );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	ENSURE( world->broadPhase.pairSet.count == 0 );
+	ENSURE( b3World_GetMetalProfile( worldId ).residentContactNoCpuManifoldCount == 0 );
+	b3DestroyBody( separatingBody );
+
+	// Destruction must also tolerate a live, null-backed logical manifold.
+	b3BodyId destroyedBody = b3CreateBody( worldId, &dynamicDef );
+	b3CreateSphereShape( destroyedBody, &shapeDef, &sphere );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	contact = NULL;
+	for ( int contactId = 0; contactId < world->contacts.count; ++contactId )
+	{
+		if ( world->contacts.data[contactId].contactId == contactId )
+			contact = world->contacts.data + contactId;
+	}
+	ENSURE( contact != NULL && contact->manifoldCount == 1 && contact->manifolds == NULL );
+	b3DestroyBody( destroyedBody );
+	ENSURE( world->broadPhase.pairSet.count == 0 );
+	ENSURE( b3World_GetMetalProfile( worldId ).residentContactNoCpuManifoldCount == 0 );
+
+	// Recording snapshots are explicit CPU observation boundaries and materialize once.
+	b3BodyId recordedBody = b3CreateBody( worldId, &dynamicDef );
+	b3CreateSphereShape( recordedBody, &shapeDef, &sphere );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	contact = NULL;
+	for ( int contactId = 0; contactId < world->contacts.count; ++contactId )
+	{
+		if ( world->contacts.data[contactId].contactId == contactId )
+			contact = world->contacts.data + contactId;
+	}
+	ENSURE( contact != NULL && contact->manifoldCount == 1 && contact->manifolds == NULL );
+	b3MetalProfile beforeRecording = b3World_GetMetalProfile( worldId );
+	b3Recording* recording = b3CreateRecording( 0 );
+	ENSURE( recording != NULL );
+	b3World_StartRecording( worldId, recording );
+	ENSURE( contact->manifolds != NULL );
+	b3MetalProfile afterRecording = b3World_GetMetalProfile( worldId );
+	ENSURE( afterRecording.contactManifoldSyncCount == beforeRecording.contactManifoldSyncCount + 1 );
+	ENSURE( afterRecording.residentContactNoCpuManifoldCount == 0 );
+	b3World_StopRecording( worldId );
+	b3DestroyRecording( recording );
+	b3MetalInvalidateContactImpulseResults( world->metalContext );
+	b3Recording* rejectedRecording = b3CreateRecording( 0 );
+	ENSURE( rejectedRecording != NULL );
+	b3World_StartRecording( worldId, rejectedRecording );
+	ENSURE( world->recording == NULL );
+	b3DestroyRecording( rejectedRecording );
+	b3DestroyBody( recordedBody );
+	printf( "    deferred manifold lifecycle separation=yes destruction=yes snapshotSync=1 snapshotReject=yes\n" );
 	b3DestroyWorld( worldId );
 	return 0;
 }
@@ -4748,6 +4863,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalResidentWarmStartCarryTest );
 	RUN_SUBTEST( MetalResidentCollisionBypassFallbackTest );
 	RUN_SUBTEST( MetalResidentCollisionBypassTransitionTest );
+	RUN_SUBTEST( MetalDeferredManifoldLifecycleTest );
 	RUN_SUBTEST( MetalPairTraversalTest );
 	RUN_SUBTEST( MetalFinalPairPlanOrderTest );
 	RUN_SUBTEST( MetalColdContactInputRecycleTest );

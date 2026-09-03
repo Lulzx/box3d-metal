@@ -243,10 +243,6 @@ b3MetalContactInputSeed* b3MetalBeginContactInputBootstrap( b3MetalContext* cont
 bool b3MetalCommitContactInputBootstrap( b3MetalContext* context, const b3World* world, int count );
 void b3MetalCancelContactInputBootstrap( b3MetalContext* context );
 bool b3MetalCanBootstrapConvexManifoldInputs( const b3MetalContext* context, const b3World* world, int contactCount );
-// Complete a GPU-authored cold prepare record after the CPU allocates the stale
-// placeholder manifold required by contact graph and public API invariants.
-bool b3MetalPatchContactPrepareManifold( b3MetalContext* context, int contactId, uint32_t contactGeneration,
-	const b3Manifold* manifold );
 // Diagnostic access to the current device-refreshed transform registry. This
 // does not pack or synchronize CPU body sims and fails when the registry is not
 // authoritative for the world's current step and revision.
@@ -271,7 +267,7 @@ bool b3MetalCopyResidentConvexManifoldTable( b3MetalContext* context, b3MetalCon
 // Materialize current private manifold geometry into the CPU mirror. The
 // single-contact form is the lazy public boundary; the all-contact form is used
 // before route changes and CPU solver fallback.
-bool b3MetalSyncContactManifold( b3MetalContext* context, b3Contact* contact );
+bool b3MetalSyncContactManifold( b3MetalContext* context, b3World* world, b3Contact* contact );
 bool b3MetalSyncAllContactManifolds( b3MetalContext* context, b3World* world );
 
 // Retain post-persistence solver metadata by contact id during the existing CPU

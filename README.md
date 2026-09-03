@@ -98,8 +98,8 @@ identity/point-count transition while keeping geometry private. The scatter rota
 center-of-mass-relative anchors with VF64 translation subtraction, mixes default
 friction/restitution/rolling parameters and tangent velocity, and feature-matches
 warm starts against the prior GPU result. CPU workers consume exception results;
-the compact cold path installs zeroed structural placeholders and preserves the
-existing ascending contact-ID topology transition. The CPU retains manifold allocation, custom material callbacks,
+the compact cold path installs logical contacts without allocating CPU manifolds and preserves the
+existing ascending contact-ID topology transition. The CPU materializes manifold mirrors only at explicit observation or fallback boundaries, and retains custom material callbacks,
 pre-solve callbacks, event exceptions, and island mutation. Other shape pairs stay on the
 unchanged CPU path. High-aspect and speculative hull-sphere contacts explicitly
 retain CPU GJK. Double worlds use VF64 exact subtraction before narrowing
@@ -110,8 +110,8 @@ staging exists only for validation and fallback diagnostics.
 When every colored convex contact remains authoritative after persistence and
 callback processing, a Metal preparation kernel now builds Erin's SIMD-wide
 contact constraints from that table in the solver command buffer. The CPU seeds
-a 224-byte generation-tagged contact-ID table with body indices and manifold
-identity. On later generation-stable steps, the manifold scatter refreshes that
+a 224-byte generation-tagged contact-ID table with body indices and an optional
+CPU mirror address. On later generation-stable steps, the manifold scatter refreshes that
 record directly with current indices, finalized anchors and materials, prior
 contact-scope impulses, persistence, and normal warm starts. Recycling,
 pre-solve callbacks, and custom material callbacks remain CPU-written

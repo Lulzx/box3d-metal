@@ -548,9 +548,9 @@ static inline b3Manifold* b3AllocateManifolds( b3World* world, int count )
 	return manifolds;
 }
 
-// Serial contact-state paths may allocate structural placeholders before any
-// collision task is launched. Avoid taking the parallel narrow-phase mutex once
-// per contact at that boundary.
+// Explicit serial observation and fallback boundaries may materialize a CPU
+// manifold from resident Metal state. Avoid taking the parallel narrow-phase
+// mutex once per contact at that boundary.
 static inline b3Manifold* b3AllocateManifoldsSerial( b3World* world, int count )
 {
 	if ( count == 0 )
@@ -574,7 +574,7 @@ static inline b3Manifold* b3AllocateManifoldsSerial( b3World* world, int count )
 
 static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int count )
 {
-	if ( count == 0 )
+	if ( count == 0 || manifolds == NULL )
 	{
 		return;
 	}

@@ -1775,7 +1775,7 @@ int b3Shape_GetContactData( b3ShapeId shapeId, b3ContactData* contactData, int c
 			contactData[index].shapeIdA = (b3ShapeId){ shapeA->id + 1, shapeId.world0, shapeA->generation };
 			contactData[index].shapeIdB = (b3ShapeId){ shapeB->id + 1, shapeId.world0, shapeB->generation };
 			contactData[index].manifolds = contact->manifolds;
-			contactData[index].manifoldCount = contact->manifoldCount;
+			contactData[index].manifoldCount = contact->manifolds != NULL ? contact->manifoldCount : 0;
 			index += 1;
 		}
 
