@@ -2,7 +2,7 @@
 include(CMakeDependentOption)
 
 project(box3d
-	VERSION 0.1.0
+	VERSION 0.2.0
 	DESCRIPTION "A 3D physics engine for games"
 	HOMEPAGE_URL "https://box2d.org"
 	LANGUAGES C CXX
@@ -18,7 +18,10 @@ message(STATUS "CMake system name: ${CMAKE_SYSTEM_NAME}")
 message(STATUS "CMake host system processor: ${CMAKE_HOST_SYSTEM_PROCESSOR}")
 
 # static link to make leak checking easier (_crtBreakAlloc)
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+# Top-level only so FetchContent consumers keep their own CRT setting.
+if(PROJECT_IS_TOP_LEVEL)
+	set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 if (MSVC OR APPLE OR UNIX)
 	option(BOX3D_SANITIZE "Enable sanitizers for some builds" OFF)
@@ -79,7 +82,7 @@ endif()
 # Contraction into FMA is the one value changing transform enabled by default, and whether
 # it fires depends on the target. Test the compiler, not the platform, so every gcc and
 # clang gets the flag including a clang that is neither MinGW nor clang-cl.
-if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+if (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|IntelLLVM")
 	if (CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
 		# clang-cl defaults to contraction on and silently drops the GNU spelling
 		add_compile_options(/clang:-ffp-contract=off)
@@ -126,11 +129,14 @@ endif()
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-set(CMAKE_VERBOSE_MAKEFILE ON)
+if(PROJECT_IS_TOP_LEVEL)
+	set(CMAKE_VERBOSE_MAKEFILE ON)
 
-# Needed for samples.exe to find box2d.dll
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
+	# Needed for samples.exe to find box3d.dll. Top-level only so
+	# FetchContent consumers keep their own output layout.
+	set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
+	set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
+endif()
 
 # Collect FetchContent downloads outside the build dir so a clean rebuild reuses them.
 # Must precede the first include(FetchContent)
@@ -161,8 +167,9 @@ if(PROJECT_IS_TOP_LEVEL)
 	# Tests need static linkage because they test internal Box3D functions
 	if(NOT BUILD_SHARED_LIBS AND BOX3D_UNIT_TESTS)
 		message(STATUS "Adding Box3D unit tests")
+		include(CTest)
 		add_subdirectory(test)
-		set_target_properties(test PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+		set_target_properties(box3d_test PROPERTIES XCODE_GENERATE_SCHEME TRUE)
 	else()
 		message(STATUS "Skipping Box3D unit tests")
 	endif()

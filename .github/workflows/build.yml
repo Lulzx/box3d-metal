@@ -23,56 +23,68 @@ jobs:
         include:
           - name: ubuntu-gcc
             os: ubuntu-latest
-            test: ./bin/test
+            test: ctest --output-on-failure
+          - name: ubuntu-gcc-ubsan
+            os: ubuntu-latest
+            args: -DBOX3D_SANITIZE=ON -DBOX3D_SANITIZER_TYPE=undefined
+            test: ctest --output-on-failure
           - name: ubuntu-clang
             os: ubuntu-latest
-            args: '-DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_C_COMPILER=clang-18 -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"'
-            test: ./bin/test
+            args: '-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DCMAKE_C_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"'
+            test: ctest --output-on-failure
           - name: ubuntu-clang-msan
             os: ubuntu-latest
             timeout: 10
-            args: '-DCMAKE_CXX_COMPILER=clang++-18 -DCMAKE_C_COMPILER=clang-18 -DCMAKE_C_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins=1 -fno-omit-frame-pointer" -DCMAKE_CXX_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins=1 -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=memory"'
-            test: ./bin/test
+            args: '-DCMAKE_CXX_COMPILER=clang++ -DCMAKE_C_COMPILER=clang -DCMAKE_C_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins=1 -fno-omit-frame-pointer" -DCMAKE_CXX_FLAGS="-fsanitize=memory -fsanitize-memory-track-origins=1 -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=memory"'
+            test: ctest --output-on-failure
             msan-options: abort_on_error=1:halt_on_error=1
           - name: macos
             os: macos-latest
             args: -DBOX3D_SANITIZE=ON
-            test: ./bin/test
+            test: ctest --output-on-failure
+          - name: macos-metal-off
+            os: macos-latest
+            args: -DBOX3D_METAL=OFF
+            test: ctest --output-on-failure
+          - name: macos-validate-off
+            os: macos-latest
+            args: -DBOX3D_VALIDATE=OFF
+            test: ctest --output-on-failure
           - name: windows
             os: windows-latest
             msvc: true
             args: -DBOX3D_SANITIZE=ON
-            test: ./bin/Debug/test
+            test: ctest --output-on-failure -C Debug
           # Box3D is width-4 SIMD only, so this covers the clang-cl toolchain, not AVX2.
           - name: windows-clang-cl
             os: windows-latest
             msvc: true
             args: -T ClangCL
-            test: ./bin/Debug/test
+            test: ctest --output-on-failure -C Debug
           - name: windows-arm64
             os: windows-11-arm
             args: -A arm64 -DBOX3D_DISABLE_SIMD=TRUE -DBOX3D_SANITIZE=ON
-            test: ./bin/Debug/test
+            test: ctest --output-on-failure -C Debug
           # Optimized runs. The determinism golden hashes are otherwise only checked at -O0,
           # and -O2 is where a value changing float transform would first show up.
           - name: windows-relwithdebinfo
             os: windows-latest
             msvc: true
             config: RelWithDebInfo
-            test: ./bin/RelWithDebInfo/test
+            test: ctest --output-on-failure -C RelWithDebInfo
           - name: macos-relwithdebinfo
             os: macos-latest
             config: RelWithDebInfo
-            test: ./bin/test
+            test: ctest --output-on-failure
           - name: ubuntu-gcc-double
             os: ubuntu-latest
             args: -DBOX3D_DOUBLE_PRECISION=ON
-            test: ./bin/test
+            test: ctest --output-on-failure
           - name: windows-double
             os: windows-latest
             msvc: true
             args: -DBOX3D_DOUBLE_PRECISION=ON -DBOX3D_SANITIZE=ON
-            test: ./bin/Debug/test
+            test: ctest --output-on-failure -C Debug
     steps:
     - uses: actions/checkout@v6
 
@@ -128,7 +140,7 @@ jobs:
 
     - name: Test
       working-directory: build
-      run: ./bin/test
+      run: ctest --output-on-failure
 
   # Build-only: running the wasm test needs a node + pthread/SharedArrayBuffer harness.
   # This still catches compile breaks in the box3d library and the test target.
@@ -143,7 +155,7 @@ jobs:
     - uses: mymindstorm/setup-emsdk@v14
 
     - name: Configure CMake
-      run: emcmake cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBOX3D_SAMPLES=OFF -DBUILD_SHARED_LIBS=OFF -DBOX3D_VALIDATE=ON
+      run: emcmake cmake -B build -DCMAKE_BUILD_TYPE=Debug -DBOX3D_SAMPLES=OFF -DBUILD_SHARED_LIBS=OFF -DBOX3D_VALIDATE=ON -DCMAKE_COMPILE_WARNING_AS_ERROR=ON
 
     - name: Build
       run: cmake --build build --config Debug

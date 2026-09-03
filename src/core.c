@@ -146,8 +146,9 @@ void* b3Alloc( size_t size )
 		return NULL;
 	}
 
-	// This could cause some sharing issues, however Box3D rarely calls b3Alloc.
-	// todo this is not true, Box3D allocates a lot.
+	// Byte counting is approximate under custom allocators: b3_byteCount tracks
+	// requested sizes, not aligned sizes, and custom free functions report the
+	// original size passed to b3Free.
 	b3AtomicFetchAddInt( &b3_byteCount, (int)size );
 
 	// Allocation must be a multiple of B3_ALIGNMENT (required by spec).
@@ -171,8 +172,9 @@ void* b3Alloc( size_t size )
 	void* ptr = NULL;
 	if ( posix_memalign( &ptr, B3_ALIGNMENT, alignedSize ) != 0 )
 	{
-		// allocation failed, exit the application
-		exit( EXIT_FAILURE );
+		// Match every other path: report failure via NULL so callers
+		// hit the B3_ASSERT below instead of terminating the process.
+		ptr = NULL;
 	}
 #else
 	void* ptr = aligned_alloc( B3_ALIGNMENT, alignedSize );
@@ -215,8 +217,13 @@ void* b3GrowAlloc( void* oldMem, int oldSize, int newSize )
 {
 	B3_ASSERT( newSize > oldSize );
 	void* newMem = b3Alloc( newSize );
+	if ( newMem == NULL )
+	{
+		return NULL;
+	}
 	if ( oldSize > 0 )
 	{
+		B3_ASSERT( oldMem != NULL );
 		memcpy( newMem, oldMem, oldSize );
 		b3Free( oldMem, oldSize );
 	}

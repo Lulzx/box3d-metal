@@ -7,6 +7,7 @@
 #include "metal_backend.h"
 
 #include "constraint_graph.h"
+#include "body.h"
 #include "broad_phase.h"
 #include "contact_solver.h"
 #include "hull.h"
@@ -16,6 +17,7 @@
 #include "solver_set.h"
 
 #include "box3d/constants.h"
+#include "box3d/types.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -382,6 +384,24 @@ static const uint32_t b3_metalPairCustomFilterBit = 0x80000000u;
 static const uint32_t b3_metalPairContactEventBit = 0x40000000u;
 static const uint32_t b3_metalPairHitEventBit = 0x20000000u;
 static const uint32_t b3_metalPairPreSolveEventBit = 0x10000000u;
+
+// The b3_finalize_shapes kernel below matches on these literals directly
+// (5u = sphere, 0u = capsule, else hull-bounds). Pin them here so any
+// b3ShapeType reorder/insertion fails the build instead of silently
+// misclassifying geometry on-device.
+_Static_assert( b3_capsuleShape == 0, "Metal shader capsule type literal drifted" );
+_Static_assert( b3_sphereShape == 5, "Metal shader sphere type literal drifted" );
+_Static_assert( b3_shapeTypeCount == 6, "Metal shader shape-type coverage changed" );
+_Static_assert( ( b3_metalPairCustomFilterBit & 0x0FFFFFFFu ) == 0, "Metal pair hazard bit overlaps shape type" );
+// Integration kernels test these body-flag literals directly; pin them.
+_Static_assert( b3_lockLinearX == 0x00000001, "Metal shader body-flag literal drifted" );
+_Static_assert( b3_lockLinearY == 0x00000002, "Metal shader body-flag literal drifted" );
+_Static_assert( b3_lockLinearZ == 0x00000004, "Metal shader body-flag literal drifted" );
+_Static_assert( b3_lockAngularX == 0x00000008, "Metal shader body-flag literal drifted" );
+_Static_assert( b3_lockAngularY == 0x00000010, "Metal shader body-flag literal drifted" );
+_Static_assert( b3_lockAngularZ == 0x00000020, "Metal shader body-flag literal drifted" );
+_Static_assert( b3_isSpeedCapped == 0x00000100, "Metal shader body-flag literal drifted" );
+_Static_assert( b3_allowFastRotation == 0x00000400, "Metal shader body-flag literal drifted" );
 
 typedef struct b3MetalConvexManifoldInput
 {
@@ -2465,6 +2485,10 @@ static bool b3MetalEnsureBodyCapacity( b3MetalContext* context, NSUInteger requi
 	[context->bodyStateBuffer release];
 	context->bodyStateBuffer = buffer;
 	context->bodyStateCapacity = capacity;
+	// The buffer identity changed, so any cached residency is invalid.
+	// Matches b3MetalEnsurePropertiesCapacity / FinalizeProperties behavior.
+	context->bodyStateResidentCount = 0;
+	context->bodyStateResidentRevision = 0;
 	return true;
 }
 

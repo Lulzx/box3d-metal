@@ -34,7 +34,7 @@
       "displayName": "Windows MinGW Debug (Ninja, needs gcc on PATH)",
       "generator": "Ninja",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
-      "binaryDir": "${sourceDir}/build/mingw",
+      "binaryDir": "${sourceDir}/build/mingw-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_C_COMPILER": "gcc",
@@ -47,7 +47,7 @@
       "displayName": "Windows MinGW Release (Ninja, needs gcc on PATH)",
       "generator": "Ninja",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
-      "binaryDir": "${sourceDir}/build/mingw",
+      "binaryDir": "${sourceDir}/build/mingw-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "gcc",
@@ -70,7 +70,7 @@
       "displayName": "Windows clang-cl Debug (Ninja, needs LLVM on PATH)",
       "generator": "Ninja",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
-      "binaryDir": "${sourceDir}/build/clang-cl",
+      "binaryDir": "${sourceDir}/build/clang-cl-debug",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_C_COMPILER": "clang-cl",
@@ -83,12 +83,33 @@
       "displayName": "Windows clang-cl Release (Ninja, needs LLVM on PATH)",
       "generator": "Ninja",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
-      "binaryDir": "${sourceDir}/build/clang-cl",
+      "binaryDir": "${sourceDir}/build/clang-cl-release",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_COMPILER": "clang-cl",
         "CMAKE_CXX_COMPILER": "clang-cl",
         "FETCHCONTENT_BASE_DIR": "${sourceDir}/.fetchcontent-cache/clang-cl"
+      }
+    },
+    {
+      "name": "linux-sanitize-undefined",
+      "displayName": "Linux UBSan",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "binaryDir": "${sourceDir}/build/ubsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BOX3D_SANITIZE": "ON",
+        "BOX3D_SANITIZER_TYPE": "undefined"
+      }
+    },
+    {
+      "name": "linux-double",
+      "displayName": "Linux Double Precision",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "binaryDir": "${sourceDir}/build/double",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "BOX3D_DOUBLE_PRECISION": "ON"
       }
     }
   ],

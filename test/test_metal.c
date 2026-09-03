@@ -5010,6 +5010,108 @@ static int MetalResidentBoxContactTest( void )
 	return 0;
 }
 
+static int MetalBodyCapacityGrowthTest( void )
+{
+	// Regression test for bodyStateBuffer growth invalidating residency:
+	// grow the world mid-residency and require a re-upload plus matching
+	// transforms against a CPU reference world.
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	worldDef.enableContinuous = false;
+	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
+	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( gpuWorld, true ) );
+
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.filter.maskBits = 0;
+	shapeDef.invokeContactCreation = false;
+	const int initial = 64;
+	for ( int i = 0; i < initial; ++i )
+	{
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_dynamicBody;
+		bodyDef.position = (b3Pos){ (float)i, 0.0f, 0.0f };
+		bodyDef.linearVelocity = (b3Vec3){ 1.0f, 0.0f, 0.0f };
+		b3BodyId cpuBody = b3CreateBody( cpuWorld, &bodyDef );
+		b3BodyId gpuBody = b3CreateBody( gpuWorld, &bodyDef );
+		b3Sphere sphere = { { 0.0f, 0.0f, 0.0f }, 0.2f };
+		b3CreateSphereShape( cpuBody, &shapeDef, &sphere );
+		b3CreateSphereShape( gpuBody, &shapeDef, &sphere );
+	}
+
+	b3World_Step( cpuWorld, 1.0f / 60.0f, 1 );
+	b3World_Step( gpuWorld, 1.0f / 60.0f, 1 );
+	uint64_t uploadsAfterFirst = b3World_GetMetalProfile( gpuWorld ).bodyStateUploadCount;
+
+	// Force buffer growth well beyond the initial capacity.
+	const int extra = 2048;
+	for ( int i = 0; i < extra; ++i )
+	{
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_dynamicBody;
+		bodyDef.position = (b3Pos){ (float)( initial + i ), 1.0f, 0.0f };
+		bodyDef.linearVelocity = (b3Vec3){ -1.0f, 0.0f, 0.0f };
+		b3BodyId cpuBody = b3CreateBody( cpuWorld, &bodyDef );
+		b3BodyId gpuBody = b3CreateBody( gpuWorld, &bodyDef );
+		b3Sphere sphere = { { 0.0f, 0.0f, 0.0f }, 0.2f };
+		b3CreateSphereShape( cpuBody, &shapeDef, &sphere );
+		b3CreateSphereShape( gpuBody, &shapeDef, &sphere );
+	}
+
+	b3World_Step( cpuWorld, 1.0f / 60.0f, 1 );
+	b3World_Step( gpuWorld, 1.0f / 60.0f, 1 );
+	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( profile.bodyStateUploadCount > uploadsAfterFirst );
+
+	b3DestroyWorld( gpuWorld );
+	b3DestroyWorld( cpuWorld );
+	return 0;
+}
+
+static int MetalMutatorRevisionTest( void )
+{
+	// Each public mutator must invalidate the matching Metal authority.
+	// A missed bump reuses stale device state with no error.
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	worldDef.enableContinuous = false;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( worldId, true ) );
+
+	b3BodyDef bodyDef = b3DefaultBodyDef();
+	bodyDef.type = b3_dynamicBody;
+	b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.filter.maskBits = 0;
+	shapeDef.invokeContactCreation = false;
+	b3Sphere sphere = { { 0.0f, 0.0f, 0.0f }, 0.2f };
+	b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	b3MetalProfile baseline = b3World_GetMetalProfile( worldId );
+
+	b3Body_SetLinearVelocity( bodyId, (b3Vec3){ 3.0f, 0.0f, 0.0f } );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	ENSURE( b3World_GetMetalProfile( worldId ).bodyStateUploadCount > baseline.bodyStateUploadCount );
+	baseline = b3World_GetMetalProfile( worldId );
+
+	b3Body_ApplyForceToCenter( bodyId, (b3Vec3){ 0.0f, 5.0f, 0.0f }, false );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	ENSURE( b3World_GetMetalProfile( worldId ).bodyPropertyUploadCount > baseline.bodyPropertyUploadCount );
+	baseline = b3World_GetMetalProfile( worldId );
+
+	b3Body_SetTransform( bodyId, (b3Pos){ 4.0f, 0.0f, 0.0f }, b3Quat_identity );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	ENSURE( b3World_GetMetalProfile( worldId ).bodyPropertyUploadCount > baseline.bodyPropertyUploadCount );
+
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
 int MetalTest( void )
 {
 	RUN_SUBTEST( MetalPositionIntegrationTest );
@@ -5054,5 +5156,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalMixedJointOverflowTest );
 	RUN_SUBTEST( MetalStaticBodyJointTest );
 	RUN_SUBTEST( MetalResidentBoxContactTest );
+	RUN_SUBTEST( MetalBodyCapacityGrowthTest );
+	RUN_SUBTEST( MetalMutatorRevisionTest );
 	return 0;
 }

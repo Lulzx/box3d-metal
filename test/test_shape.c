@@ -971,12 +971,24 @@ static int ShapeFlagsTest( void )
 	return 0;
 }
 
+static int ShapeTypeAbiTest( void )
+{
+	// The Metal b3_finalize_shapes kernel matches on these literals directly
+	// (5u = sphere, 0u = capsule, else hull-bounds). Pin them on every
+	// platform so an enum reorder fails tests, not just the Metal build.
+	ENSURE( b3_capsuleShape == 0 );
+	ENSURE( b3_sphereShape == 5 );
+	ENSURE( b3_shapeTypeCount == 6 );
+	return 0;
+}
+
 int ShapeTest( void )
 {
 	box = b3MakeBoxHull( 1.0f, 1.0f, 1.0f );
 
 	RUN_SUBTEST( ShapeMassTest );
 	RUN_SUBTEST( ShapeAABBTest );
+	RUN_SUBTEST( ShapeTypeAbiTest );
 	RUN_SUBTEST( ShapeNameTest );
 	RUN_SUBTEST( ShapeFlagsTest );
 	// RUN_SUBTEST( PointInShapeTest );

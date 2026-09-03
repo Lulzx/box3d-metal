@@ -308,6 +308,8 @@ B3_API bool b3World_SetMetalBroadPhase( b3WorldId worldId, bool enabled );
 B3_API void b3World_DisableMetal( b3WorldId worldId );
 
 /// Return current Metal configuration and dispatch telemetry.
+/// Not thread-safe with a concurrent step: call only when the world is not
+/// stepping, or accept torn counter reads.
 B3_API b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId );
 
 /** @} */

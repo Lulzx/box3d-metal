@@ -236,7 +236,10 @@ inline ulong round_shift_u128_status(
     ulong hi, ulong lo, int distance, bool sign, uint roundingMode,
     thread bool &wasInexact, thread bool &wasAboveHalf
 ) {
-    if (distance <= 0) return lo;
+    // Callers must pass a non-negative shift; negative shifts indicate a
+    // caller bug and previously degraded to returning `lo` silently.
+    if (distance < 0) return 0ul;
+    if (distance == 0) return lo;
     ulong quotient;
     bool greaterHalf = false;
     bool exactlyHalf = false;
@@ -549,6 +552,8 @@ inline soft_u128 soft_shift_right_jam128(soft_u128 a, uint distance) {
 
 inline soft_u128 soft_shift_left128(soft_u128 a, uint distance) {
     if (distance == 0) return a;
+    if (distance >= 128) return soft_u128{0, 0};
+    if (distance >= 64) return soft_u128{a.lo << (distance - 64u), 0};
     return soft_u128{
         (a.hi << distance) | (a.lo >> (64u - distance)),
         a.lo << distance

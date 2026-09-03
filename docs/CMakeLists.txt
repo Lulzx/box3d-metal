@@ -55,6 +55,10 @@ doxygen_add_docs(doc
                 "large_worlds.md"
                 "character.md"
                 "reading.md"
+                "faq.md"
+                "raycast_capsule_parallel.md"
                 ALL
                 COMMENT "Generate HTML documentation")
+# metal_architecture.md is intentionally excluded: it documents this fork's
+# experimental Metal backend, not the portable upstream manual.
                 

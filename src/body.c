@@ -37,8 +37,14 @@ b3Body* b3GetBodyFullId( b3World* world, b3BodyId bodyId )
 b3WorldTransform b3GetBodyTransformQuick( b3World* world, b3Body* body )
 {
 	bool synced = b3MaterializeBodySims( world );
-	B3_ASSERT( synced );
-	B3_UNUSED( synced );
+	if ( synced == false )
+	{
+		// Fail-visible, not fail-silent: the CPU mirror below is still valid
+		// memory but may be stale. Callers needing strict freshness must call
+		// b3MaterializeBodySims themselves and handle false.
+		b3Log( "Box3D Metal body-sim readback failed; returning last-known transform\n" );
+		B3_ASSERT( false );
+	}
 	b3SolverSet* set = b3Array_Get( world->solverSets, body->setIndex );
 	b3BodySim* bodySim = b3Array_Get( set->bodySims, body->localIndex );
 	return bodySim->transform;
@@ -60,8 +66,13 @@ b3BodyId b3MakeBodyId( b3World* world, int bodyId )
 b3BodySim* b3GetBodySim( b3World* world, b3Body* body )
 {
 	bool synced = b3MaterializeBodySims( world );
-	B3_ASSERT( synced );
-	B3_UNUSED( synced );
+	if ( synced == false )
+	{
+		// Same fail-visible policy as b3GetBodyTransformQuick: valid memory,
+		// possibly stale. Strict callers must check b3MaterializeBodySims.
+		b3Log( "Box3D Metal body-sim readback failed; returning last-known sim\n" );
+		B3_ASSERT( false );
+	}
 	b3SolverSet* set = b3Array_Get( world->solverSets, body->setIndex );
 	b3BodySim* bodySim = b3Array_Get( set->bodySims, body->localIndex );
 	return bodySim;

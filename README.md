@@ -272,9 +272,11 @@ not bit-identical to the cross-platform CPU path. Build with
 This uses the presets in `CMakePresets.json`.
 
 - Windows: `cmake --preset windows` then `cmake --build --preset windows-release`
-- Linux: `cmake --preset linux-release` then `cmake --build --preset linux-release`
+- Linux: `cmake --preset linux-debug` then `cmake --build --preset linux-debug`
 - macOS: `cmake --preset macos` then `cmake --build --preset macos-release`
-- Windows MinGW: `cmake --preset mingw-release` then `cmake --build --preset mingw-release`
+- Windows MinGW: `cmake --preset mingw-debug` then `cmake --build --preset mingw-debug`
+- Linux UBSan: `cmake --preset linux-sanitize-undefined` then `cmake --build --preset linux-sanitize-undefined`
+- Linux double precision: `cmake --preset linux-double` then `cmake --build --preset linux-double`
 
 Run the samples app (must be in the Box3D directory).
 
@@ -285,8 +287,8 @@ Run the samples app (must be in the Box3D directory).
 ## Building for Visual Studio
 
 - Install [Visual Studio](https://visualstudio.microsoft.com/)
-- Run `build_vs2026.bat`
-- Open and build `build/box3d.slnx`
+- Run `build_vs2026.bat` (VS2026) or `build_vs2022.bat` (VS2022)
+- Open and build `build/box3d.slnx` (VS2026) or `build/box3d.sln` (VS2022)
 
 ## Building for Linux
 
@@ -329,7 +331,7 @@ I recommend to use FetchContent:
 include(FetchContent)
 FetchContent_Declare(box3d
   GIT_REPOSITORY https://github.com/erincatto/box3d.git
-  GIT_TAG v0.1.0)
+  GIT_TAG v0.2.0)
 FetchContent_MakeAvailable(box3d)
 
 target_link_libraries(my_app PRIVATE box3d::box3d)
@@ -346,7 +348,7 @@ target_link_libraries(my_app PRIVATE box3d::box3d)
 To use a copy installed with `cmake --install`, find the package:
 
 ```cmake
-find_package(box3d 0.1 REQUIRED)
+find_package(box3d 0.2 REQUIRED)
 
 target_link_libraries(my_app PRIVATE box3d::box3d)
 ```

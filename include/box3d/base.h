@@ -106,7 +106,9 @@ typedef int b3AssertFcn( const char* condition, const char* fileName, int lineNu
 typedef void b3LogFcn( const char* message );
 
 /// This allows the user to override the allocation functions. These should be
-///	set during application startup.
+///	set during application startup. A custom allocator must return NULL on
+///	out-of-memory; Box3D asserts in debug builds and treats NULL as a fatal
+///	allocation failure (no graceful OOM path in release builds).
 B3_API void b3SetAllocator( b3AllocFcn* allocFcn, b3FreeFcn* freeFcn );
 
 /// Total bytes allocated by Box3D

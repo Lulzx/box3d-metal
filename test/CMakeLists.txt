@@ -34,25 +34,31 @@ if(APPLE AND BOX3D_METAL)
 	list(APPEND BOX3D_TEST_FILES test_metal.c)
 endif()
 
-add_executable(test ${BOX3D_TEST_FILES})
+add_executable(box3d_test ${BOX3D_TEST_FILES})
 
-set_target_properties(test PROPERTIES
+set_target_properties(box3d_test PROPERTIES
     C_STANDARD 17
     C_STANDARD_REQUIRED YES
     C_EXTENSIONS NO
+    OUTPUT_NAME test
 )
 
 # Special access to Box3D internals for testing
-target_include_directories(test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(box3d_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
 if(BOX3D_VALIDATE)
-	target_compile_definitions(test PRIVATE BOX3D_VALIDATE)
+	target_compile_definitions(box3d_test PRIVATE BOX3D_VALIDATE)
 endif()
 
 if(BOX3D_DISABLE_SIMD)
-	target_compile_definitions(test PRIVATE BOX3D_DISABLE_SIMD)
+	target_compile_definitions(box3d_test PRIVATE BOX3D_DISABLE_SIMD)
 endif()
 
-target_link_libraries(test PRIVATE box3d shared)
+target_link_libraries(box3d_test PRIVATE box3d shared)
+
+# Lets `ctest --output-on-failure` work from the build dir.
+# OUTPUT_NAME keeps the binary at bin/test for existing scripts.
+add_test(NAME box3d_unit COMMAND box3d_test)
+set_tests_properties(box3d_unit PROPERTIES TIMEOUT 120)
 
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" PREFIX "" FILES ${BOX3D_TEST_FILES})

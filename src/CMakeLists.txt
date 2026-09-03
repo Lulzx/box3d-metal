@@ -141,16 +141,15 @@ target_include_directories(box3d
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-set(CMAKE_DEBUG_POSTFIX "d")
-
-# Box3D uses C17 for _Static_assert and anonymous unions
+# Box3D uses C17 for _Static_assert and anonymous unions. DEBUG_POSTFIX is set
+# as a target property only so FetchContent consumers keep their own postfix.
 set_target_properties(box3d PROPERTIES
 	C_STANDARD 17
     C_STANDARD_REQUIRED YES
     C_EXTENSIONS YES
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_VERSION_MAJOR}
-	DEBUG_POSTFIX ${CMAKE_DEBUG_POSTFIX}
+	DEBUG_POSTFIX "d"
 )
 
 if (BOX3D_COMPILE_WARNING_AS_ERROR)
@@ -217,6 +216,7 @@ if (MSVC)
 
 elseif (MINGW)
 	message(STATUS "Box3D on MinGW")
+	target_compile_options(box3d PRIVATE -Wmissing-prototypes -Wall -Wextra -pedantic)
 elseif (APPLE)
 	message(STATUS "Box3D on Apple")
 	target_compile_options(box3d PRIVATE -Wmissing-prototypes -Wall -Wextra -pedantic)
@@ -227,6 +227,7 @@ elseif (APPLE)
 	endif()
 elseif (EMSCRIPTEN)
 	message(STATUS "Box3D on Emscripten")
+	target_compile_options(box3d PRIVATE -Wmissing-prototypes -Wall -Wextra -pedantic)
 	# SSE2/wasm SIMD flags are set directory-wide in the top-level CMakeLists so the
 	# tests, which include simd.h, get them too.
 elseif (UNIX)

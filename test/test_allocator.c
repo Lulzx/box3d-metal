@@ -89,11 +89,34 @@ static int TestBlockAlignment( void )
 	return 0;
 }
 
+static int TestGrowAlloc( void )
+{
+	// Grow preserves content and handles the empty-source case.
+	int* data = b3Alloc( 4 * sizeof( int ) );
+	ENSURE( data != NULL );
+	for ( int i = 0; i < 4; ++i ) data[i] = 100 + i;
+	int* grown = b3GrowAlloc( data, 4 * (int)sizeof( int ), 8 * (int)sizeof( int ) );
+	ENSURE( grown != NULL );
+	for ( int i = 0; i < 4; ++i ) ENSURE( grown[i] == 100 + i );
+	b3Free( grown, 8 * sizeof( int ) );
+
+	// Growing from NULL with zero old size must behave like alloc.
+	int* fresh = b3GrowAlloc( NULL, 0, 16 );
+	ENSURE( fresh != NULL );
+	b3Free( fresh, 16 );
+
+	// Zero-size alloc stays NULL and free stays NULL-tolerant.
+	ENSURE( b3Alloc( 0 ) == NULL );
+	b3Free( NULL, 0 );
+	return 0;
+}
+
 int AllocatorTest( void )
 {
 	RUN_SUBTEST( TestBlockAllocate );
 	RUN_SUBTEST( TestBlockClear );
 	RUN_SUBTEST( TestBlockAlignment );
+	RUN_SUBTEST( TestGrowAlloc );
 
 	return 0;
 }
