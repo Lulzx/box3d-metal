@@ -101,7 +101,8 @@ int main( void )
 			"pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,"
 			"last_pair_cpu_filter_candidates,last_pair_direct_create_candidates,pair_contact_seed_dispatches,"
 			"pair_record_traversal_bypasses,last_pair_contact_seed_count,last_pair_contact_seed_bytes,"
-			"pair_private_scratch_dispatches,last_pair_raw_shared_bytes\n" );
+			"pair_private_scratch_dispatches,last_pair_raw_shared_bytes,contact_topology_direct_commits,"
+			"last_contact_topology_cpu_ms\n" );
 	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
 	{
 		int contactCount = requestedCount > 0 ? requestedCount : counts[testIndex];
@@ -178,10 +179,12 @@ int main( void )
 			(unsigned long long)profile.pairContactSeedDispatchCount,
 			(unsigned long long)profile.pairRecordTraversalBypassCount,
 			(unsigned long long)profile.lastPairContactSeedCount );
-		printf( ",%llu,%llu,%llu\n",
+		printf( ",%llu,%llu,%llu,%llu,%.6f\n",
 			(unsigned long long)profile.lastPairContactSeedBytes,
 			(unsigned long long)profile.pairPrivateScratchDispatchCount,
-			(unsigned long long)profile.lastPairRawSharedBytes );
+			(unsigned long long)profile.lastPairRawSharedBytes,
+			(unsigned long long)profile.contactTopologyDirectCommitCount,
+			profile.lastContactTopologyCpuMilliseconds );
 		b3DestroyWorld( gpuWorld );
 	}
 	return 0;

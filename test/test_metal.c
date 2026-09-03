@@ -1436,7 +1436,7 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( profile.lastPairRawSharedBytes == 0 );
 
 	// Consume the creation-time identity stream. Metal authors both the private
-	// 40-byte inputs and the compact 16-byte first-touch transitions.
+	// 40-byte inputs and the contact-id-indexed 8-byte first-touch table.
 	b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
 	b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
 	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
@@ -1449,12 +1449,16 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( profile.contactInputPackCount == 0 );
 	ENSURE( profile.contactInputReuseCount == 0 );
 	ENSURE( profile.lastContactInputBytes == 0 );
-	ENSURE( sizeof( b3MetalContactTransition ) == 16u );
+	ENSURE( sizeof( b3MetalContactTransition ) == 8u );
 	ENSURE( profile.lastContactTransitionCount == (uint64_t)contactCount );
 	ENSURE( profile.lastContactTransitionBytes == (uint64_t)contactCount * sizeof( b3MetalContactTransition ) );
 	ENSURE( profile.lastContactExceptionBytes == 0 );
 	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
 	ENSURE( profile.contactCollisionCpuCount == 0 );
+	ENSURE( profile.contactTopologyDirectCommitCount == (uint64_t)contactCount );
+	ENSURE( profile.contactStateTraversalBypassCount == 1 );
+	ENSURE( profile.lastContactStateBitSetBytes == 0 );
+	ENSURE( profile.lastContactTopologyCpuMilliseconds > 0.0 );
 	ENSURE( profile.residentContactNoCpuManifoldCount == (uint64_t)contactCount );
 	for ( int i = 0; i < gpu->contacts.count; ++i )
 	{
@@ -1502,7 +1506,8 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
 	ENSURE( CompareTouchingGraphTopology( cpu, gpu ) == 0 );
 	printf( "    final pair plan contacts=%d direct=%d pairSeedBytes=%llu inputSeedBytes=%llu inputPrivateBytes=%llu "
-			"recordTraversal=bypassed inputPack=bypassed exceptions=0 transitionBytes=%zu lazySync=1 exactTopology=yes\n",
+			"recordTraversal=bypassed inputPack=bypassed exceptions=0 transitionBytes=%zu directTopology=yes stateBits=0 "
+			"lazySync=1 exactTopology=yes\n",
 			contactCount, profile.lastPairDirectCreateCount, (unsigned long long)profile.lastPairContactSeedBytes,
 			(unsigned long long)profile.lastContactInputBootstrapBytes,
 			(unsigned long long)profile.lastContactInputPrivateBytes,
@@ -1595,6 +1600,9 @@ static int MetalColdContactInputRecycleTest( void )
 	ENSURE( profile.lastContactExceptionBytes == 0 );
 	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
 	ENSURE( profile.contactCollisionCpuCount == 0 );
+	ENSURE( profile.contactTopologyDirectCommitCount == 3 );
+	ENSURE( profile.contactStateTraversalBypassCount == 1 );
+	ENSURE( profile.lastContactStateBitSetBytes == 0 );
 	int graphContactCount = 0;
 	for ( int colorIndex = 0; colorIndex < B3_GRAPH_COLOR_COUNT; ++colorIndex )
 	{
@@ -1609,7 +1617,7 @@ static int MetalColdContactInputRecycleTest( void )
 	}
 	ENSURE( graphContactCount == 3 );
 	printf( "    cold contact bootstrap recycledInput=2,1,0 graphOrder=0,1,2 generations=incremented "
-			"inputSeedBytes=%llu privateBytes=%llu transitionBytes=%zu exceptions=0\n",
+			"inputSeedBytes=%llu privateBytes=%llu transitionBytes=%zu exceptions=0 directTopology=yes stateBits=0\n",
 			(unsigned long long)profile.lastContactInputBootstrapBytes,
 			(unsigned long long)profile.lastContactInputPrivateBytes,
 			3u * sizeof( b3MetalContactTransition ) );
@@ -2621,7 +2629,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.contactInputReuseCount == 2 );
 	ENSURE( profile.lastContactInputBytes == 0 );
 	ENSURE( profile.contactCoverageBypassCount == 3 * count );
-	ENSURE( profile.contactStateTraversalBypassCount == 3 );
+	ENSURE( profile.contactStateTraversalBypassCount == 4 );
+	ENSURE( profile.contactTopologyDirectCommitCount == (uint64_t)count );
 	ENSURE( profile.lastContactStateBitSetBytes == 0 );
 	ENSURE( profile.contactHitEventBitSetClearBypassCount == 4 );
 	ENSURE( profile.lastContactHitEventBitSetBytes == 0 );

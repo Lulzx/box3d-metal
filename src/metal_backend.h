@@ -58,13 +58,11 @@ typedef struct b3MetalContactInputSeed
 	uint32_t shapeIdB;
 } b3MetalContactInputSeed;
 
-// Minimal CPU topology transition for a cold contact whose complete manifold
-// and prepare input remain resident. Records are compacted in input order.
+// Contact-id-indexed topology transition slot for a cold contact whose complete
+// manifold and prepare input remain resident. A zero slot is inactive.
 typedef struct b3MetalContactTransition
 {
-	uint32_t contactId;
 	uint32_t contactGeneration;
-	uint32_t inputIndex;
 	uint32_t pointCount;
 } b3MetalContactTransition;
 

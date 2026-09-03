@@ -69,10 +69,10 @@ typedef struct b3MetalProfile
 	uint64_t lastContactInputBootstrapBytes;
 	/// Logical bytes in the authoritative private contact-input table.
 	uint64_t lastContactInputPrivateBytes;
-	/// Cold touching contacts represented by the compact topology-transition
-	/// stream on the latest Metal narrow phase.
+	/// Cold touching contacts represented by the contact-id-indexed topology
+	/// table on the latest Metal narrow phase.
 	uint64_t lastContactTransitionCount;
-	/// CPU-visible bytes in the compact first-touch transition stream.
+	/// CPU-visible bytes in the 8-byte-per-slot first-touch topology table.
 	uint64_t lastContactTransitionBytes;
 	/// CPU-visible bytes in full manifold exception records on the latest step.
 	uint64_t lastContactExceptionBytes;
@@ -88,6 +88,11 @@ typedef struct b3MetalProfile
 	/// Contact-state bitset bytes cleared on the latest collision phase.
 	/// A zero-exception resident phase reports zero.
 	uint64_t lastContactStateBitSetBytes;
+	/// Cold touching contacts committed directly in canonical contact-id order,
+	/// bypassing the contact-state bitset clear, union, and second serial scan.
+	uint64_t contactTopologyDirectCommitCount;
+	/// CPU time spent on the latest direct cold topology commit.
+	double lastContactTopologyCpuMilliseconds;
 	/// Successful resident solver phases that skipped all per-worker hit-event
 	/// bitset clears because the current compact event-ID list was empty.
 	uint64_t contactHitEventBitSetClearBypassCount;
