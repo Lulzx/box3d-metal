@@ -62,7 +62,14 @@ typedef struct b3MetalProfile
 	uint64_t contactInputPackCount;
 	/// Narrow-phase steps that reused the resident contact input/order registry.
 	uint64_t contactInputReuseCount;
-	/// Bytes written into the 32-byte contact input stream on the latest step.
+	/// Cold contact-input registries authored on Metal from the compact identity
+	/// stream captured during deterministic CPU topology creation.
+	uint64_t contactInputBootstrapDispatchCount;
+	/// CPU-visible compact bootstrap bytes written on the latest step.
+	uint64_t lastContactInputBootstrapBytes;
+	/// Logical bytes in the authoritative private contact-input table.
+	uint64_t lastContactInputPrivateBytes;
+	/// Bytes written into the 40-byte shared contact input stream on the latest step.
 	/// Revision-stable reuse reports zero.
 	uint64_t lastContactInputBytes;
 	/// Per-contact resident-ownership checks skipped because the unchanged

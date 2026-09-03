@@ -646,6 +646,19 @@ void b3UpdateBroadPhasePairs( b3World* world )
 #if defined( BOX3D_METAL )
 	if ( pairsAreEmpty == false && metalContactSeeds != NULL )
 	{
+		// A completely cold ordinary plan already visits every contact exactly
+		// once in the order used by the awake non-touching set. Retain the
+		// CPU-assigned identity and canonical shape order during that mandatory
+		// topology commit so narrow phase does not have to gather and rescan the
+		// new contact registry merely to build its GPU input table.
+		b3MetalContactInputSeed* contactInputSeeds = NULL;
+		int contactInputSeedCount = 0;
+		bool contactInputBootstrapValid = b3GetIdCount( &world->contactIdPool ) == 0;
+		if ( contactInputBootstrapValid )
+		{
+			contactInputSeeds = b3MetalBeginContactInputBootstrap( world->metalContext, contactSeedCount );
+			contactInputBootstrapValid = contactInputSeeds != NULL;
+		}
 		// Metal has already flattened move order and reversed each candidate
 		// range to reproduce the legacy prepend-list creation order.
 		for ( int seedIndex = 0; seedIndex < contactSeedCount; ++seedIndex )
@@ -653,7 +666,37 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			const b3MetalPairContactSeed* seed = metalContactSeeds + seedIndex;
 			b3Shape* shapeA = b3Array_Get( world->shapes, seed->shapeIndexA );
 			b3Shape* shapeB = b3Array_Get( world->shapes, seed->shapeIndexB );
-			b3CreateContact( world, shapeA, shapeB, 0 );
+			int contactId = b3CreateContact( world, shapeA, shapeB, 0 );
+			if ( contactInputBootstrapValid && contactId != B3_NULL_INDEX )
+			{
+				b3Contact* contact = b3Array_Get( world->contacts, contactId );
+				if ( contact->setIndex != b3_awakeSet || contact->localIndex != contactInputSeedCount )
+				{
+					contactInputBootstrapValid = false;
+				}
+				else
+				{
+					contactInputSeeds[contactInputSeedCount++] = (b3MetalContactInputSeed){
+						.contactId = (uint32_t)contactId,
+						.generation = contact->generation,
+						.shapeIdA = (uint32_t)contact->shapeIdA,
+						.shapeIdB = (uint32_t)contact->shapeIdB,
+					};
+				}
+			}
+		}
+		b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
+		contactInputBootstrapValid = contactInputBootstrapValid && contactInputSeedCount > 0 &&
+			contactInputSeedCount == b3GetIdCount( &world->contactIdPool ) &&
+			contactInputSeedCount == awakeSet->contactIndices.count;
+		if ( contactInputBootstrapValid )
+		{
+			contactInputBootstrapValid =
+				b3MetalCommitContactInputBootstrap( world->metalContext, world, contactInputSeedCount );
+		}
+		if ( contactInputBootstrapValid == false )
+		{
+			b3MetalCancelContactInputBootstrap( world->metalContext );
 		}
 	}
 	else

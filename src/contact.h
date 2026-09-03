@@ -207,7 +207,10 @@ typedef struct b3PrecomputedContactMaterial
 
 void b3InitializeContactRegisters( void );
 
-void b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int childIndex );
+// Returns the allocated contact id, or B3_NULL_INDEX when the shape pair is unsupported.
+// The return value lets device backends retain the CPU-assigned topology identity
+// without rescanning the contact registry after deterministic serial creation.
+int b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int childIndex );
 void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies );
 
 bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Shape* shapeA, b3Vec3 localCenterA,

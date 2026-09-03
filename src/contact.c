@@ -199,7 +199,7 @@ void b3InitializeContactRegisters( void )
 	}
 }
 
-void b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int childIndex )
+int b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int childIndex )
 {
 	b3ShapeType typeA = shapeA->type;
 	b3ShapeType typeB = shapeB->type;
@@ -210,14 +210,13 @@ void b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int chil
 	if ( s_registers[typeA][typeB].supported == false )
 	{
 		// For example, no mesh vs mesh collision
-		return;
+		return B3_NULL_INDEX;
 	}
 
 	if ( s_registers[typeA][typeB].primary == false )
 	{
 		// flip order
-		b3CreateContact( world, shapeB, shapeA, childIndex );
-		return;
+		return b3CreateContact( world, shapeB, shapeA, childIndex );
 	}
 
 	b3Body* bodyA = b3Array_Get( world->bodies, shapeA->bodyId );
@@ -385,6 +384,8 @@ void b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int chil
 	{
 		contact->flags |= b3_simEnablePreSolveEvents;
 	}
+
+	return contactId;
 }
 
 // A contact is destroyed when:

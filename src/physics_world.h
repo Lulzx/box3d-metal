@@ -291,6 +291,9 @@ typedef struct b3World
 	uint64_t metalLastContactCollisionExceptionCount;
 	uint64_t metalContactInputPackCount;
 	uint64_t metalContactInputReuseCount;
+	uint64_t metalContactInputBootstrapDispatchCount;
+	uint64_t metalLastContactInputBootstrapBytes;
+	uint64_t metalLastContactInputPrivateBytes;
 	uint64_t metalLastContactInputBytes;
 	uint64_t metalContactCoverageBypassCount;
 	uint64_t metalContactStateTraversalBypassCount;

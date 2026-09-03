@@ -774,6 +774,9 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.lastContactCollisionExceptionCount = world->metalLastContactCollisionExceptionCount;
 	profile.contactInputPackCount = world->metalContactInputPackCount;
 	profile.contactInputReuseCount = world->metalContactInputReuseCount;
+	profile.contactInputBootstrapDispatchCount = world->metalContactInputBootstrapDispatchCount;
+	profile.lastContactInputBootstrapBytes = world->metalLastContactInputBootstrapBytes;
+	profile.lastContactInputPrivateBytes = world->metalLastContactInputPrivateBytes;
 	profile.lastContactInputBytes = world->metalLastContactInputBytes;
 	profile.contactCoverageBypassCount = world->metalContactCoverageBypassCount;
 	profile.contactStateTraversalBypassCount = world->metalContactStateTraversalBypassCount;
@@ -1393,15 +1396,19 @@ static bool b3Collide( b3StepContext* context )
 #if defined( BOX3D_METAL )
 	bool reuseContactInputs = world->metalContext != NULL && contactCount >= world->metalMinimumBodyCount &&
 							  b3MetalCanReuseConvexManifoldInputs( world->metalContext, world, contactCount );
+	bool bootstrapContactInputs = world->metalContext != NULL && contactCount >= world->metalMinimumBodyCount &&
+								  b3MetalCanBootstrapConvexManifoldInputs( world->metalContext, world, contactCount );
+	bool residentContactInputs = reuseContactInputs || bootstrapContactInputs;
 	// Packing a new manifold input registry consults the CPU body-sim mirror for
-	// fast-body eligibility. Stable resident contacts skip that pack entirely.
-	if ( reuseContactInputs == false && b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 &&
+	// fast-body eligibility. Stable resident contacts and a complete cold
+	// creation bootstrap both skip that pack entirely.
+	if ( residentContactInputs == false && b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 &&
 		 b3MaterializeBodySims( world ) == false )
 	{
 		b3TracyCZoneEnd( collide );
 		return false;
 	}
-	if ( reuseContactInputs == false )
+	if ( residentContactInputs == false )
 #endif
 	{
 		contactIndices = b3GatherAwakeContactIndices( world, touchingCount, nonTouchingCount );
@@ -1436,6 +1443,9 @@ static bool b3Collide( b3StepContext* context )
 		if ( b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount, &convexResults,
 											&resultCount, &residentBypassCount, &stats ) )
 		{
+			world->metalContactInputBootstrapDispatchCount += (uint64_t)stats.contactInputBootstrapDispatchCount;
+			world->metalLastContactInputBootstrapBytes = stats.contactInputBootstrapSharedBytes;
+			world->metalLastContactInputPrivateBytes = stats.contactInputPrivateBytes;
 			if ( stats.commandBufferCount > 0 )
 			{
 				metalCollisionDispatched = true;
@@ -1457,6 +1467,8 @@ static bool b3Collide( b3StepContext* context )
 		else
 		{
 			world->metalNarrowPhaseFallbackCount += 1;
+			world->metalLastContactInputBootstrapBytes = 0;
+			world->metalLastContactInputPrivateBytes = 0;
 			if ( contactIndices == NULL )
 			{
 				contactIndices = b3GatherAwakeContactIndices( world, touchingCount, nonTouchingCount );

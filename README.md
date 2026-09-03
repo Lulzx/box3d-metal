@@ -154,12 +154,17 @@ use a world generation instead of per-step stable-contact flag writes. A
 revisioned contact input/order registry now retains the 40-byte records across
 unchanged pair, graph, and eligibility revisions, so stable steps neither
 gather graph contact IDs nor rewrite the input buffer. Current body indices and
-fast-body flags come from the per-step body registry. The same dispatch proves
+fast-body flags come from the per-step body registry. Completely cold ordinary
+pair plans now capture a 16-byte CPU-assigned contact identity during the
+already-required deterministic topology commit. Metal expands that stream into
+the authoritative private 40-byte input table, bypassing the cold graph/awake
+contact gather and both CPU input scans. Hit/pre-solve event, callback, mixed, and unsupported
+routes reject the bootstrap and retain the legacy pack. The same dispatch proves
 complete convex graph ownership and skips the solver's per-contact coverage
 walk. A zero-exception dispatch also bypasses capacity-linear contact-state
 bitset clears, worker unions, and the serial state-change traversal; the next
 exception or fallback clears before any CPU worker writes. CPU topology
-mutation, callbacks, events, unsupported geometry, and cold/revision rebuilds
+mutation, callbacks, events, unsupported geometry, and non-ordinary cold/revision rebuilds
 remain explicit fallback boundaries. The solver likewise defers its
 contact-capacity hit-event bitset clears when the current resident compact event
 list is empty, restoring them before an event-enabled path or Metal fallback.
