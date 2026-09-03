@@ -174,6 +174,14 @@ The remaining CPU island/graph commit takes median 7.995 and 15.504 ms,
 respectively. One 262,144-contact trial crossed over, but the median is only
 approximately parity, so this is not a universal crossover claim.
 
+The retained-pair-seed follow-on removes the separate CPU-written 16-byte cold
+input identity stream. Seven alternating same-host runs put the 131,072-contact
+median at 80.775 ms versus 84.027 ms for `1e5f205`; at 262,144 contacts the
+result is latency-neutral at 151.722 versus 150.498 ms, with a paired median
+delta of only +0.116 ms. The defensible claim is transport ownership: 2 MiB and
+4 MiB of CPU writes become zero, while Metal returns one 4-byte validation
+status and retains the private 40-byte inputs.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.

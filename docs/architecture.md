@@ -220,6 +220,11 @@ For a complete cold bootstrap with default callbacks and no event, recording,
 CCD, or recycling requirements, touching manifolds also remain private. Metal
 authors the prepare record and writes an 8-byte `{generation, pointCount}` slot
 at the contact ID. The table is cleared by a same-command-buffer Metal blit.
+The strict virgin route retains the broad phase's existing 8-byte shape-pair
+seeds as one-shot authority. After CPU contact creation proves dense IDs,
+generation one, canonical order, and unchanged revisions, a one-thread-per-
+contact kernel expands those seeds into the private input table. No second
+CPU-written 16-byte identity stream is needed.
 The CPU validates the whole batch before installing logical one-manifold
 contacts and applying the existing ascending-ID graph/island transition in one
 pass. Complete ordinary batches bypass per-worker contact-state bitset clear,

@@ -72,6 +72,7 @@ for review.
 - [Private cold first-touch transitions](benchmarks/m4-pro-private-first-touch-2026-09-03.md)
 - [Deferred CPU manifolds](benchmarks/m4-pro-deferred-cpu-manifolds-2026-09-03.md)
 - [Indexed cold-contact topology](benchmarks/m4-pro-indexed-contact-topology-2026-09-03.md)
+- [Retained pair-seed bootstrap](benchmarks/m4-pro-retained-pair-seed-bootstrap-2026-09-03.md)
 
 ## Repository map
 

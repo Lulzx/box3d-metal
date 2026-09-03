@@ -50,6 +50,10 @@ clears, worker unions, and the serial state-change traversal; any later CPU
 exception or fallback clears before collision workers write. A complete cold
 ordinary batch now uses an 8-byte contact-ID-indexed topology table and commits
 once in canonical ID order, bypassing the same bitsets and second serial scan.
+For a strict virgin plan, narrow phase also expands the broad phase's retained
+8-byte pair seeds directly into the private contact-input table. This removes
+the separate CPU-written 16-byte identity stream; recycled IDs, event/callback
+hazards, and revision mismatches retain the checked legacy route.
 The solver likewise defers its contact-capacity hit-event bitset clears when
 the current resident compact event list is empty, restoring them before an
 event-enabled path or Metal fallback.
