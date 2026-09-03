@@ -172,8 +172,15 @@ mutation, callbacks, hit/pre-solve events, unsupported geometry, and non-ordinar
 remain explicit fallback boundaries. The solver likewise defers its
 contact-capacity hit-event bitset clears when the current resident compact event
 list is empty, restoring them before an event-enabled path or Metal fallback.
-This remains a residency checkpoint rather than a universal whole-world
-speedup.
+A cold, event-free, all dynamic-vs-static batch now stays a device-private
+one-color schedule through the solve: no transition bytes are shared, no
+direct CPU topology commit runs, and the solver consumes the private padded
+contact-ID schedule without CPU islands or graph colors. CPU topology
+materializes once at the next observation, step, mutation, or fallback
+boundary in ascending contact-ID order. Joints, events, callbacks, recycling,
+sleep, continuous collision, sensors, unsupported topology, and revision
+mismatch fail closed to the canonical path. This remains a residency
+checkpoint rather than a universal whole-world speedup.
 The stages remain off by default;
 cold/topology shape-registry rebuilds remain CPU work, while GPU tree traversal
 crosses over only in large measured worlds.

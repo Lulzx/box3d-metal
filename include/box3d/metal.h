@@ -95,6 +95,23 @@ typedef struct b3MetalProfile
 	uint64_t contactTopologyDirectCommitCount;
 	/// CPU time spent on the latest direct cold topology commit.
 	double lastContactTopologyCpuMilliseconds;
+	/// Cold narrow-phase batches accepted as a private, single-color Metal
+	/// topology without immediately linking CPU islands or graph colors.
+	uint64_t contactPrivateTopologyDispatchCount;
+	/// Contacts in the latest accepted private topology batch.
+	int lastContactPrivateTopologyCount;
+	/// Logical bytes in the private padded contact-id schedule.
+	uint64_t lastContactPrivateTopologyScheduleBytes;
+	/// CPU-visible validation summary bytes returned for the latest cold batch.
+	uint64_t lastContactTopologySummarySharedBytes;
+	/// True while the CPU contact graph/island topology is intentionally deferred.
+	bool deferredContactTopologyPending;
+	/// Deferred topology epochs materialized at a CPU observation or fallback boundary.
+	uint64_t deferredContactTopologyMaterializationCount;
+	/// Contacts committed by the latest deferred topology materialization.
+	int lastDeferredContactTopologyMaterializationCount;
+	/// CPU time spent in the latest deferred topology materialization.
+	double lastDeferredContactTopologyMaterializationMilliseconds;
 	/// Successful resident solver phases that skipped all per-worker hit-event
 	/// bitset clears because the current compact event-ID list was empty.
 	uint64_t contactHitEventBitSetClearBypassCount;

@@ -1394,6 +1394,7 @@ static int MetalFinalPairPlanOrderTest( void )
 	b3WorldId cpuWorldId = b3CreateWorld( &worldDef );
 	b3WorldId gpuWorldId = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( gpuWorldId, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( gpuWorldId, true ) );
 	ENSURE( b3World_SetMetalBroadPhase( gpuWorldId, true ) );
 	b3World_SetContactRecycleDistance( cpuWorldId, 0.0f );
 	b3World_SetContactRecycleDistance( gpuWorldId, 0.0f );
@@ -1460,6 +1461,10 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( profile.lastContactExceptionBytes == 0 );
 	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
 	ENSURE( profile.contactCollisionCpuCount == 0 );
+	// This all-to-all batch contains dynamic-dynamic pairs and repeats each
+	// dynamic body, so it must retain the canonical shared-transition route.
+	ENSURE( profile.contactPrivateTopologyDispatchCount == 0 );
+	ENSURE( profile.deferredContactTopologyPending == false );
 	ENSURE( profile.contactTopologyDirectCommitCount == (uint64_t)contactCount );
 	ENSURE( profile.contactStateTraversalBypassCount == 1 );
 	ENSURE( profile.lastContactStateBitSetBytes == 0 );
@@ -1523,6 +1528,133 @@ static int MetalFinalPairPlanOrderTest( void )
 	return 0;
 }
 
+static int MetalPrivateContactTopologyEpochTest( void )
+{
+	const int pairCount = 17;
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	worldDef.enableContinuous = false;
+	b3WorldId cpuWorldId = b3CreateWorld( &worldDef );
+	b3WorldId gpuWorldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( gpuWorldId, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( gpuWorldId, true ) );
+	ENSURE( b3World_SetMetalBroadPhase( gpuWorldId, true ) );
+	b3World_SetContactRecycleDistance( cpuWorldId, 0.0f );
+	b3World_SetContactRecycleDistance( gpuWorldId, 0.0f );
+
+	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.5f };
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	b3BodyId cpuBodies[pairCount];
+	b3BodyId gpuBodies[pairCount];
+	for ( int i = 0; i < pairCount; ++i )
+	{
+		b3BodyDef staticDef = b3DefaultBodyDef();
+		staticDef.position = (b3Pos){ 0.0, 0.0, 3.0 * (double)i };
+		b3BodyId cpuStatic = b3CreateBody( cpuWorldId, &staticDef );
+		b3BodyId gpuStatic = b3CreateBody( gpuWorldId, &staticDef );
+		b3CreateSphereShape( cpuStatic, &shapeDef, &sphere );
+		b3CreateSphereShape( gpuStatic, &shapeDef, &sphere );
+
+		b3BodyDef dynamicDef = b3DefaultBodyDef();
+		dynamicDef.type = b3_dynamicBody;
+		dynamicDef.enableSleep = false;
+		dynamicDef.position = (b3Pos){ 0.96, 0.0, 3.0 * (double)i };
+		dynamicDef.linearVelocity = (b3Vec3){ -0.25f - 0.005f * (float)i, 0.01f * (float)( i % 3 - 1 ), 0.0f };
+		cpuBodies[i] = b3CreateBody( cpuWorldId, &dynamicDef );
+		gpuBodies[i] = b3CreateBody( gpuWorldId, &dynamicDef );
+		b3CreateSphereShape( cpuBodies[i], &shapeDef, &sphere );
+		b3CreateSphereShape( gpuBodies[i], &shapeDef, &sphere );
+	}
+
+	b3World* cpu = b3GetWorldFromId( cpuWorldId );
+	b3World* gpu = b3GetWorldFromId( gpuWorldId );
+	b3UpdateBroadPhasePairs( cpu );
+	b3UpdateBroadPhasePairs( gpu );
+	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
+	ENSURE( cpu->broadPhase.pairSet.count == pairCount );
+
+	// The first cold step must solve from a device-private, single-color
+	// schedule. Inspect only the raw profile and the already-held world pointer:
+	// ordinary world accessors are intentional topology materialization points.
+	b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
+	b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
+	b3MetalProfile coldProfile = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( coldProfile.narrowPhaseFallbackCount == 0 );
+	ENSURE( coldProfile.contactPrivateTopologyDispatchCount == 1 );
+	ENSURE( coldProfile.lastContactPrivateTopologyCount == pairCount );
+	ENSURE( coldProfile.lastContactPrivateTopologyScheduleBytes ==
+			(uint64_t)( ( pairCount + B3_SIMD_WIDTH - 1 ) / B3_SIMD_WIDTH ) * B3_SIMD_WIDTH * sizeof( uint32_t ) );
+	ENSURE( coldProfile.lastContactTopologySummarySharedBytes > 0 );
+	ENSURE( coldProfile.lastContactTopologySummarySharedBytes <= 64u );
+	ENSURE( coldProfile.lastContactTransitionCount == 0 );
+	ENSURE( coldProfile.lastContactTransitionBytes == 0 );
+	ENSURE( coldProfile.contactTopologyDirectCommitCount == 0 );
+	ENSURE( coldProfile.lastContactTopologyCpuMilliseconds == 0.0 );
+	ENSURE( coldProfile.deferredContactTopologyPending );
+	ENSURE( coldProfile.deferredContactTopologyMaterializationCount == 0 );
+	ENSURE( coldProfile.lastDeferredContactTopologyMaterializationCount == 0 );
+	ENSURE( coldProfile.lastDeferredContactTopologyMaterializationMilliseconds == 0.0 );
+	ENSURE( gpu->metalDeferredContactTopologyPending );
+	ENSURE( gpu->metalDeferredContactTopologyCount == pairCount );
+	for ( int colorIndex = 0; colorIndex < B3_GRAPH_COLOR_COUNT; ++colorIndex )
+	{
+		const b3GraphColor* color = gpu->constraintGraph.colors + colorIndex;
+		ENSURE( color->convexContacts.count == 0 );
+		ENSURE( color->contacts.count == 0 );
+		ENSURE( color->jointSims.count == 0 );
+	}
+	for ( int contactId = 0; contactId < pairCount; ++contactId )
+	{
+		const b3Contact* contact = gpu->contacts.data + contactId;
+		ENSURE( contact->contactId == contactId );
+		ENSURE( contact->colorIndex == B3_NULL_INDEX );
+		ENSURE( contact->islandId == B3_NULL_INDEX );
+		ENSURE( contact->manifoldCount == 0 );
+		ENSURE( contact->manifolds == NULL );
+		ENSURE( ( contact->flags & b3_contactTouchingFlag ) == 0 );
+	}
+
+	// The next ordinary step is a CPU topology boundary. It materializes the
+	// prior epoch once, then proceeds through the resident contact path.
+	b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
+	b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
+	b3MetalProfile materializedProfile = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( materializedProfile.deferredContactTopologyPending == false );
+	ENSURE( materializedProfile.deferredContactTopologyMaterializationCount == 1 );
+	ENSURE( materializedProfile.lastDeferredContactTopologyMaterializationCount == pairCount );
+	ENSURE( materializedProfile.lastDeferredContactTopologyMaterializationMilliseconds > 0.0 );
+	ENSURE( materializedProfile.contactTopologyDirectCommitCount == 0 );
+	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
+	ENSURE( CompareTouchingGraphTopology( cpu, gpu ) == 0 );
+
+	float maxTransformError = 0.0f;
+	float maxVelocityError = 0.0f;
+	for ( int i = 0; i < pairCount; ++i )
+	{
+		b3WorldTransform a = b3Body_GetTransform( cpuBodies[i] );
+		b3WorldTransform b = b3Body_GetTransform( gpuBodies[i] );
+		maxTransformError = b3MaxFloat( maxTransformError, b3Length( b3SubPos( a.p, b.p ) ) );
+		maxTransformError = b3MaxFloat( maxTransformError, b3Length( b3Sub( a.q.v, b.q.v ) ) );
+		maxTransformError = b3MaxFloat( maxTransformError, fabsf( a.q.s - b.q.s ) );
+		maxVelocityError = b3MaxFloat( maxVelocityError,
+			b3Length( b3Sub( b3Body_GetLinearVelocity( cpuBodies[i] ), b3Body_GetLinearVelocity( gpuBodies[i] ) ) ) );
+		maxVelocityError = b3MaxFloat( maxVelocityError,
+			b3Length( b3Sub( b3Body_GetAngularVelocity( cpuBodies[i] ), b3Body_GetAngularVelocity( gpuBodies[i] ) ) ) );
+	}
+	ENSURE( maxTransformError <= 3.0e-4f );
+	ENSURE( maxVelocityError <= 3.0e-4f );
+	ENSURE( b3World_GetMetalProfile( gpuWorldId ).deferredContactTopologyMaterializationCount == 1 );
+	printf( "    private topology contacts=%d transitionBytes=0 cpuTopology=0 summaryBytes=%llu "
+			"nextStepMaterialized=%d exactTopology=yes transformError=%.3g velocityError=%.3g\n",
+			pairCount, (unsigned long long)coldProfile.lastContactTopologySummarySharedBytes,
+			materializedProfile.lastDeferredContactTopologyMaterializationCount, maxTransformError, maxVelocityError );
+
+	b3DestroyWorld( gpuWorldId );
+	b3DestroyWorld( cpuWorldId );
+	return 0;
+}
+
 static int MetalColdContactInputRecycleTest( void )
 {
 	b3WorldDef worldDef = b3DefaultWorldDef();
@@ -1531,6 +1663,7 @@ static int MetalColdContactInputRecycleTest( void )
 	b3WorldId cpuWorldId = b3CreateWorld( &worldDef );
 	b3WorldId gpuWorldId = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( gpuWorldId, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( gpuWorldId, true ) );
 	ENSURE( b3World_SetMetalBroadPhase( gpuWorldId, true ) );
 	b3World_SetContactRecycleDistance( cpuWorldId, 0.0f );
 	b3World_SetContactRecycleDistance( gpuWorldId, 0.0f );
@@ -1607,6 +1740,8 @@ static int MetalColdContactInputRecycleTest( void )
 	ENSURE( profile.lastContactExceptionBytes == 0 );
 	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
 	ENSURE( profile.contactCollisionCpuCount == 0 );
+	ENSURE( profile.contactPrivateTopologyDispatchCount == 0 );
+	ENSURE( profile.deferredContactTopologyPending == false );
 	ENSURE( profile.contactTopologyDirectCommitCount == 3 );
 	ENSURE( profile.contactStateTraversalBypassCount == 1 );
 	ENSURE( profile.lastContactStateBitSetBytes == 0 );
@@ -2430,6 +2565,7 @@ static int MetalContactPrepareFallbackTest( void )
 	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
 	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( gpuWorld, true ) );
 	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, true ) );
 	b3World_SetContactRecycleDistance( cpuWorld, 0.0f );
 	b3World_SetContactRecycleDistance( gpuWorld, 0.0f );
@@ -2474,6 +2610,8 @@ static int MetalContactPrepareFallbackTest( void )
 	ENSURE( profile.lastContactInputPrivateBytes == 40u );
 	ENSURE( profile.contactInputPackCount == 0 );
 	ENSURE( profile.lastContactInputBytes == 0 );
+	ENSURE( profile.contactPrivateTopologyDispatchCount == 0 );
+	ENSURE( profile.deferredContactTopologyPending == false );
 	ENSURE( profile.lastResidentConvexConstraintCount == 1 );
 	ENSURE( profile.contactPrepareDispatchCount == 0 );
 	ENSURE( profile.contactPrepareFallbackCount == 1 );
@@ -2567,8 +2705,10 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 		(unsigned long long)residentProfile.bodySimSyncCount,
 		b3AtomicLoadInt( &gpuWorldInternal->metalBodyStateCpuStale ),
 		b3AtomicLoadInt( &gpuWorldInternal->metalBodySimCpuStale ) );
-	ENSURE( residentProfile.finalizationBodyTraversalBypassCount == 3 );
-	ENSURE( residentProfile.shapeResultApplyCount == 1 );
+	ENSURE( residentProfile.contactPrivateTopologyDispatchCount == 1 );
+	ENSURE( residentProfile.deferredContactTopologyMaterializationCount == 1 );
+	ENSURE( residentProfile.finalizationBodyTraversalBypassCount == 4 );
+	ENSURE( residentProfile.shapeResultApplyCount == 0 );
 	ENSURE( residentProfile.bodyStateSyncCount == 0 );
 	ENSURE( residentProfile.lastBodyStateReadbackBytes == 0 );
 	ENSURE( residentProfile.bodySimSyncCount == 0 );
@@ -2577,7 +2717,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( residentProfile.residentContactNoCpuManifoldCount == count );
 	b3AABB cpuResidentAABB = b3Shape_GetAABB( cpuDynamicShapes[count - 1] );
 	b3AABB gpuResidentAABB = b3Shape_GetAABB( gpuDynamicShapes[count - 1] );
-	ENSURE( b3World_GetMetalProfile( gpuWorld ).shapeBoundsSyncCount == 1 );
+	b3MetalProfile aabbProfile = b3World_GetMetalProfile( gpuWorld );
+	ENSURE( aabbProfile.shapeBoundsSyncCount == 1 );
 	ENSURE( b3Length( b3Sub( cpuResidentAABB.lowerBound, gpuResidentAABB.lowerBound ) ) <= 3.0e-4f );
 	ENSURE( b3Length( b3Sub( cpuResidentAABB.upperBound, gpuResidentAABB.upperBound ) ) <= 3.0e-4f );
 	float maxTransformError = 0.0f;
@@ -2596,8 +2737,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 																		  b3Body_GetAngularVelocity( gpuBodies[i] ) ) ) );
 	}
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
-	ENSURE( profile.finalizationBodyTraversalBypassCount == 3 );
-	ENSURE( profile.shapeResultApplyCount == 1 );
+	ENSURE( profile.finalizationBodyTraversalBypassCount == 4 );
+	ENSURE( profile.shapeResultApplyCount == 0 );
 	ENSURE( profile.bodyStateSyncCount == 1 );
 	ENSURE( profile.lastBodyStateReadbackBytes == (uint64_t)count * sizeof( b3BodyState ) );
 	ENSURE( profile.bodySimSyncCount == 1 );
@@ -2633,12 +2774,14 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.lastNarrowPhaseResultCount == 0 );
 	ENSURE( profile.lastNarrowPhaseResultBytes == 0 );
 	ENSURE( profile.contactInputBootstrapDispatchCount == 1 );
-	ENSURE( profile.contactInputPackCount == 1 );
-	ENSURE( profile.contactInputReuseCount == 2 );
+	ENSURE( profile.contactInputPackCount == 0 );
+	ENSURE( profile.contactInputReuseCount == 3 );
 	ENSURE( profile.lastContactInputBytes == 0 );
-	ENSURE( profile.contactCoverageBypassCount == 3 * count );
+	ENSURE( profile.contactCoverageBypassCount == 4 * count );
 	ENSURE( profile.contactStateTraversalBypassCount == 4 );
-	ENSURE( profile.contactTopologyDirectCommitCount == (uint64_t)count );
+	ENSURE( profile.contactPrivateTopologyDispatchCount == 1 );
+	ENSURE( profile.deferredContactTopologyMaterializationCount == 1 );
+	ENSURE( profile.contactTopologyDirectCommitCount == 0 );
 	ENSURE( profile.lastContactStateBitSetBytes == 0 );
 	ENSURE( profile.contactHitEventBitSetClearBypassCount == 4 );
 	ENSURE( profile.lastContactHitEventBitSetBytes == 0 );
@@ -2680,8 +2823,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
 	ENSURE( profile.lastNarrowPhaseResultBytes == sizeof( b3MetalConvexManifoldResult ) );
 	ENSURE( profile.contactInputBootstrapDispatchCount == 1 );
-	ENSURE( profile.contactInputPackCount == 2 );
-	ENSURE( profile.contactInputReuseCount == 2 );
+	ENSURE( profile.contactInputPackCount == 1 );
+	ENSURE( profile.contactInputReuseCount == 3 );
 	ENSURE( profile.lastContactInputBytes == count * 40u );
 	ENSURE( profile.lastContactStateBitSetBytes > 0 );
 	ENSURE( profile.contactHitEventBitSetClearBypassCount == 4 );
@@ -2717,8 +2860,8 @@ static int MetalResidentContactPrepareDifferentialTest( void )
 	ENSURE( profile.lastNarrowPhaseResultCount == 1 );
 	ENSURE( profile.lastNarrowPhaseResultBytes == sizeof( b3MetalConvexManifoldResult ) );
 	ENSURE( profile.contactInputBootstrapDispatchCount == 1 );
-	ENSURE( profile.contactInputPackCount == 3 );
-	ENSURE( profile.contactInputReuseCount == 2 );
+	ENSURE( profile.contactInputPackCount == 2 );
+	ENSURE( profile.contactInputReuseCount == 3 );
 	ENSURE( profile.lastContactInputBytes == ( count + 1 ) * 40u );
 	ENSURE( profile.lastContactStateBitSetBytes > 0 );
 	ENSURE( profile.contactHitEventBitSetClearBypassCount == 5 );
@@ -2847,6 +2990,7 @@ static int MetalResidentContactHitEventTest( void )
 	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
 	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( gpuWorld, true ) );
 	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, true ) );
 	b3World_SetContactRecycleDistance( cpuWorld, 0.0f );
 	b3World_SetContactRecycleDistance( gpuWorld, 0.0f );
@@ -2883,6 +3027,8 @@ static int MetalResidentContactHitEventTest( void )
 	// Hit-event IDs remain a CPU-authored exception registry, so this cold world
 	// must reject the compact bootstrap and retain the legacy input pack.
 	ENSURE( profile.contactInputBootstrapDispatchCount == 0 );
+	ENSURE( profile.contactPrivateTopologyDispatchCount == 0 );
+	ENSURE( profile.deferredContactTopologyPending == false );
 	ENSURE( profile.contactInputPackCount == 1 );
 	ENSURE( profile.lastContactInputBytes == 40u );
 	ENSURE( profile.lastContactCollisionExceptionCount == 1 );
@@ -3062,6 +3208,7 @@ static int MetalResidentCollisionBypassFallbackTest( void )
 	b3WorldId cpuWorld = b3CreateWorld( &worldDef );
 	b3WorldId gpuWorld = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( gpuWorld, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( gpuWorld, true ) );
 	ENSURE( b3World_SetMetalBroadPhase( gpuWorld, true ) );
 	b3World_SetContactRecycleDistance( cpuWorld, 0.0f );
 	b3World_SetContactRecycleDistance( gpuWorld, 0.0f );
@@ -4882,6 +5029,7 @@ int MetalTest( void )
 	RUN_SUBTEST( MetalResidentCollisionBypassTransitionTest );
 	RUN_SUBTEST( MetalDeferredManifoldLifecycleTest );
 	RUN_SUBTEST( MetalPairTraversalTest );
+	RUN_SUBTEST( MetalPrivateContactTopologyEpochTest );
 	RUN_SUBTEST( MetalFinalPairPlanOrderTest );
 	RUN_SUBTEST( MetalColdContactInputRecycleTest );
 	RUN_SUBTEST( MetalColdContactInputFailureTest );

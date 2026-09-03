@@ -464,6 +464,19 @@ are recorded in
 The follow-up removal of ordinary cold-contact CPU manifold allocation is
 recorded in
 [`benchmarks/m4-pro-deferred-cpu-manifolds-2026-09-03.md`](benchmarks/m4-pro-deferred-cpu-manifolds-2026-09-03.md).
+A cold, event-free, all dynamic-vs-static virgin batch can now stay a
+device-private one-color schedule through the solve instead of committing CPU
+islands and graph colors immediately. Admission is checked at three sites that
+are intentionally kept separate: the GPU predicate in
+`b3MetalComputeConvexManifolds`, the host predicate in `b3Collide`, and the
+solver gate in `b3TrySolvePrivateColdContacts`. Any joint, event, callback,
+recording, recycling, sleep, continuous, sensor, unsupported-topology, or
+revision mismatch rejects the schedule and materializes the canonical CPU
+topology first. `b3MaterializeDeferredContactTopology` is the central
+boundary for CPU observation, next-step, mutation, and fallback paths; whole
+world destruction of a strictly event-free epoch is the only path that may
+discard it. The implementation and M4 Pro cold measurements are recorded in
+[`benchmarks/m4-pro-private-cold-topology-epoch-2026-09-03.md`](benchmarks/m4-pro-private-cold-topology-epoch-2026-09-03.md).
 Successful resident solves now skip the all-contact CPU impulse-store walk.
 During the already-required narrow-phase input pack, Box3D retains only IDs whose
 shapes requested hit events. The store stage processes that compact exception
@@ -490,7 +503,7 @@ paths, not yet the final performance architecture.
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 | Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, private raw candidate scratch for ordinary worlds, exact blocked-joint body-pair rejection, residual-filter move compaction, and flat contact-seed emission. Zero-exception plans expose only the summary and seed stream; custom/compound worlds, dense materialization, and deterministic contact topology creation retain explicit CPU-visible paths |
-| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Completely cold virgin plans retain the broad phase's 8-byte pair seeds and expand them into private 40-byte inputs without a second CPU-written identity stream, then expose an 8-byte contact-ID-indexed topology slot while the 240-byte manifold remains private. A complete event-free batch commits in canonical contact-ID order without worker state-bitset clear, union, or a second serial scan. Ordered island/graph mutation remains CPU-owned and is now timed explicitly. Ordinary resident contacts need no CPU manifold allocation; lazy CPU mirrors materialize only at explicit observation, sleep, disable, or fallback boundaries. CPU retains non-ordinary/revision packing, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
+| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Completely cold virgin plans retain the broad phase's 8-byte pair seeds and expand them into private 40-byte inputs without a second CPU-written identity stream, then expose an 8-byte contact-ID-indexed topology slot while the 240-byte manifold remains private. A complete event-free dynamic-static batch may solve from a device-private one-color schedule with zero transition bytes and zero direct commits, deferring ordered island/graph mutation to the next observation, mutation, or fallback boundary. Ordinary resident contacts need no CPU manifold allocation; lazy CPU mirrors materialize only at explicit observation, sleep, disable, or fallback boundaries. CPU retains non-ordinary/revision packing, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
 | Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts a 112-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
@@ -506,7 +519,7 @@ private or shared GPU buffers according to measured access patterns:
 2. Update body transforms and bounds.
 3. Generate broad-phase pairs using GPU radix sort plus compacted cell/BVH data.
 4. Run shape-specialized narrow-phase kernels and compact active manifolds.
-5. Build or incrementally update islands and conflict-free constraint batches.
+5. Build or incrementally update islands and conflict-free constraint batches; strict independent dynamic-static cold epochs may solve from a private one-color schedule first and materialize this topology lazily.
 6. Prepare, warm-start, solve, relax, and apply restitution by graph color.
 7. Finalize bodies, sleeping candidates, movement events, and readback slices.
 
@@ -649,6 +662,9 @@ validation are recorded in
 Retained pair-seed authority, removal of the second shared identity stream, and
 paired same-host measurements are recorded in
 [`benchmarks/m4-pro-retained-pair-seed-bootstrap-2026-09-03.md`](benchmarks/m4-pro-retained-pair-seed-bootstrap-2026-09-03.md).
+The private cold topology epoch, deferred island/graph materialization, and
+paired cold-step measurements are recorded in
+[`benchmarks/m4-pro-private-cold-topology-epoch-2026-09-03.md`](benchmarks/m4-pro-private-cold-topology-epoch-2026-09-03.md).
 Fully resident convex-contact state, sim, shape-bound, and body-finalization
 ownership is recorded in
 [`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).

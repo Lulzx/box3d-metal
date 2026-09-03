@@ -103,7 +103,9 @@ int main( void )
 			"last_pair_cpu_filter_candidates,last_pair_direct_create_candidates,pair_contact_seed_dispatches,"
 			"pair_record_traversal_bypasses,last_pair_contact_seed_count,last_pair_contact_seed_bytes,"
 			"pair_private_scratch_dispatches,last_pair_raw_shared_bytes,last_pair_gpu_ms,contact_topology_direct_commits,"
-			"last_contact_topology_cpu_ms\n" );
+			"last_contact_topology_cpu_ms,private_topology_dispatches,last_private_topology_count,"
+			"last_private_schedule_bytes,last_topology_summary_bytes,deferred_pending,deferred_materialization_count,"
+			"last_materialization_count,last_materialization_ms,second_step_ms,second_materialization_ms\n" );
 	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
 	{
 		int contactCount = requestedCount > 0 ? requestedCount : counts[testIndex];
@@ -125,6 +127,20 @@ int main( void )
 		}
 		double gpuMs = TimeWorld( gpuWorld, coldPair ? 0 : 8, repeats );
 		b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
+		// In cold-pair mode the first timed step leaves topology deferred by
+		// design. Take a second timed step so the deferred materialization runs
+		// and can be reported separately; the first-step gpu_ms column stays
+		// comparable with efbdc6c.
+		double secondStepMs = 0.0;
+		double secondMaterializationMs = 0.0;
+		if ( coldPair )
+		{
+			uint64_t secondTicks = b3GetTicks();
+			b3World_Step( gpuWorld, 1.0f / 60.0f, 4 );
+			secondStepMs = b3GetMilliseconds( secondTicks );
+			b3MetalProfile secondProfile = b3World_GetMetalProfile( gpuWorld );
+			secondMaterializationMs = secondProfile.lastDeferredContactTopologyMaterializationMilliseconds;
+		}
 		uint64_t priorBytes = profile.lastContactPrepareIndexBytes / sizeof( uint32_t ) * 144;
 		uint64_t priorImpulseBytes = (uint64_t)profile.lastResidentConvexConstraintCount * 1696;
 		printf( "%d,%d,%.6f,%.6f,%.3f", contactCount, repeats, cpuMs, gpuMs, cpuMs / gpuMs );
@@ -181,13 +197,23 @@ int main( void )
 			(unsigned long long)profile.pairContactSeedDispatchCount,
 			(unsigned long long)profile.pairRecordTraversalBypassCount,
 			(unsigned long long)profile.lastPairContactSeedCount );
-		printf( ",%llu,%llu,%llu,%.6f,%llu,%.6f\n",
+		printf( ",%llu,%llu,%llu,%.6f,%llu,%.6f",
 			(unsigned long long)profile.lastPairContactSeedBytes,
 			(unsigned long long)profile.pairPrivateScratchDispatchCount,
 			(unsigned long long)profile.lastPairRawSharedBytes,
 			profile.lastPairGpuMilliseconds,
 			(unsigned long long)profile.contactTopologyDirectCommitCount,
 			profile.lastContactTopologyCpuMilliseconds );
+		printf( ",%llu,%d,%llu,%llu,%d,%llu,%d,%.6f,%.6f,%.6f\n",
+			(unsigned long long)profile.contactPrivateTopologyDispatchCount,
+			profile.lastContactPrivateTopologyCount,
+			(unsigned long long)profile.lastContactPrivateTopologyScheduleBytes,
+			(unsigned long long)profile.lastContactTopologySummarySharedBytes,
+			profile.deferredContactTopologyPending ? 1 : 0,
+			(unsigned long long)profile.deferredContactTopologyMaterializationCount,
+			profile.lastDeferredContactTopologyMaterializationCount,
+			profile.lastDeferredContactTopologyMaterializationMilliseconds,
+			secondStepMs, secondMaterializationMs );
 		b3DestroyWorld( gpuWorld );
 	}
 	return 0;

@@ -287,6 +287,11 @@ typedef struct b3StepContext
 	// resident convex contact. This authorizes the bounded contact-only solver
 	// and finalization path to keep body/state/shape mirrors stale.
 	bool metalFullyResidentConvexContacts;
+	// Collision retained a complete, independently colorable cold-contact
+	// schedule on the device. CPU contact topology remains deliberately
+	// uncommitted until a public observation, mutation, or fallback boundary.
+	bool metalPrivateColdTopology;
+	int metalPrivateColdContactCount;
 	bool metalPrepareConvexOnGpu;
 	bool metalHitEventBitSetClearDeferred;
 

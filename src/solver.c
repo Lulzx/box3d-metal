@@ -1483,6 +1483,195 @@ static void b3ExecuteMetalFinalization( b3StepContext* context, int bodyCount )
 	world->metalLastFinalizationReadbackBytes = (uint64_t)bodyCount * sizeof( b3MetalFinalizeResult );
 	world->metalLastFinalizationGpuMilliseconds = stats.gpuMilliseconds;
 }
+
+// Solve the deliberately narrow first-touch case without constructing the
+// pointer-rich CPU island and constraint graph. Collision has already proved
+// that the retained device schedule is a complete set of independent
+// dynamic-static contacts. The CPU topology remains a deferred shadow and is
+// materialized by the caller before entering the legacy solver on any failure.
+static bool b3TrySolvePrivateColdContacts( b3World* world, b3StepContext* context, b3SolverSet* awakeSet,
+										 int awakeBodyCount )
+{
+	// Private-topology eligibility predicate (solver site). Keep in sync with
+	// the GPU admission in b3MetalComputeConvexManifolds (metal_backend.m) and
+	// the host admission in b3Collide (physics_world.c); intentionally not
+	// merged. Sensors, joints, recording, and callbacks are enforced by the
+	// host predicate; this gate rechecks only the solver-relevant subset plus
+	// the empty-graph fail-closed condition below.
+	if ( context->metalPrivateColdTopology == false || context->metalPrivateColdContactCount <= 0 ||
+		 world->metalDeferredContactTopologyPending == false || world->metalContext == NULL ||
+		 world->metalFinalizationEnabled == false || world->metalBroadPhaseEnabled == false || world->enableSleep ||
+		 world->enableContinuous || world->splitIslandId != B3_NULL_INDEX || awakeBodyCount < world->metalMinimumBodyCount )
+	{
+		return false;
+	}
+
+	// A private color cannot be composed with CPU graph constraints. The first
+	// implementation intentionally fails closed rather than attempting a mixed
+	// schedule or assigning a color on the CPU.
+	for ( int colorIndex = 0; colorIndex < B3_GRAPH_COLOR_COUNT; ++colorIndex )
+	{
+		const b3GraphColor* color = world->constraintGraph.colors + colorIndex;
+		if ( color->convexContacts.count != 0 || color->contacts.count != 0 || color->jointSims.count != 0 )
+		{
+			return false;
+		}
+	}
+
+	int contactCount = 0;
+	int wideContactCount = 0;
+	if ( b3MetalHasPrivateColdContactSchedule( world->metalContext, world, &contactCount, &wideContactCount ) == false ||
+		 contactCount <= 0 || contactCount != context->metalPrivateColdContactCount ||
+		 contactCount != world->metalDeferredContactTopologyCount || wideContactCount <= 0 )
+	{
+		return false;
+	}
+
+	uint64_t setupTicks = b3GetTicks();
+	context->graph = &world->constraintGraph;
+	context->sims = awakeSet->bodySims.data;
+	context->states = awakeSet->bodyStates.data;
+	context->metalFinalizeResults = NULL;
+	context->metalFinalizationDeviceOnly = false;
+	context->metalBodyStatesFinalizedOnDevice = false;
+	context->metalBodyMoveEventsOnDevice = false;
+	context->metalShapeResults = NULL;
+	context->metalShapeResultCount = 0;
+	context->metalEnlargedShapeResults = NULL;
+	context->metalEnlargedShapeResultCount = 0;
+	context->metalStatesResident = false;
+	context->metalShapeBoundsResident = false;
+	context->metalShapeFinalizationComplete = false;
+	context->metalDeferShapeResultApply = false;
+	context->metalTreeRefitEligible = false;
+	context->metalTreeRefit = false;
+	context->metalPrivateColdTopology = true;
+	context->metalPrivateColdContactCount = contactCount;
+	context->metalResidentConvexContactCount = contactCount;
+	context->metalResidentConvexConstraintCount = wideContactCount;
+	context->metalResidentConvexComplete = true;
+	context->metalResidentConvexHasRestitution = true;
+	context->metalResidentConvexCoverageProven = true;
+	context->metalFullyResidentConvexContacts = true;
+	context->metalPrepareConvexOnGpu = true;
+	context->metalHitEventBitSetClearDeferred = true;
+	context->wideConstraints = NULL;
+	context->widePrepareSpans = NULL;
+	context->wideContactCount = wideContactCount;
+	context->manifoldConstraints = NULL;
+	context->contactConstraints = NULL;
+	context->manifoldConstraintCount = 0;
+	context->contactConstraintCount = 0;
+	context->overflowManifoldConstraintCount = 0;
+	context->overflowContactConstraintCount = 0;
+	context->contactPrepareSpans = NULL;
+	context->overflowSpans = NULL;
+	context->jointPrepareSpans = NULL;
+	context->jointConstraintCount = 0;
+	context->overflowJointConstraintCount = 0;
+	context->activeColorCount = 1;
+	context->workerCount = world->workerCount;
+	context->stages = NULL;
+	context->stageCount = 0;
+
+	b3AtomicStoreInt( &context->bulletBodyCount, 0 );
+	context->bulletBodies = (int*)b3StackAlloc( &world->stack, awakeBodyCount * sizeof( int ), "bullet bodies" );
+	b3Array_Resize( world->bodyMoveEvents, awakeBodyCount );
+
+	int jointIdCapacity = b3GetIdCapacity( &world->jointIdPool );
+	for ( int i = 0; i < world->workerCount; ++i )
+	{
+		b3TaskContext* taskContext = b3Array_Get( world->taskContexts, i );
+		b3SetBitCountAndClear( &taskContext->jointStateBitSet, jointIdCapacity );
+		taskContext->hasHitEvents = false;
+	}
+
+	world->metalLastResidentConvexContactCount = contactCount;
+	world->metalLastResidentConvexConstraintCount = wideContactCount;
+	world->metalContactCoverageBypassCount += (uint64_t)contactCount;
+	world->profile.solverSetup = b3GetMilliseconds( setupTicks );
+
+	uint64_t constraintTicks = b3GetTicks();
+	b3MetalDispatchStats stats = { 0 };
+	bool solved = b3MetalSolvePrivateColdContactSubsteps( world->metalContext, context, context->sims, context->states,
+		awakeBodyCount, ITERATIONS, RELAX_ITERATIONS, B3_RESTITUTION_ITERATIONS, &stats );
+	if ( solved == false )
+	{
+		world->metalContactFallbackCount += (uint64_t)context->subStepCount;
+		b3StackFree( &world->stack, context->bulletBodies );
+		context->bulletBodies = NULL;
+		context->metalPrivateColdTopology = false;
+		context->metalPrivateColdContactCount = 0;
+		return false;
+	}
+
+	world->metalContactDispatchCount += (uint64_t)context->subStepCount;
+	world->metalContactPrepareDispatchCount += 1;
+	world->metalContactImpulseStoreBypassCount += 1;
+	world->metalLastContactGpuMilliseconds = stats.gpuMilliseconds;
+	context->metalStatesResident = true;
+	bool finalizedOnDevice = context->metalFinalizeResults != NULL || context->metalFinalizationDeviceOnly;
+	world->metalFinalizationDispatchCount += finalizedOnDevice ? 1 : 0;
+	world->metalFinalizationReadbackBypassCount += context->metalFinalizationDeviceOnly ? 1 : 0;
+	world->metalLastFinalizationReadbackBytes = context->metalFinalizeResults != NULL ?
+		(uint64_t)awakeBodyCount * sizeof( b3MetalFinalizeResult ) : 0;
+	world->profile.constraints = b3GetMilliseconds( constraintTicks );
+	world->metalContactHitEventBitSetClearBypassCount += 1;
+	world->metalLastContactHitEventBitSetBytes = 0;
+
+	uint64_t transformTicks = b3GetTicks();
+	for ( int i = 0; i < world->workerCount; ++i )
+	{
+		b3TaskContext* taskContext = world->taskContexts.data + i;
+		b3Array_Clear( taskContext->sensorHits );
+		b3SetBitCountAndClear( &taskContext->enlargedSimBitSet, awakeBodyCount );
+	}
+	world->metalAwakeIslandBitSetClearBypassCount += 1;
+	world->metalLastAwakeIslandBitSetBytes = 0;
+
+	b3ExecuteMetalFinalization( context, awakeBodyCount );
+	if ( context->metalBodyMoveEventsOnDevice )
+	{
+		world->metalBodyMoveEventsStale = true;
+		world->metalBodyMoveEventDispatchCount += 1;
+		world->metalBodyMoveEventCpuWriteBypassCount += 1;
+	}
+	if ( context->metalShapeResultCount > 0 )
+	{
+		world->metalFinalizationShapeTraversalBypassCount += 1;
+	}
+
+	bool bypassBodyFinalization = context->metalFinalizationDeviceOnly && context->metalBodyStatesFinalizedOnDevice &&
+		context->metalBodyMoveEventsOnDevice && context->metalShapeFinalizationComplete;
+	if ( bypassBodyFinalization )
+	{
+		b3AtomicStoreInt( &world->metalBodySimCpuStale, 1 );
+		world->metalFinalizationBodyTraversalBypassCount += 1;
+	}
+	else
+	{
+		b3ParallelFor( world, &b3FinalizeBodiesTask, awakeBodyCount, 16, context, "ccd" );
+		b3AtomicStoreInt( &world->metalBodySimCpuStale, 0 );
+	}
+	if ( context->metalBodyStatesFinalizedOnDevice == false )
+	{
+		b3BumpMetalBodyStateRevision( world );
+	}
+	if ( context->metalShapeResultCount == 0 )
+	{
+		world->metalShapeCpuBoundsStale = false;
+	}
+	bool deferShapeApply = context->metalTreeRefit && context->metalDeferShapeResultApply;
+	if ( context->metalShapeResultCount > 0 && deferShapeApply == false )
+	{
+		b3ParallelFor( world, &b3ApplyMetalShapeResultsTask, context->metalShapeResultCount, 32, context,
+					   "metal shape finalize" );
+		world->metalShapeResultApplyCount += 1;
+		world->metalShapeCpuBoundsStale = false;
+	}
+	world->profile.transforms = b3GetMilliseconds( transformTicks );
+	return true;
+}
 #endif
 
 #if defined( BOX3D_METAL )
@@ -2055,6 +2244,35 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 			return;
 		}
 	}
+
+	if ( world->metalDeferredContactTopologyPending )
+	{
+		if ( b3TrySolvePrivateColdContacts( world, stepContext, awakeSet, awakeBodyCount ) )
+		{
+			goto solver_events;
+		}
+
+		// Once the private route is rejected, restore the canonical CPU topology
+		// before the graph-based solver observes any constraints. This is the sole
+		// fail-closed transition; never continue with a pending empty graph.
+		if ( b3MaterializeDeferredContactTopology( world ) == false )
+		{
+			b3Log( "Box3D Metal solve skipped because deferred contact topology could not be materialized\n" );
+			return;
+		}
+		if ( b3AtomicLoadInt( &world->metalBodyStateCpuStale ) != 0 && b3MaterializeBodyStates( world ) == false )
+		{
+			b3Log( "Box3D Metal solve skipped because fallback body-state readback failed\n" );
+			return;
+		}
+		if ( b3AtomicLoadInt( &world->metalBodySimCpuStale ) != 0 && b3MaterializeBodySims( world ) == false )
+		{
+			b3Log( "Box3D Metal solve skipped because fallback body-sim readback failed\n" );
+			return;
+		}
+		stepContext->metalPrivateColdTopology = false;
+		stepContext->metalPrivateColdContactCount = 0;
+	}
 #endif
 
 	// Solve constraints using graph coloring
@@ -2083,6 +2301,8 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		stepContext->metalShapeBoundsResident = false;
 		stepContext->metalShapeFinalizationComplete = false;
 		stepContext->metalDeferShapeResultApply = false;
+		stepContext->metalPrivateColdTopology = false;
+		stepContext->metalPrivateColdContactCount = 0;
 
 		// count contacts, joints, and colors
 		int activeColorCount = 0;
@@ -2701,6 +2921,9 @@ void b3Solve( b3World* world, b3StepContext* stepContext )
 		b3TracyCZoneEnd( update_transforms );
 	}
 
+#if defined( BOX3D_METAL )
+solver_events:
+#endif
 	// Report joint events
 	{
 		b3TracyCZoneNC( joint_events, "Joint Events", b3_colorPeru, true );

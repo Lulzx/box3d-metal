@@ -94,15 +94,26 @@ void b3RemoveHullFromDatabase( b3World* world, const b3HullData* data )
 	}
 }
 
-b3World* b3GetUnlockedWorldFromId( b3WorldId id )
+static b3World* b3GetWorldFromIdRaw( b3WorldId id )
 {
 	B3_ASSERT( 1 <= id.index1 && id.index1 <= B3_MAX_WORLDS );
 	b3World* world = b3_worlds + ( id.index1 - 1 );
 	B3_ASSERT( id.index1 == world->worldId + 1 );
 	B3_ASSERT( id.generation == world->generation );
+	return world;
+}
+
+b3World* b3GetUnlockedWorldFromId( b3WorldId id )
+{
+	b3World* world = b3GetWorldFromIdRaw( id );
 
 	// A world accessed from an id should not be locked
 	if ( world->locked )
+	{
+		B3_ASSERT( false );
+		return NULL;
+	}
+	if ( b3MaterializeDeferredContactTopology( world ) == false )
 	{
 		B3_ASSERT( false );
 		return NULL;
@@ -112,10 +123,12 @@ b3World* b3GetUnlockedWorldFromId( b3WorldId id )
 
 b3World* b3GetWorldFromId( b3WorldId id )
 {
-	B3_ASSERT( 1 <= id.index1 && id.index1 <= B3_MAX_WORLDS );
-	b3World* world = b3_worlds + ( id.index1 - 1 );
-	B3_ASSERT( id.index1 == world->worldId + 1 );
-	B3_ASSERT( id.generation == world->generation );
+	b3World* world = b3GetWorldFromIdRaw( id );
+	if ( world->locked == false && b3MaterializeDeferredContactTopology( world ) == false )
+	{
+		B3_ASSERT( false );
+		return NULL;
+	}
 	return world;
 }
 
@@ -124,6 +137,11 @@ b3World* b3GetWorld( int index )
 	B3_ASSERT( 0 <= index && index < B3_MAX_WORLDS );
 	b3World* world = b3_worlds + index;
 	B3_ASSERT( world->worldId == index );
+	if ( world->locked == false && b3MaterializeDeferredContactTopology( world ) == false )
+	{
+		B3_ASSERT( false );
+		return NULL;
+	}
 	return world;
 }
 
@@ -133,6 +151,11 @@ b3World* b3GetUnlockedWorld( int index )
 	b3World* world = b3_worlds + index;
 	B3_ASSERT( world->worldId == index );
 	if ( world->locked )
+	{
+		B3_ASSERT( false );
+		return NULL;
+	}
+	if ( b3MaterializeDeferredContactTopology( world ) == false )
 	{
 		B3_ASSERT( false );
 		return NULL;
@@ -420,15 +443,21 @@ void b3DestroyWorld( b3WorldId worldId )
 {
 	b3AtomicFetchAddInt( &b3_worldCount, -1 );
 
-	b3World* world = b3GetUnlockedWorldFromId( worldId );
-	if ( world == NULL )
+	// Whole-world destruction owns every remaining CPU and Metal allocation, so
+	// a strictly event-free private epoch can be discarded without first paying
+	// the deferred graph/island commit.
+	b3World* world = b3GetWorldFromIdRaw( worldId );
+	if ( world->locked )
 	{
+		B3_ASSERT( false );
 		return;
 	}
 
 	world->locked = true;
 
 #if defined( BOX3D_METAL )
+	world->metalDeferredContactTopologyPending = false;
+	world->metalDeferredContactTopologyCount = 0;
 	b3MetalDestroyContext( world->metalContext );
 	world->metalContext = NULL;
 	world->metalFinalizationEnabled = false;
@@ -745,11 +774,9 @@ void b3World_DisableMetal( b3WorldId worldId )
 b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 {
 	b3MetalProfile profile = { 0 };
-	b3World* world = b3GetWorldFromId( worldId );
-	if ( world == NULL )
-	{
-		return profile;
-	}
+	// Telemetry is intentionally not a topology observation. This lets the cold
+	// benchmark measure the device step separately from optional CPU materialization.
+	b3World* world = b3GetWorldFromIdRaw( worldId );
 
 	profile.enabled = world->metalContext != NULL;
 	profile.finalizationEnabled = world->metalFinalizationEnabled;
@@ -787,6 +814,15 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.lastContactStateBitSetBytes = world->metalLastContactStateBitSetBytes;
 	profile.contactTopologyDirectCommitCount = world->metalContactTopologyDirectCommitCount;
 	profile.lastContactTopologyCpuMilliseconds = world->metalLastContactTopologyCpuMilliseconds;
+	profile.contactPrivateTopologyDispatchCount = world->metalContactPrivateTopologyDispatchCount;
+	profile.lastContactPrivateTopologyCount = world->metalLastContactPrivateTopologyCount;
+	profile.lastContactPrivateTopologyScheduleBytes = world->metalLastContactPrivateTopologyScheduleBytes;
+	profile.lastContactTopologySummarySharedBytes = world->metalLastContactTopologySummarySharedBytes;
+	profile.deferredContactTopologyPending = world->metalDeferredContactTopologyPending;
+	profile.deferredContactTopologyMaterializationCount = world->metalDeferredContactTopologyMaterializationCount;
+	profile.lastDeferredContactTopologyMaterializationCount = world->metalLastDeferredContactTopologyMaterializationCount;
+	profile.lastDeferredContactTopologyMaterializationMilliseconds =
+		world->metalLastDeferredContactTopologyMaterializationMilliseconds;
 	profile.contactHitEventBitSetClearBypassCount = world->metalContactHitEventBitSetClearBypassCount;
 	profile.lastContactHitEventBitSetBytes = world->metalLastContactHitEventBitSetBytes;
 	profile.awakeIslandBitSetClearBypassCount = world->metalAwakeIslandBitSetClearBypassCount;
@@ -1509,6 +1545,108 @@ static void b3CommitMetalContactTransitionsDirect( b3World* world, const b3Metal
 }
 #endif
 
+bool b3MaterializeDeferredContactTopology( b3World* world )
+{
+#if defined( BOX3D_METAL )
+	if ( world == NULL || world->metalDeferredContactTopologyPending == false )
+	{
+		return true;
+	}
+
+	int contactCount = world->metalDeferredContactTopologyCount;
+	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
+	bool valid = world->metalContext != NULL && contactCount > 0 &&
+		contactCount == b3GetIdCount( &world->contactIdPool ) && contactCount == world->contacts.count &&
+		contactCount == awakeSet->contactIndices.count &&
+		world->broadPhase.pairSetRevision == world->metalDeferredContactTopologyPairRevision &&
+		world->metalContactInputRevision == world->metalDeferredContactTopologyInputRevision &&
+		world->constraintGraph.revision == world->metalDeferredContactTopologyGraphRevision;
+
+	// Validate the entire epoch before making the first graph/island mutation.
+	// The admitted route is virgin and dense, so ascending contact id is also
+	// the deterministic CPU-oracle commit order.
+	for ( int contactId = 0; valid && contactId < contactCount; ++contactId )
+	{
+		const b3Contact* contact = world->contacts.data + contactId;
+		valid = contact->contactId == contactId && contact->setIndex == b3_awakeSet &&
+			contact->colorIndex == B3_NULL_INDEX && contact->islandId == B3_NULL_INDEX &&
+			contact->manifoldCount == 0 && contact->manifolds == NULL &&
+			( contact->flags & ( b3_contactTouchingFlag | b3_simTouchingFlag | b3_simStartedTouching |
+				b3_simStoppedTouching | b3_simDisjoint | b3_simMeshContact ) ) == 0;
+		if ( valid )
+		{
+			valid = contact->localIndex >= 0 && contact->localIndex < awakeSet->contactIndices.count &&
+				awakeSet->contactIndices.data[contact->localIndex] == contactId;
+		}
+		if ( valid )
+		{
+			valid = contact->shapeIdA >= 0 && contact->shapeIdA < world->shapes.count &&
+				contact->shapeIdB >= 0 && contact->shapeIdB < world->shapes.count;
+		}
+		if ( valid )
+		{
+			const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
+			const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
+			const uint32_t eventMask = b3_enableContactEvents | b3_enableHitEvents | b3_enablePreSolveEvents;
+			valid = shapeA->id == contact->shapeIdA && shapeB->id == contact->shapeIdB && shapeA->bodyId >= 0 &&
+				shapeA->bodyId < world->bodies.count && shapeB->bodyId >= 0 && shapeB->bodyId < world->bodies.count &&
+				( shapeA->flags & eventMask ) == 0 && ( shapeB->flags & eventMask ) == 0;
+			if ( valid )
+			{
+				const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
+				const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
+				valid = ( bodyA->setIndex == b3_awakeSet && bodyB->setIndex == b3_staticSet ) ||
+					( bodyA->setIndex == b3_staticSet && bodyB->setIndex == b3_awakeSet );
+			}
+		}
+	}
+	if ( valid == false )
+	{
+		b3Log( "Box3D Metal deferred contact topology validation failed\n" );
+		return false;
+	}
+
+	uint64_t topologyTicks = b3GetTicks();
+	for ( int contactId = 0; contactId < contactCount; ++contactId )
+	{
+		b3Contact* contact = world->contacts.data + contactId;
+		const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
+		const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
+		const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
+		const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
+
+		contact->manifoldCount = 1;
+		contact->bodySimIndexA = bodyA->setIndex == b3_staticSet ? B3_NULL_INDEX : bodyA->localIndex;
+		contact->bodySimIndexB = bodyB->setIndex == b3_staticSet ? B3_NULL_INDEX : bodyB->localIndex;
+		contact->flags |= b3_simTouchingFlag | b3_contactTouchingFlag | b3_simMetalManifold | b3_simMetalManifoldStale;
+		contact->metalSyncGeneration = 0;
+
+		b3LinkContact( world, contact );
+		int oldLocalIndex = contact->localIndex;
+		b3AddContactToGraph( world, contact );
+		b3RemoveNonTouchingContact( world, b3_awakeSet, oldLocalIndex );
+	}
+
+	world->metalDeferredContactTopologyPending = false;
+	world->metalDeferredContactTopologyCount = 0;
+	world->metalDeferredContactTopologyPairRevision = 0;
+	world->metalDeferredContactTopologyInputRevision = 0;
+	world->metalDeferredContactTopologyGraphRevision = 0;
+	// The contact-id input order is unchanged by this CPU-only graph commit.
+	// Preserve that private narrow-phase registry for the next ordinary step;
+	// failure merely drops the cache and does not invalidate committed topology.
+	(void)b3MetalCommitDeferredContactTopology( world->metalContext, world, contactCount );
+	world->metalDeferredContactTopologyMaterializationCount += 1;
+	world->metalLastDeferredContactTopologyMaterializationCount = contactCount;
+	world->metalLastDeferredContactTopologyMaterializationMilliseconds = b3GetMilliseconds( topologyTicks );
+	b3ValidateSolverSets( world );
+	b3ValidateContacts( world );
+#else
+	B3_UNUSED( world );
+#endif
+	return true;
+}
+
 // Narrow-phase collision
 static bool b3Collide( b3StepContext* context )
 {
@@ -1587,10 +1725,15 @@ static bool b3Collide( b3StepContext* context )
 	const b3MetalContactTransition* metalContactTransitions = NULL;
 	int metalContactTransitionCount = 0;
 	bool metalDirectTopologyCommit = false;
+	context->metalPrivateColdTopology = false;
+	context->metalPrivateColdContactCount = 0;
 	world->metalLastContactTransitionCount = 0;
 	world->metalLastContactTransitionBytes = 0;
 	world->metalLastContactExceptionBytes = 0;
 	world->metalLastContactTopologyCpuMilliseconds = 0.0f;
+	world->metalLastContactPrivateTopologyCount = 0;
+	world->metalLastContactPrivateTopologyScheduleBytes = 0;
+	world->metalLastContactTopologySummarySharedBytes = 0;
 	uint64_t metalCollisionGraphRevision = world->constraintGraph.revision;
 	if ( world->metalContext != NULL && contactCount >= world->metalMinimumBodyCount )
 	{
@@ -1607,6 +1750,59 @@ static bool b3Collide( b3StepContext* context )
 			metalSuccess = false;
 			metalContactTransitions = NULL;
 			metalContactTransitionCount = 0;
+		}
+		if ( metalSuccess )
+		{
+			int privateColdContactCount = 0;
+			int privateColdWideCount = 0;
+			bool privateColdTopology = b3MetalHasPrivateColdContactSchedule( world->metalContext, world,
+				&privateColdContactCount, &privateColdWideCount );
+			if ( privateColdTopology )
+			{
+				// Private-topology eligibility predicate (host site). Keep in sync
+				// with the GPU admission in b3MetalComputeConvexManifolds
+				// (metal_backend.m) and the solver gate in
+				// b3TrySolvePrivateColdContacts (solver.c); intentionally not merged.
+				// Per-shape event flags are enforced upstream by the virgin
+				// bootstrap candidate check and at materialization, so they need
+				// no per-shape test here.
+				bool emptyGraph = true;
+				for ( int colorIndex = 0; colorIndex < B3_GRAPH_COLOR_COUNT; ++colorIndex )
+				{
+					const b3GraphColor* color = world->constraintGraph.colors + colorIndex;
+					emptyGraph = emptyGraph && color->convexContacts.count == 0 && color->contacts.count == 0 &&
+						color->jointSims.count == 0;
+				}
+				bool hostEligible = resultCount == 0 && metalContactTransitionCount == 0 &&
+					privateColdContactCount == contactCount && privateColdContactCount == world->contacts.count &&
+					privateColdContactCount == b3GetIdCount( &world->contactIdPool ) && privateColdWideCount > 0 &&
+					touchingCount == 0 && awakeSet->contactIndices.count == contactCount && emptyGraph &&
+					world->metalDeferredContactTopologyPending == false && world->metalFinalizationEnabled &&
+					world->metalBroadPhaseEnabled && world->enableSleep == false && world->enableContinuous == false &&
+					world->splitIslandId == B3_NULL_INDEX && world->sensors.count == 0 &&
+					b3GetIdCount( &world->jointIdPool ) == 0 && world->contactRecycleDistance == 0.0f &&
+					world->recording == NULL && world->preSolveFcn == NULL && world->customFilterFcn == NULL &&
+					world->metalDefaultFrictionCallback && world->metalDefaultRestitutionCallback;
+				if ( hostEligible == false )
+				{
+					b3MetalCancelPrivateColdContactSchedule( world->metalContext );
+					metalSuccess = false;
+				}
+				else
+				{
+					world->metalDeferredContactTopologyPending = true;
+					world->metalDeferredContactTopologyCount = privateColdContactCount;
+					world->metalDeferredContactTopologyPairRevision = world->broadPhase.pairSetRevision;
+					world->metalDeferredContactTopologyInputRevision = world->metalContactInputRevision;
+					world->metalDeferredContactTopologyGraphRevision = world->constraintGraph.revision;
+					context->metalPrivateColdTopology = true;
+					context->metalPrivateColdContactCount = privateColdContactCount;
+					world->metalContactPrivateTopologyDispatchCount += 1;
+					world->metalLastContactPrivateTopologyCount = privateColdContactCount;
+					world->metalLastContactPrivateTopologyScheduleBytes = stats.contactPrivateTopologySchedulePrivateBytes;
+					world->metalLastContactTopologySummarySharedBytes = stats.contactTopologySummarySharedBytes;
+				}
+			}
 		}
 		if ( metalSuccess )
 		{
@@ -2893,6 +3089,10 @@ bool b3Contact_IsValid( b3ContactId id )
 	if ( world->worldId != id.world0 )
 	{
 		// world is free
+		return false;
+	}
+	if ( world->locked == false && b3MaterializeDeferredContactTopology( world ) == false )
+	{
 		return false;
 	}
 

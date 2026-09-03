@@ -151,6 +151,8 @@ typedef struct b3MetalDispatchStats
 	int contactTransitionCount;
 	uint64_t contactTransitionSharedBytes;
 	uint64_t contactExceptionSharedBytes;
+	uint64_t contactPrivateTopologySchedulePrivateBytes;
+	uint64_t contactTopologySummarySharedBytes;
 } b3MetalDispatchStats;
 
 // Returns false when there is no usable Metal device or the shader pipeline
@@ -195,6 +197,10 @@ bool b3MetalIntegrateUnconstrainedSubsteps( b3MetalContext* context, b3BodyState
 // substep. Graph-overflow constraints execute serially in upstream order.
 bool b3MetalSolveContactSubsteps( b3MetalContext* context, b3StepContext* stepContext, int velocityIterations,
 								  int relaxIterations, int restitutionIterations, b3MetalDispatchStats* stats );
+bool b3MetalSolvePrivateColdContactSubsteps( b3MetalContext* context, b3StepContext* stepContext,
+									 const b3BodySim* bodySims, b3BodyState* bodyStates, int awakeBodyCount,
+									 int velocityIterations, int relaxIterations, int restitutionIterations,
+									 b3MetalDispatchStats* stats );
 
 // Compute transform, sleep-motion, and world-inertia finalization values. When
 // statesAreResident is true, the persistent state buffer is reused without a
@@ -249,6 +255,10 @@ b3MetalContactInputSeed* b3MetalBeginContactInputBootstrap( b3MetalContext* cont
 bool b3MetalCommitContactInputBootstrap( b3MetalContext* context, const b3World* world, int count );
 void b3MetalCancelContactInputBootstrap( b3MetalContext* context );
 bool b3MetalCanBootstrapConvexManifoldInputs( const b3MetalContext* context, const b3World* world, int contactCount );
+bool b3MetalHasPrivateColdContactSchedule( const b3MetalContext* context, const b3World* world,
+									  int* contactCount, int* wideCount );
+void b3MetalCancelPrivateColdContactSchedule( b3MetalContext* context );
+bool b3MetalCommitDeferredContactTopology( b3MetalContext* context, const b3World* world, int contactCount );
 // Diagnostic access to the current device-refreshed transform registry. This
 // does not pack or synchronize CPU body sims and fails when the registry is not
 // authoritative for the world's current step and revision.

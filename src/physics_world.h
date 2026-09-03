@@ -304,6 +304,21 @@ typedef struct b3World
 	uint64_t metalLastContactStateBitSetBytes;
 	uint64_t metalContactTopologyDirectCommitCount;
 	float metalLastContactTopologyCpuMilliseconds;
+	// A complete, event-free virgin convex batch may remain in the private
+	// Metal schedule until the next CPU observation. The CPU contact registry
+	// is still the oracle, but its touching graph/island links are deferred.
+	bool metalDeferredContactTopologyPending;
+	int metalDeferredContactTopologyCount;
+	uint64_t metalDeferredContactTopologyPairRevision;
+	uint64_t metalDeferredContactTopologyInputRevision;
+	uint64_t metalDeferredContactTopologyGraphRevision;
+	uint64_t metalContactPrivateTopologyDispatchCount;
+	int metalLastContactPrivateTopologyCount;
+	uint64_t metalLastContactPrivateTopologyScheduleBytes;
+	uint64_t metalLastContactTopologySummarySharedBytes;
+	uint64_t metalDeferredContactTopologyMaterializationCount;
+	int metalLastDeferredContactTopologyMaterializationCount;
+	float metalLastDeferredContactTopologyMaterializationMilliseconds;
 	uint64_t metalContactHitEventBitSetClearBypassCount;
 	uint64_t metalLastContactHitEventBitSetBytes;
 	uint64_t metalAwakeIslandBitSetClearBypassCount;
@@ -514,6 +529,11 @@ b3World* b3GetWorld( int index );
 void b3ValidateConnectivity( b3World* world );
 void b3ValidateSolverSets( b3World* world );
 void b3ValidateContacts( b3World* world );
+
+// Commit a private cold-contact epoch into the ordinary CPU graph/island
+// topology. This is idempotent and is the central boundary for CPU fallback,
+// public observation, and topology mutation.
+bool b3MaterializeDeferredContactTopology( b3World* world );
 
 // Register a hull in the world database, returning the owned shared copy. Identical hulls
 // share one copy with a reference count. The input may be freed after this call.
