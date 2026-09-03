@@ -224,7 +224,10 @@ The strict virgin route retains the broad phase's existing 8-byte shape-pair
 seeds as one-shot authority. After CPU contact creation proves dense IDs,
 generation one, canonical order, and unchanged revisions, a one-thread-per-
 contact kernel expands those seeds into the private input table. No second
-CPU-written 16-byte identity stream is needed.
+CPU-written 16-byte identity stream is needed. A complete event-free
+dynamic-static batch may then solve from a device-private one-color schedule
+and defer the ascending-ID graph/island commit to the central
+materialization boundary for observation, mutation, or fallback.
 The CPU validates the whole batch before installing logical one-manifold
 contacts and applying the existing ascending-ID graph/island transition in one
 pass. Complete ordinary batches bypass per-worker contact-state bitset clear,

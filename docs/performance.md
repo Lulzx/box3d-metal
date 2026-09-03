@@ -182,6 +182,14 @@ delta of only +0.116 ms. The defensible claim is transport ownership: 2 MiB and
 4 MiB of CPU writes become zero, while Metal returns one 4-byte validation
 status and retains the private 40-byte inputs.
 
+The private-cold-topology epoch admits a strict dynamic-static virgin batch as
+a device-private one-color schedule. Seven alternating runs against `efbdc6c`
+put the cold step at 65.805 versus 83.317 ms at 131,072 contacts (paired delta
+-18.644 ms) and 119.452 versus 153.860 ms at 262,144 (paired delta -32.280
+ms), with zero transition bytes and zero direct commits. Deferred
+materialization matches the eager CPU commit: 7.846 versus 7.944 ms and 15.196
+versus 15.344 ms.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.

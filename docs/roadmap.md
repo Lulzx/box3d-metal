@@ -57,9 +57,13 @@ seed remains the sole shared identity source, while narrow phase expands it into
 private inputs after exact CPU identity/revision validation. The separate
 16-byte CPU-written bootstrap stream is gone on this route.
 
-1. Move the measured cold island/graph commit behind a device-resident topology
-   epoch. Materialize the exact ascending-ID CPU topology only at public,
-   sleep, unsupported, or fallback boundaries.
+The device-resident topology epoch is complete: a strict dynamic-static virgin
+batch solves from a private one-color schedule with zero transition bytes and
+zero direct commits, and the exact ascending-ID CPU topology materializes once
+at observation, mutation, or fallback boundaries.
+
+1. Extend the private epoch beyond strict dynamic-static independence and keep
+   topology resident across steps instead of materializing per cold epoch.
 2. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
 3. Add remaining high-value joint types one at a time with mode matrices,
