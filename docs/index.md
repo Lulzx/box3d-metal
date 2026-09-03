@@ -69,6 +69,7 @@ for review.
 - [Resident contact input/order registry](benchmarks/m4-pro-contact-input-residency-2026-09-02.md)
 - [Contact-state traversal bypass](benchmarks/m4-pro-contact-state-traversal-bypass-2026-09-02.md)
 - [Hit-event bitset residency](benchmarks/m4-pro-hit-event-bitset-residency-2026-09-02.md)
+- [Private cold first-touch transitions](benchmarks/m4-pro-private-first-touch-2026-09-03.md)
 
 ## Repository map
 

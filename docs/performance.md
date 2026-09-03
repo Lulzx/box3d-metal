@@ -33,6 +33,7 @@ readback unless explicitly labeled a primitive.
 | Experimental GPU finalization | No crossover | 27% slower at 524,288 bodies |
 | GPU shape finalization | No crossover | 17.9% slower at 524,288 shapes |
 | Experimental GPU tree traversal | Around 32,768 shapes | 1.068x at 524,288 shapes |
+| Private cold first-touch | No crossover | 20.1% less GPU time at 262,144 contacts vs pre-change baseline |
 
 ## Interpretation
 
@@ -149,6 +150,13 @@ count to defer all per-worker contact-capacity hit-bitset clears. The 512 and
 reported zero latest hit-bitset bytes. Hit-enabled and forced Metal-fallback
 fixtures restored a nonzero clear before CPU store work. Timing remains
 excluded under load averages ranging from roughly 6 to 23.
+
+The private-first-touch checkpoint replaces each ordinary cold contact's
+240-byte shared manifold with a 16-byte ordered topology transition. At 131,072
+contacts the clean pre-change GPU median of 115.063 ms falls to 93.112 ms
+(-19.1%); at 262,144 it falls from 217.687 ms to 173.885 ms (-20.1%). The
+corresponding median CPU/GPU ratios are 0.874x and 0.904x, so these are measured
+regression reductions rather than crossover claims.
 
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact

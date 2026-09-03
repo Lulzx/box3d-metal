@@ -151,6 +151,7 @@ CPU work:
 | Experimental GPU finalization | Correct, but 27% slower at the 524,288-body paired median |
 | GPU shape finalization | Correct, but 17.9% slower at 524,288 shapes |
 | Experimental GPU tree traversal | 1.068x at 524,288 shapes; small worlds regress |
+| Private cold first-touch | 19.1-20.1% less GPU cold-step time at 131,072-262,144 contacts; still CPU-faster |
 
 The tree-traversal speedup is historical evidence for the earlier CPU-prefix
 implementation. The current on-device scan has exact-order validation, but no
@@ -224,6 +225,12 @@ The empty-event solver follow-on skips all per-worker contact-sized hit-bitset
 clears: 512 and 8,192-contact runs bypassed all 48 and 28 resident solver
 phases respectively, while hit-enabled and forced-fallback tests restored the
 clear before CPU work.
+The private-first-touch checkpoint keeps each ordinary cold manifold and its
+prepare record on-device. The CPU receives only a deterministic 16-byte
+topology transition, while event, callback, fast, separated, and unsupported
+contacts retain full exceptions. Against the clean pre-change source, M4 Pro
+cold GPU medians improve by 19.1% at 131,072 contacts and 20.1% at 262,144,
+though the CPU oracle remains faster in both cases.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

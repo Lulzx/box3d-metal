@@ -244,6 +244,12 @@ double/VF64 UBSan. The event-enabled fixture cleared before setting its bit and
 matched the CPU hit; the unsupported-joint fixture cleared after Metal solver
 rejection and before CPU store fallback.
 
+The private-first-touch checkpoint passes the full CPU Release suite, complete
+float and double/VF64 Release Metal suites, ASan Metal, and float plus
+double/VF64 UBSan Metal. Differential fixtures compare exact touching state,
+graph colors, body bitsets, contact order, recycled generations, lazy manifold
+sync, corrupt-seed/revision fallback, and the retained full hit-event exception.
+
 ## What the tests do not prove
 
 They do not prove bit-identical determinism, all future upstream revisions,
