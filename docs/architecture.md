@@ -220,9 +220,11 @@ For a complete cold bootstrap with default callbacks and no event, recording,
 CCD, or recycling requirements, touching manifolds also remain private. Metal
 authors the prepare record and emits only a deterministic 16-byte contact-ID,
 generation, input-index, and point-count transition. The CPU validates the
-whole batch before allocating structural placeholders and applying the existing
-ascending-ID graph/island transition. All unsafe classes retain full ordered
-exceptions.
+whole batch before installing logical one-manifold contacts and applying the
+existing ascending-ID graph/island transition. Their CPU manifold pointer stays
+null until an explicit public, recording, sleep, disable, overflow, or fallback
+boundary materializes the checked device record. All unsafe classes retain full
+ordered exceptions.
 The scatter rotates normals, constructs both center-of-mass-relative anchors
 with VF64 translation subtraction, computes default friction/restitution/rolling
 parameters and rotated tangent velocity, and feature-matches the prior impulse

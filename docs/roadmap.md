@@ -52,18 +52,14 @@ Resident contact results now carry warm starts by contact generation and feature
 ID. Public-manifold synchronization is lazy, and hit events use a compact
 exception list assembled during narrow-phase packing.
 
-1. Remove the remaining structural CPU manifold allocation for ordinary cold
-   first-touch contacts while retaining the ordered graph/island topology
-   oracle; the compact transition benchmark identifies this as the next cold
-   boundary.
-2. Retain body and supported joint state across world steps, reading back only
+1. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
-3. Add remaining high-value joint types one at a time with mode matrices,
+2. Add remaining high-value joint types one at a time with mode matrices,
    overflow tests, static-body tests, and whole-world benchmarks.
-4. Move more deterministic contact/topology mutation on-device only after the
-   geometry and manifold residency boundaries are proven, keeping topology
-   mutation ordered.
-5. Add per-Apple-GPU-family benchmark records before considering automatic
+3. Move deterministic contact/topology mutation on-device now that ordinary
+   first-touch geometry and CPU-manifold allocation are removed, while keeping
+   the CPU oracle and ordered fallback boundary.
+4. Add per-Apple-GPU-family benchmark records before considering automatic
    thresholds.
 
 ## Non-goals without new evidence

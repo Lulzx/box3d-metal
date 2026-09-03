@@ -158,6 +158,13 @@ contacts the clean pre-change GPU median of 115.063 ms falls to 93.112 ms
 corresponding median CPU/GPU ratios are 0.874x and 0.904x, so these are measured
 regression reductions rather than crossover claims.
 
+The deferred-manifold follow-on removes the remaining zeroed CPU allocation for
+ordinary cold contacts. Against that private-first-touch checkpoint, the M4 Pro
+GPU median falls from 93.112 to 86.685 ms at 131,072 contacts (-6.9%) and from
+173.885 to 164.411 ms at 262,144 (-5.4%). The new CPU-oracle medians are 77.789
+and 159.283 ms, leaving Metal 11.4% and 3.2% slower respectively. One large
+sample crossed over; the three-run set supports only a smaller regression claim.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.

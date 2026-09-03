@@ -58,7 +58,8 @@ table, emit zero shared manifold bytes, and schedule no CPU collision task. The
 scatter also produces both COM-relative anchors, feature-matches prior resident
 warm starts, and resolves default friction/restitution/rolling parameters plus
 tangent velocity. First-touch, callback, event, topology, and unsupported
-exceptions retain CPU manifold allocation and graph/island state. High-aspect
+exceptions retain CPU graph/island state, while ordinary cold first touches
+defer CPU manifold allocation entirely. High-aspect
 and speculative hull-sphere contacts explicitly retain CPU GJK; other shape
 pairs remain on the CPU. Double worlds use the vendored VF64 exact subtraction
 before narrowing relative translations to float.
@@ -81,7 +82,7 @@ contact-ID table remains authoritative. A world generation makes CPU manifolds
 lazy mirrors without stable-contact flag writes. Public/debug/snapshot
 consumers, sleep transitions, Metal disable, and CPU solver fallback materialize
 them by contact ID and generation. Fast/CCD, hit-event, recording, callback,
-first-touch, and topology-changing contacts remain ordered CPU exceptions.
+non-ordinary first-touch, and topology-changing contacts remain ordered CPU exceptions.
 Solver submission bulk-copies only a deterministic four-byte ID schedule per
 SIMD lane and no longer dereferences contacts to repack those records. Mixed,
 recycled, callback, overflow, and unsupported routes fail closed, including
