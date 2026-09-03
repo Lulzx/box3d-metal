@@ -21,6 +21,7 @@
 #include "solver_set.h"
 #if defined( BOX3D_METAL )
 #include "metal_backend.h"
+#include "metal_timeline.h"
 #endif
 
 #include <limits.h>
@@ -1309,6 +1310,7 @@ static bool b3ExecuteMetalPositionStage( b3SolverStage* stage, b3StepContext* co
 	b3AdvanceMetalStageSync( stage, syncIndex );
 	world->metalPositionDispatchCount += 1;
 	world->metalLastPositionGpuMilliseconds = stats.gpuMilliseconds;
+	b3AccumulateMetalStepStats( world, b3_metalStageSolve, &stats );
 	return true;
 }
 
@@ -1346,6 +1348,7 @@ static bool b3ExecuteMetalUnconstrainedSubsteps( b3StepContext* context, int sub
 
 	world->metalUnconstrainedDispatchCount += (uint64_t)subStepCount;
 	world->metalLastUnconstrainedGpuMilliseconds = stats.gpuMilliseconds;
+	b3AccumulateMetalStepStats( world, b3_metalStageSolve, &stats );
 	context->metalStatesResident = true;
 	bool finalizedOnDevice = context->metalFinalizeResults != NULL || context->metalFinalizationDeviceOnly;
 	world->metalFinalizationDispatchCount += finalizedOnDevice ? 1 : 0;
@@ -1362,6 +1365,263 @@ static bool b3MetalSupportsJoint( const b3JointSim* joint )
 	return supportedType && joint->forceThreshold == FLT_MAX && joint->torqueThreshold == FLT_MAX;
 }
 
+#if defined( BOX3D_METAL )
+// Phase-1 merge bookkeeping: world counters the speculative solve pre-encode
+// may bump before the stability prediction is confirmed. Restored on any
+// non-accept path so the legacy retry observes exact legacy counts.
+typedef struct b3MetalMergeSnapshot
+{
+	uint64_t bodyStateRevisionCheckCount;
+	uint64_t bodyStateReuseCount;
+	uint64_t bodyStateUploadCount;
+	uint64_t lastBodyStateUploadBytes;
+	uint64_t bodyPropertyReuseCount;
+	uint64_t bodyPropertyUploadCount;
+	uint64_t lastBodyPropertyUploadBytes;
+	uint64_t lastContactPrepareIndexBytes;
+	uint64_t contactSchedulePackCount;
+	uint64_t contactScheduleReuseCount;
+	uint64_t shapeInputOrderRevisionCheckCount;
+	uint64_t shapeInputReuseCount;
+	uint64_t shapeInputPackCount;
+	uint64_t shapeFallbackCount;
+	uint64_t shapeResultGeneration;
+	uint64_t narrowPhaseGeometryReuseCount;
+	uint64_t narrowPhaseGeometryUploadCount;
+	uint64_t narrowPhaseTransformReuseCount;
+	uint64_t narrowPhaseTransformUploadCount;
+} b3MetalMergeSnapshot;
+
+static void b3MetalMergeSnapshotCounters( b3World* world, b3MetalMergeSnapshot* snapshot )
+{
+	snapshot->bodyStateRevisionCheckCount = world->metalBodyStateRevisionCheckCount;
+	snapshot->bodyStateReuseCount = world->metalBodyStateReuseCount;
+	snapshot->bodyStateUploadCount = world->metalBodyStateUploadCount;
+	snapshot->lastBodyStateUploadBytes = world->metalLastBodyStateUploadBytes;
+	snapshot->bodyPropertyReuseCount = world->metalBodyPropertyReuseCount;
+	snapshot->bodyPropertyUploadCount = world->metalBodyPropertyUploadCount;
+	snapshot->lastBodyPropertyUploadBytes = world->metalLastBodyPropertyUploadBytes;
+	snapshot->lastContactPrepareIndexBytes = world->metalLastContactPrepareIndexBytes;
+	snapshot->contactSchedulePackCount = world->metalContactSchedulePackCount;
+	snapshot->contactScheduleReuseCount = world->metalContactScheduleReuseCount;
+	snapshot->shapeInputOrderRevisionCheckCount = world->metalShapeInputOrderRevisionCheckCount;
+	snapshot->shapeInputReuseCount = world->metalShapeInputReuseCount;
+	snapshot->shapeInputPackCount = world->metalShapeInputPackCount;
+	snapshot->shapeFallbackCount = world->metalShapeFallbackCount;
+	snapshot->shapeResultGeneration = world->metalShapeResultGeneration;
+	snapshot->narrowPhaseGeometryReuseCount = world->metalNarrowPhaseGeometryReuseCount;
+	snapshot->narrowPhaseGeometryUploadCount = world->metalNarrowPhaseGeometryUploadCount;
+	snapshot->narrowPhaseTransformReuseCount = world->metalNarrowPhaseTransformReuseCount;
+	snapshot->narrowPhaseTransformUploadCount = world->metalNarrowPhaseTransformUploadCount;
+}
+
+static void b3MetalMergeRestoreCounters( b3World* world, const b3MetalMergeSnapshot* snapshot )
+{
+	world->metalBodyStateRevisionCheckCount = snapshot->bodyStateRevisionCheckCount;
+	world->metalBodyStateReuseCount = snapshot->bodyStateReuseCount;
+	world->metalBodyStateUploadCount = snapshot->bodyStateUploadCount;
+	world->metalLastBodyStateUploadBytes = snapshot->lastBodyStateUploadBytes;
+	world->metalBodyPropertyReuseCount = snapshot->bodyPropertyReuseCount;
+	world->metalBodyPropertyUploadCount = snapshot->bodyPropertyUploadCount;
+	world->metalLastBodyPropertyUploadBytes = snapshot->lastBodyPropertyUploadBytes;
+	world->metalLastContactPrepareIndexBytes = snapshot->lastContactPrepareIndexBytes;
+	world->metalContactSchedulePackCount = snapshot->contactSchedulePackCount;
+	world->metalContactScheduleReuseCount = snapshot->contactScheduleReuseCount;
+	world->metalShapeInputOrderRevisionCheckCount = snapshot->shapeInputOrderRevisionCheckCount;
+	world->metalShapeInputReuseCount = snapshot->shapeInputReuseCount;
+	world->metalShapeInputPackCount = snapshot->shapeInputPackCount;
+	world->metalShapeFallbackCount = snapshot->shapeFallbackCount;
+	world->metalShapeResultGeneration = snapshot->shapeResultGeneration;
+	world->metalNarrowPhaseGeometryReuseCount = snapshot->narrowPhaseGeometryReuseCount;
+	world->metalNarrowPhaseGeometryUploadCount = snapshot->narrowPhaseGeometryUploadCount;
+	world->metalNarrowPhaseTransformReuseCount = snapshot->narrowPhaseTransformReuseCount;
+	world->metalNarrowPhaseTransformUploadCount = snapshot->narrowPhaseTransformUploadCount;
+}
+
+// Recompute the prediction-tainted solver-setup outputs after a mispredict:
+// undo the carried-coverage shortcut and run the legacy per-contact authority
+// walk plus flag derivation. Topology-derived setup outputs (spans, counts,
+// allocations) stand unchanged.
+static void b3MetalMergeRecomputeCoverage( b3World* world, b3StepContext* stepContext )
+{
+	b3ConstraintGraph* graph = &world->constraintGraph;
+	int convexContactCount = 0;
+	int residentConvexContactCount = 0;
+	bool residentConvexHasRestitution = false;
+	for ( int i = 0; i < B3_GRAPH_COLOR_COUNT - 1; ++i )
+	{
+		b3GraphColor* color = graph->colors + i;
+		int colorConvexContactCount = color->convexContacts.count;
+		convexContactCount += colorConvexContactCount;
+		for ( int j = 0; j < colorConvexContactCount; ++j )
+		{
+			int contactId = color->convexContacts.data[j];
+			const b3Contact* contact = b3Array_Get( world->contacts, contactId );
+			bool resident = ( contact->flags & b3_simMetalManifold ) != 0;
+			residentConvexContactCount += resident;
+			residentConvexHasRestitution = residentConvexHasRestitution || resident;
+		}
+	}
+	// Undo the predictive bypass-count bump the setup applied per color; the
+	// legacy walk path does not bump.
+	world->metalContactCoverageBypassCount -= (uint64_t)convexContactCount;
+	stepContext->metalResidentConvexContactCount = residentConvexContactCount;
+	stepContext->metalResidentConvexComplete =
+		convexContactCount > 0 && residentConvexContactCount == convexContactCount;
+	stepContext->metalResidentConvexHasRestitution = residentConvexHasRestitution;
+	stepContext->metalResidentConvexConstraintCount =
+		stepContext->metalResidentConvexComplete ? stepContext->wideContactCount : 0;
+	world->metalLastResidentConvexContactCount = residentConvexContactCount;
+	world->metalLastResidentConvexConstraintCount = stepContext->metalResidentConvexConstraintCount;
+	b3GraphColor* overflow = graph->colors + B3_OVERFLOW_INDEX;
+	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
+	stepContext->metalPrepareConvexOnGpu = world->metalContext != NULL &&
+		awakeSet->bodySims.count >= world->metalMinimumBodyCount && stepContext->metalResidentConvexComplete &&
+		overflow->convexContacts.count == 0;
+}
+
+// Lean accept path for a confirmed stable-resident merged step (zero CPU
+// exceptions, zero transitions, verified post-wait). Applies exactly the
+// telemetry and topology effects the legacy collide middle (success branch)
+// and tail (bypass branch) would have produced with these outputs, without
+// launching workers or touching contact state.
+static void b3MetalMergeAccept( b3World* world, b3StepContext* context, int bypassCount,
+	const b3MetalDispatchStats* narrowStats )
+{
+	context->metalNarrowPending = false;
+	world->metalContactManifoldGeneration += 1;
+	if ( world->metalContactManifoldGeneration == 0 )
+		world->metalContactManifoldGeneration = 1;
+	context->metalConvexManifolds = NULL;
+	context->metalConvexManifoldCount = 0;
+	context->metalCollisionExceptionsOnly = true;
+	world->metalLastNarrowPhaseResultCount = 0;
+	world->metalLastContactTransitionCount = 0;
+	world->metalLastContactTransitionBytes = 0;
+	world->metalLastContactExceptionBytes = 0;
+	world->metalLastContactCollisionExceptionCount = 0;
+	world->metalNarrowPhaseDispatchCount += 1;
+	world->metalLastNarrowPhaseGpuMilliseconds = narrowStats->gpuMilliseconds;
+	b3AccumulateMetalStepStats( world, b3_metalStageNarrowPhase, narrowStats );
+	world->metalContactCollisionBypassCount += (uint64_t)bypassCount;
+	world->taskContexts.data[0].manifoldCounts[0] += bypassCount;
+	world->metalContactStateTraversalBypassCount += 1;
+	world->metalLastContactStateBitSetBytes = 0;
+	world->metalLastContactTopologyCpuMilliseconds = 0.0f;
+	context->awakeContactIndices = NULL;
+	// Diagnostics: workers were zeroed by the collide pre-pass and never ran,
+	// exactly like a legacy bypass step.
+	b3TracyCZoneNC( contact_state, "Contact State", b3_colorLightSlateGray, true );
+	world->satCallCount = 0;
+	world->satCacheHitCount = 0;
+	memcpy( world->manifoldCounts, world->taskContexts.data[0].manifoldCounts,
+		B3_CONTACT_MANIFOLD_COUNT_BUCKETS * sizeof( int ) );
+	for ( int i = 1; i < world->workerCount; ++i )
+	{
+		world->satCallCount += world->taskContexts.data[i].satCallCount;
+		world->satCacheHitCount += world->taskContexts.data[i].satCacheHitCount;
+		for ( int j = 0; j < B3_CONTACT_MANIFOLD_COUNT_BUCKETS; ++j )
+		{
+			world->manifoldCounts[j] += world->taskContexts.data[i].manifoldCounts[j];
+		}
+	}
+	for ( int i = 0; i < world->workerCount; ++i )
+	{
+		b3ArenaSync( &world->taskContexts.data[i].arena );
+	}
+	// Coverage proof recomputed from verified actuals: single wait dispatched,
+	// every input classified stable (exceptions+stable == contactCount with
+	// zero exceptions), graph locked since encode.
+	int touchingConvexCount = 0;
+	for ( int i = 0; i < B3_GRAPH_COLOR_COUNT - 1; ++i )
+	{
+		touchingConvexCount += world->constraintGraph.colors[i].convexContacts.count;
+	}
+	context->metalResidentConvexCoverageProven =
+		touchingConvexCount > 0 && bypassCount == touchingConvexCount;
+	context->metalFullyResidentConvexContacts = context->metalResidentConvexCoverageProven;
+	b3ValidateSolverSets( world );
+	b3ValidateContacts( world );
+	b3TracyCZoneEnd( contact_state );
+}
+
+// Merged narrow+solve driver. Returns 1 on accept (solve results valid, lean
+// accept applied, solve-success bumps applied), 0 to proceed with the legacy
+// solve path (recovery complete), -1 for CPU fallback (recovery complete).
+// The caller falls through to its legacy solve on 0 and to CPU fallback on -1.
+static int b3ExecuteMergedNarrowSolve( b3StepContext* context, b3MetalDispatchStats* solveStatsOut )
+{
+	b3World* world = context->world;
+	world->metalMergedNarrowSolveAttemptCount += 1;
+	B3_ASSERT( context->metalNarrowPending );
+	B3_ASSERT( world->constraintGraph.colors[B3_OVERFLOW_INDEX].convexContacts.count == 0 );
+	b3MetalMergeSnapshot snapshot;
+	b3MetalMergeSnapshotCounters( world, &snapshot );
+	b3MetalDispatchStats narrowStats = { 0 };
+	int mergedBypass = 0;
+	int merged = b3MetalSolveMergedSubsteps( world->metalContext, context, ITERATIONS, RELAX_ITERATIONS,
+		B3_RESTITUTION_ITERATIONS, &narrowStats, solveStatsOut, &mergedBypass );
+	if ( merged == 1 )
+	{
+		b3MetalMergeAccept( world, context, mergedBypass, &narrowStats );
+		world->metalMergedNarrowSolveAcceptCount += 1;
+		int bodyCount = world->solverSets.data[b3_awakeSet].bodyStates.count;
+		world->metalContactDispatchCount += (uint64_t)context->subStepCount;
+		world->metalLastContactGpuMilliseconds = solveStatsOut->gpuMilliseconds;
+		int solveContactCount = context->wideContactCount * 4 + context->contactConstraintCount +
+			context->overflowContactConstraintCount;
+		world->metalLastAnalyticSolverBytes = b3MetalAnalyticSolverBytes( solveContactCount, context->subStepCount );
+		b3AccumulateMetalStepStats( world, b3_metalStageSolve, solveStatsOut );
+		if ( context->metalPrepareConvexOnGpu )
+		{
+			world->metalContactPrepareDispatchCount += 1;
+		}
+		context->metalStatesResident = true;
+		bool finalizedOnDevice = context->metalFinalizeResults != NULL || context->metalFinalizationDeviceOnly;
+		world->metalFinalizationDispatchCount += finalizedOnDevice ? 1 : 0;
+		world->metalFinalizationReadbackBypassCount += context->metalFinalizationDeviceOnly ? 1 : 0;
+		world->metalLastFinalizationReadbackBytes = context->metalFinalizeResults != NULL ?
+			(uint64_t)bodyCount * sizeof( b3MetalFinalizeResult ) : 0;
+		return 1;
+	}
+	if ( merged == -1 )
+	{
+		// Stability mispredict with valid narrow outputs: restore speculative
+		// counters, run the full CPU middle/tail with the merged outputs,
+		// repair setup's predicted coverage, and let the caller proceed with
+		// the legacy solve.
+		world->metalMergedNarrowSolveMispredictCount += 1;
+		b3MetalMergeRestoreCounters( world, &snapshot );
+		if ( b3CollideMetalSecondPass( context ) == false )
+		{
+			context->metalNarrowPending = false;
+			b3MetalCancelPendingNarrow( world->metalContext );
+			b3MetalMergeRecomputeCoverage( world, context );
+			world->metalNarrowPhaseFallbackCount += 1;
+			world->metalContactFallbackCount += (uint64_t)context->subStepCount;
+			return -1;
+		}
+		b3MetalMergeRecomputeCoverage( world, context );
+		return 0;
+	}
+	// Hard failure (encode/dispatch/validation): drop the deferred buffer,
+	// restore counters, and re-run collision through the legacy synchronous
+	// narrow for CPU fallback.
+	b3MetalCancelPendingNarrow( world->metalContext );
+	context->metalNarrowPending = false;
+	b3MetalMergeRestoreCounters( world, &snapshot );
+	bool recollided = b3CollideMetalSecondPass( context );
+	b3MetalMergeRecomputeCoverage( world, context );
+	if ( recollided == false )
+	{
+		world->metalNarrowPhaseFallbackCount += 1;
+	}
+	world->metalNarrowPhaseFallbackCount += 1;
+	world->metalContactFallbackCount += (uint64_t)context->subStepCount;
+	return -1;
+}
+#endif
+
 // The GPU path admits colored convex/mesh contacts, distance/parallel joints,
 // and serial overflow constraints. Other joint types retain the CPU path.
 static bool b3ExecuteMetalConstraintSubsteps( b3StepContext* context )
@@ -1373,7 +1633,33 @@ static bool b3ExecuteMetalConstraintSubsteps( b3StepContext* context )
 		   context->overflowContactConstraintCount == 0 && context->jointConstraintCount == 0 &&
 		   context->overflowJointConstraintCount == 0 ) )
 	{
+		// Unreachable with a pending narrow (the gate required live convex
+		// constraints), but fail closed: cancel the buffer and run collision
+		// synchronously so the CPU fallback below observes fresh manifolds.
+		if ( context->metalNarrowPending )
+		{
+			b3MetalCancelPendingNarrow( world->metalContext );
+			context->metalNarrowPending = false;
+			if ( b3CollideMetalSecondPass( context ) )
+			{
+				b3MetalMergeRecomputeCoverage( world, context );
+			}
+		}
 		return false;
+	}
+
+	// Phase-1 merged narrow+solve: the narrow phase was deferred into an
+	// uncommitted buffer; encode solve into it for a single commit/wait.
+	// Returns 1 accept (done), 0 to proceed with the legacy solve below
+	// (mispredict recovery complete), -1 for CPU fallback.
+	if ( context->metalNarrowPending )
+	{
+		b3MetalDispatchStats mergedSolveStats = { 0 };
+		int merged = b3ExecuteMergedNarrowSolve( context, &mergedSolveStats );
+		if ( merged != 0 )
+		{
+			return merged > 0;
+		}
 	}
 
 	b3GraphColor* overflow = context->graph->colors + B3_OVERFLOW_INDEX;
@@ -1425,6 +1711,11 @@ static bool b3ExecuteMetalConstraintSubsteps( b3StepContext* context )
 	{
 		world->metalContactDispatchCount += (uint64_t)context->subStepCount;
 		world->metalLastContactGpuMilliseconds = stats.gpuMilliseconds;
+		int solveContactCount = context->wideContactCount * 4 + context->contactConstraintCount +
+			context->overflowContactConstraintCount;
+		world->metalLastAnalyticSolverBytes =
+			b3MetalAnalyticSolverBytes( solveContactCount, context->subStepCount );
+		b3AccumulateMetalStepStats( world, b3_metalStageSolve, &stats );
 	}
 	if ( context->metalPrepareConvexOnGpu )
 	{
@@ -1482,6 +1773,7 @@ static void b3ExecuteMetalFinalization( b3StepContext* context, int bodyCount )
 	world->metalFinalizationDispatchCount += 1;
 	world->metalLastFinalizationReadbackBytes = (uint64_t)bodyCount * sizeof( b3MetalFinalizeResult );
 	world->metalLastFinalizationGpuMilliseconds = stats.gpuMilliseconds;
+	b3AccumulateMetalStepStats( world, b3_metalStageFinalize, &stats );
 }
 
 // Solve the deliberately narrow first-touch case without constructing the
@@ -1609,6 +1901,8 @@ static bool b3TrySolvePrivateColdContacts( b3World* world, b3StepContext* contex
 	world->metalContactPrepareDispatchCount += 1;
 	world->metalContactImpulseStoreBypassCount += 1;
 	world->metalLastContactGpuMilliseconds = stats.gpuMilliseconds;
+	world->metalLastAnalyticSolverBytes = b3MetalAnalyticSolverBytes( contactCount, context->subStepCount );
+	b3AccumulateMetalStepStats( world, b3_metalStageSolve, &stats );
 	context->metalStatesResident = true;
 	bool finalizedOnDevice = context->metalFinalizeResults != NULL || context->metalFinalizationDeviceOnly;
 	world->metalFinalizationDispatchCount += finalizedOnDevice ? 1 : 0;

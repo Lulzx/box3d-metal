@@ -24,7 +24,9 @@
 #include "solver_set.h"
 #if defined( BOX3D_METAL )
 #include "metal_backend.h"
+#include "metal_timeline.h"
 #endif
+#include "metal_signpost.h"
 
 #include "box3d/box3d.h"
 #include "box3d/constants.h"
@@ -771,6 +773,23 @@ void b3World_DisableMetal( b3WorldId worldId )
 	world->metalBroadPhaseEnabled = false;
 }
 
+void b3AccumulateMetalStepStats( b3World* world, int stage, const struct b3MetalDispatchStats* stats )
+{
+	if ( world == NULL || stats == NULL )
+	{
+		return;
+	}
+	world->metalLastCommandBufferCount += (uint64_t)( stats->commandBufferCount > 0 ? stats->commandBufferCount : 0 );
+	world->metalLastDispatchCount += (uint64_t)( stats->dispatchCount > 0 ? stats->dispatchCount : 0 );
+	world->metalLastBarrierCount += (uint64_t)( stats->barrierCount > 0 ? stats->barrierCount : 0 );
+	world->metalLastEncodeCpuMilliseconds += stats->encodeCpuMilliseconds > 0.0 ? stats->encodeCpuMilliseconds : 0.0;
+	world->metalLastWaitCpuMilliseconds += stats->waitCpuMilliseconds > 0.0 ? stats->waitCpuMilliseconds : 0.0;
+	if ( stage >= 0 && stage < b3_metalStageCount )
+	{
+		world->metalStageGpuMilliseconds[stage] = stats->gpuMilliseconds;
+	}
+}
+
 b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 {
 	b3MetalProfile profile = { 0 };
@@ -920,6 +939,19 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.lastFinalizationGpuMilliseconds = world->metalLastFinalizationGpuMilliseconds;
 	profile.lastPairGpuMilliseconds = world->metalLastPairGpuMilliseconds;
 	profile.lastNarrowPhaseGpuMilliseconds = world->metalLastNarrowPhaseGpuMilliseconds;
+	for ( int i = 0; i < 9; ++i )
+	{
+		profile.stageGpuMs[i] = world->metalStageGpuMilliseconds[i];
+	}
+	profile.lastCommandBufferCount = world->metalLastCommandBufferCount;
+	profile.lastDispatchCount = world->metalLastDispatchCount;
+	profile.lastBarrierCount = world->metalLastBarrierCount;
+	profile.lastEncodeCpuMs = world->metalLastEncodeCpuMilliseconds;
+	profile.lastWaitCpuMs = world->metalLastWaitCpuMilliseconds;
+	profile.lastAnalyticSolverBytes = world->metalLastAnalyticSolverBytes;
+	profile.mergedNarrowSolveAttemptCount = world->metalMergedNarrowSolveAttemptCount;
+	profile.mergedNarrowSolveAcceptCount = world->metalMergedNarrowSolveAcceptCount;
+	profile.mergedNarrowSolveMispredictCount = world->metalMergedNarrowSolveMispredictCount;
 	if ( world->metalContext != NULL )
 	{
 		b3MetalGetDeviceName( world->metalContext, profile.deviceName, sizeof( profile.deviceName ) );
@@ -1737,12 +1769,72 @@ static bool b3Collide( b3StepContext* context )
 	uint64_t metalCollisionGraphRevision = world->constraintGraph.revision;
 	if ( world->metalContext != NULL && contactCount >= world->metalMinimumBodyCount )
 	{
+		// Phase-1 merge gate: defer the narrow dispatch into an uncommitted
+		// buffer and skip the CPU middle on a predicted stable-resident step.
+		// The solve phase merges into the same buffer (single commit/wait) and
+		// verifies the prediction before consuming anything. Every condition
+		// is CPU-known; any miss falls back to the legacy path below, and the
+		// post-wait check fails closed to legacy recovery.
+		bool mergeConvexOnly = true;
+		for ( int colorIndex = 0; colorIndex < B3_GRAPH_COLOR_COUNT; ++colorIndex )
+		{
+			const b3GraphColor* color = world->constraintGraph.colors + colorIndex;
+			bool isOverflow = colorIndex == B3_OVERFLOW_INDEX;
+			if ( color->contacts.count != 0 || color->jointSims.count != 0 ||
+				 ( isOverflow && color->convexContacts.count != 0 ) )
+			{
+				mergeConvexOnly = false;
+				break;
+			}
+		}
+		int mergeAwakeBodyCount = world->solverSets.data[b3_awakeSet].bodySims.count;
+		// Escape hatch for A/B measurement and emergencies; default on.
+		bool mergeEnabled = getenv( "BOX3D_METAL_NO_MERGE" ) == NULL;
+		bool mergePredictStable = mergeEnabled && reuseContactInputs && context->metalNarrowPending == false &&
+			context->metalMergeAttempted == false &&
+			touchingConvexCount > 0 && touchingCount == touchingConvexCount && nonTouchingCount == 0 &&
+			mergeConvexOnly && mergeAwakeBodyCount >= world->metalMinimumBodyCount &&
+			world->metalLastContactCollisionExceptionCount == 0 && world->metalLastContactTransitionCount == 0 &&
+			world->metalLastResidentConvexConstraintCount > 0 &&
+			world->metalDeferredContactTopologyPending == false &&
+			b3AtomicLoadInt( &world->metalBodyStateCpuStale ) == 0 &&
+			b3AtomicLoadInt( &world->metalBodySimCpuStale ) == 0 && world->metalShapeCpuBoundsStale == false &&
+			world->recording == NULL && world->preSolveFcn == NULL;
+		if ( mergePredictStable && b3MetalDeferConvexManifolds( world->metalContext, world, contactCount ) )
+		{
+			// Carry the coverage proof the solver setup needs instead of its
+			// per-contact walk. Post-wait validation confirms every input was
+			// classified stable, which retroactively justifies these values.
+			context->metalResidentConvexCoverageProven = true;
+			context->metalFullyResidentConvexContacts = true;
+			context->metalNarrowPending = true;
+			context->metalMergeAttempted = true;
+			context->metalConvexManifolds = NULL;
+			context->metalConvexManifoldCount = 0;
+			context->metalCollisionExceptionsOnly = false;
+			b3TracyCZoneEnd( collide );
+			return true;
+		}
 		const b3MetalConvexManifoldResult* convexResults = NULL;
 		int resultCount = 0;
 		int residentBypassCount = 0;
 		b3MetalDispatchStats stats = { 0 };
-		bool metalSuccess = b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount,
-			&convexResults, &resultCount, &residentBypassCount, &metalContactTransitions, &metalContactTransitionCount, &stats );
+		bool metalSuccess = false;
+		if ( context->metalNarrowPending )
+		{
+			// Phase-1 second pass: the merged solve already executed and
+			// consumed the deferred narrow. Fetch its outputs and run the
+			// validation, middle, and tail below verbatim.
+			context->metalNarrowPending = false;
+			metalSuccess = b3MetalFetchMergedNarrow( world->metalContext, &convexResults, &resultCount,
+				&residentBypassCount, &metalContactTransitions, &metalContactTransitionCount, &stats );
+		}
+		else
+		{
+			metalSuccess = b3MetalComputeConvexManifolds( world->metalContext, world, contactIndices, contactCount,
+				&convexResults, &resultCount, &residentBypassCount, &metalContactTransitions, &metalContactTransitionCount,
+				&stats );
+		}
 		if ( metalSuccess &&
 			b3ValidateMetalContactTransitions( world, awakeSet, metalContactTransitions, metalContactTransitionCount,
 				contactCount, touchingCount, resultCount, residentBypassCount, bootstrapContactInputs ) == false )
@@ -1825,6 +1917,7 @@ static bool b3Collide( b3StepContext* context )
 				world->metalLastNarrowPhaseResultCount = resultCount;
 				world->metalNarrowPhaseDispatchCount += 1;
 				world->metalLastNarrowPhaseGpuMilliseconds = stats.gpuMilliseconds;
+				b3AccumulateMetalStepStats( world, b3_metalStageNarrowPhase, &stats );
 				context->metalCollisionExceptionsOnly = true;
 				cpuContactCount = resultCount;
 				metalDirectTopologyCommit = resultCount == 0 && metalContactTransitionCount > 0;
@@ -2093,6 +2186,19 @@ static bool b3Collide( b3StepContext* context )
 	return true;
 }
 
+// Phase-1 second pass: run collision with the merged narrow outputs already
+// available (metalNarrowPending set by the deferred first pass), or the
+// legacy synchronous narrow when it is clear. Called from the solver after a
+// merged attempt; never defers twice.
+bool b3CollideMetalSecondPass( b3StepContext* context )
+{
+	if ( context == NULL )
+	{
+		return false;
+	}
+	return b3Collide( context );
+}
+
 void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 {
 	b3World* world = b3GetUnlockedWorldFromId( worldId );
@@ -2141,6 +2247,7 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	world->locked = true;
 
 	b3TracyCZoneNC( world_step, "Step", b3_colorBox2DGreen, true );
+	B3_SIGNPOST_BEGIN( "step" );
 
 	// Clear debug buffers
 	for ( int i = 0; i < world->workerCount; ++i )
@@ -2162,6 +2269,22 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	b3Array_Clear( world->jointEvents );
 
 	world->profile = (b3Profile){ 0 };
+
+#if defined( BOX3D_METAL )
+	if ( world->metalContext != NULL )
+	{
+		world->metalLastCommandBufferCount = 0;
+		world->metalLastDispatchCount = 0;
+		world->metalLastBarrierCount = 0;
+		world->metalLastEncodeCpuMilliseconds = 0.0;
+		world->metalLastWaitCpuMilliseconds = 0.0;
+		world->metalLastAnalyticSolverBytes = 0;
+		for ( int i = 0; i < b3_metalStageCount; ++i )
+		{
+			world->metalStageGpuMilliseconds[i] = 0.0;
+		}
+	}
+#endif
 
 	world->activeTaskCount = 0;
 	world->taskCount = 0;
@@ -2192,7 +2315,9 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	// Update collision pairs and create contacts
 	{
 		uint64_t pairTicks = b3GetTicks();
+		B3_SIGNPOST_BEGIN( "pairs" );
 		b3UpdateBroadPhasePairs( world );
+		B3_SIGNPOST_END( "pairs" );
 		world->profile.pairs = b3GetMilliseconds( pairTicks );
 	}
 
@@ -2232,8 +2357,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	// Narrow phase : update contacts
 	{
 		uint64_t collideTicks = b3GetTicks();
-		if ( b3Collide( &context ) == false )
+		B3_SIGNPOST_BEGIN( "collide" );
+		bool collideOk = b3Collide( &context );
+		B3_SIGNPOST_END( "collide" );
+		if ( collideOk == false )
 		{
+			B3_SIGNPOST_END( "step" );
 			world->locked = false;
 			b3Log( "Box3D Metal collision skipped because resident mirror materialization failed\n" );
 			return;
@@ -2245,7 +2374,9 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	if ( timeStep > 0.0f )
 	{
 		uint64_t solveTicks = b3GetTicks();
+		B3_SIGNPOST_BEGIN( "solve" );
 		b3Solve( world, &context );
+		B3_SIGNPOST_END( "solve" );
 		world->profile.solve = b3GetMilliseconds( solveTicks );
 	}
 
@@ -2278,6 +2409,7 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
 	world->endEventArrayIndex = 1 - world->endEventArrayIndex;
 	b3Array_Clear( world->sensorEndEvents[world->endEventArrayIndex] );
 	b3Array_Clear( world->contactEndEvents[world->endEventArrayIndex] );
+	B3_SIGNPOST_END( "step" );
 	world->locked = false;
 
 	if ( world->recording != NULL )

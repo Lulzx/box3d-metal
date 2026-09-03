@@ -294,6 +294,14 @@ typedef struct b3StepContext
 	int metalPrivateColdContactCount;
 	bool metalPrepareConvexOnGpu;
 	bool metalHitEventBitSetClearDeferred;
+	// Phase-1 deferred narrow+solve merge: b3Collide encoded narrow into an
+	// uncommitted buffer and skipped the CPU middle on a stability prediction.
+	// Set at defer, consumed (cleared) by the second-pass call that runs the
+	// validation, middle, and tail with the merged outputs.
+	bool metalNarrowPending;
+	// Phase-1 merge attempted this step (deferred at least once). Blocks a
+	// second deferral on recovery re-entry so the legacy path always runs.
+	bool metalMergeAttempted;
 
 	// Flat view of the wide contact constraint array used by prepare and store.
 	// prepareSpans has activeColorCount + 1 entries, the last being a sentinel

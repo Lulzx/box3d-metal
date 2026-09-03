@@ -8,6 +8,7 @@
 #include "manifold.h"
 #include "math_internal.h"
 #include "metal_backend.h"
+#include "metal_timeline.h"
 #include "physics_world.h"
 #include "shape.h"
 #include "test_macros.h"
@@ -5112,8 +5113,261 @@ static int MetalMutatorRevisionTest( void )
 	return 0;
 }
 
+static int MetalTimelineTest( void )
+{
+	// Lock the analytic dispatch formula: fixed stages plus 13 dispatches per
+	// active color. Per-encode measurement replaces this formula in a later
+	// phase; changing these values must be a conscious edit.
+	ENSURE( b3MetalExpectedSolveDispatchCount( 0 ) == 10 );
+	ENSURE( b3MetalExpectedSolveDispatchCount( 1 ) == 23 );
+	ENSURE( b3MetalExpectedSolveDispatchCount( 2 ) == 36 );
+	ENSURE( b3MetalExpectedSolveDispatchCount( 8 ) == 114 );
+	ENSURE( b3MetalExpectedSolveDispatchCount( -3 ) == 10 );
+
+	// 424 bytes/contact/pass, passes = 1 prepare + 3 per substep.
+	ENSURE( b3MetalAnalyticSolverBytes( 0, 4 ) == 0 );
+	ENSURE( b3MetalAnalyticSolverBytes( 4, 4 ) == 4u * 424u * 13u );
+	ENSURE( b3MetalAnalyticSolverBytes( 1, 1 ) == 1u * 424u * 4u );
+
+	for ( int stage = 0; stage < b3_metalStageCount; ++stage )
+	{
+		ENSURE( b3MetalStageName( stage ) != NULL );
+	}
+	ENSURE( b3MetalStageName( b3_metalStageCount ) != NULL );
+	ENSURE( strcmp( b3MetalStageName( b3_metalStageSolve ), "solve" ) == 0 );
+
+	// End to end: an unconstrained ballistic world runs the fused GPU path.
+	// The step must report measured command buffers and CPU-side encode/wait
+	// time plus the solve-stage GPU time.
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.gravity = b3Vec3_zero;
+	worldDef.enableSleep = false;
+	worldDef.enableContinuous = false;
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+
+	b3ShapeDef shapeDef = b3DefaultShapeDef();
+	shapeDef.filter.maskBits = 0;
+	shapeDef.invokeContactCreation = false;
+	const int bodyCount = 32;
+	for ( int i = 0; i < bodyCount; ++i )
+	{
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_dynamicBody;
+		bodyDef.position = (b3Pos){ (float)i, 0.0f, 0.0f };
+		bodyDef.linearVelocity = (b3Vec3){ 1.0f, 0.0f, 0.0f };
+		b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
+		b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.25f };
+		b3CreateSphereShape( bodyId, &shapeDef, &sphere );
+	}
+
+	b3World_Step( worldId, 1.0f / 60.0f, 4 );
+	b3MetalProfile profile = b3World_GetMetalProfile( worldId );
+	ENSURE( profile.unconstrainedDispatchCount == 4 );
+	ENSURE( profile.lastCommandBufferCount >= 1 );
+	ENSURE( profile.lastDispatchCount >= 1 );
+	ENSURE( profile.lastEncodeCpuMs >= 0.0 );
+	ENSURE( profile.lastWaitCpuMs >= 0.0 );
+	ENSURE( profile.lastUnconstrainedGpuMilliseconds >= 0.0 );
+	ENSURE( profile.stageGpuMs[b3_metalStageSolve] >= 0.0 );
+	printf( "    timeline cmd=%llu dispatches=%llu barriers=%llu encode=%.3fms wait=%.3fms solve=%.3fms\n",
+		(unsigned long long)profile.lastCommandBufferCount, (unsigned long long)profile.lastDispatchCount,
+		(unsigned long long)profile.lastBarrierCount, profile.lastEncodeCpuMs, profile.lastWaitCpuMs,
+		profile.stageGpuMs[b3_metalStageSolve] );
+
+	b3DestroyWorld( worldId );
+	return 0;
+}
+
+static int MetalLibraryLoadTest( void )
+{
+	// Phase 5a: the precompiled metallib blob is preferred; runtime source
+	// compilation remains under BOX3D_METAL_RUNTIME_COMPILE; PSO archives
+	// persist in ~/Library/Caches/box3d/. BOX3D_METAL_FORCE_SOURCE exercises
+	// the fallback.
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.enableSleep = false;
+	worldDef.enableContinuous = false;
+
+	// Evict the cache so the first creation below is a genuine archive miss.
+	b3WorldId probeId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( probeId, 1 ) );
+	b3World* probeWorld = b3GetWorldFromId( probeId );
+	bool isBlob = false, archiveHit = false;
+	char cachePath[512] = { 0 };
+	b3MetalGetLibraryInfo( probeWorld->metalContext, &isBlob, &archiveHit, cachePath, sizeof( cachePath ) );
+	b3DestroyWorld( probeId );
+	if ( cachePath[0] != '\0' )
+	{
+		remove( cachePath );
+	}
+
+	uint64_t coldTicks = b3GetTicks();
+	b3WorldId worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	double coldMs = b3GetMilliseconds( coldTicks );
+	b3World* world = b3GetWorldFromId( worldId );
+	b3MetalGetLibraryInfo( world->metalContext, &isBlob, &archiveHit, cachePath, sizeof( cachePath ) );
+	printf( "    library cold: isBlob=%d archiveHit=%d %.2f ms path=%s\n", isBlob, archiveHit, coldMs,
+		cachePath[0] != '\0' ? cachePath : "(n/a)" );
+	ENSURE( archiveHit == false || cachePath[0] == '\0' );
+	if ( cachePath[0] != '\0' )
+	{
+		FILE* cacheFile = fopen( cachePath, "rb" );
+		ENSURE( cacheFile != NULL );
+		if ( cacheFile != NULL ) fclose( cacheFile );
+	}
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	b3DestroyWorld( worldId );
+
+	uint64_t warmTicks = b3GetTicks();
+	worldId = b3CreateWorld( &worldDef );
+	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	double warmMs = b3GetMilliseconds( warmTicks );
+	world = b3GetWorldFromId( worldId );
+	b3MetalGetLibraryInfo( world->metalContext, &isBlob, &archiveHit, cachePath, sizeof( cachePath ) );
+	printf( "    library warm: isBlob=%d archiveHit=%d %.2f ms\n", isBlob, archiveHit, warmMs );
+	if ( cachePath[0] != '\0' )
+	{
+		ENSURE( archiveHit );
+	}
+	// Gate proxy: warm creation (blob + cached archive) must stay far below
+	// the old ~300 ms source-compile cost. The < 20 ms gate is recorded in
+	// docs/benchmarks/m4-pro-precompiled-library-*.md.
+	ENSURE( warmMs < 1000.0 );
+	b3World_Step( worldId, 1.0f / 60.0f, 1 );
+	b3DestroyWorld( worldId );
+
+#if defined( BOX3D_METAL )
+	setenv( "BOX3D_METAL_FORCE_SOURCE", "1", 1 );
+	worldId = b3CreateWorld( &worldDef );
+	if ( b3World_EnableMetal( worldId, 1 ) )
+	{
+		world = b3GetWorldFromId( worldId );
+		b3MetalGetLibraryInfo( world->metalContext, &isBlob, &archiveHit, cachePath, sizeof( cachePath ) );
+		printf( "    library forced-source: isBlob=%d\n", isBlob );
+		ENSURE( isBlob == false );
+		b3World_Step( worldId, 1.0f / 60.0f, 1 );
+		b3DestroyWorld( worldId );
+	}
+	else
+	{
+		// Runtime compilation disabled in this build; nothing to fall back to.
+		printf( "    library forced-source: skipped (no runtime-compile fallback)\n" );
+		b3DestroyWorld( worldId );
+	}
+	unsetenv( "BOX3D_METAL_FORCE_SOURCE" );
+#endif
+	return 0;
+}
+
+static int MetalMergedNarrowSolveTest( void )
+{
+	// Phase 1: a settled sphere on a static floor must take the deferred
+	// narrow+solve path (single command buffer), stay tolerance-equivalent
+	// with the CPU twin, survive a teleport mispredict, and re-engage.
+	// The sphere drops from y=2 so first touch goes through the bootstrap
+	// path; a CPU input pack written for the brand-new contact can snapshot
+	// a not-yet-bypass-eligible state and never repack (pre-existing
+	// residency on-ramp quirk), so near-rest starts are avoided here.
+	b3WorldDef worldDef = b3DefaultWorldDef();
+	worldDef.enableSleep = false;
+	b3WorldId cpuWorldId = b3CreateWorld( &worldDef );
+	b3WorldId gpuWorldId = b3CreateWorld( &worldDef );
+	b3World_SetContactRecycleDistance( cpuWorldId, 0.0f );
+	b3World_SetContactRecycleDistance( gpuWorldId, 0.0f );
+	ENSURE( b3World_EnableMetal( gpuWorldId, 1 ) );
+	ENSURE( b3World_SetMetalFinalization( gpuWorldId, true ) );
+	ENSURE( b3World_SetMetalBroadPhase( gpuWorldId, true ) );
+
+	b3BodyId cpuSphere, gpuSphere;
+	{
+		b3BodyDef floorDef = b3DefaultBodyDef();
+		floorDef.type = b3_staticBody;
+		floorDef.position = (b3Pos){ 0.0f, -1.0f, 0.0f };
+		b3ShapeDef shapeDef = b3DefaultShapeDef();
+		b3BoxHull floorBox = b3MakeBoxHull( 4.0f, 1.0f, 4.0f );
+		b3BodyDef sphereDef = b3DefaultBodyDef();
+		sphereDef.type = b3_dynamicBody;
+		sphereDef.enableSleep = false;
+		sphereDef.position = (b3Pos){ 0.0f, 2.0f, 0.0f };
+		b3Sphere sphere = { b3Vec3_zero, 0.5f };
+		b3BodyId cpuFloor = b3CreateBody( cpuWorldId, &floorDef );
+		b3CreateHullShape( cpuFloor, &shapeDef, &floorBox.base );
+		cpuSphere = b3CreateBody( cpuWorldId, &sphereDef );
+		b3CreateSphereShape( cpuSphere, &shapeDef, &sphere );
+		b3BodyId gpuFloor = b3CreateBody( gpuWorldId, &floorDef );
+		b3CreateHullShape( gpuFloor, &shapeDef, &floorBox.base );
+		gpuSphere = b3CreateBody( gpuWorldId, &sphereDef );
+		b3CreateSphereShape( gpuSphere, &shapeDef, &sphere );
+	}
+
+	for ( int i = 0; i < 60; ++i )
+	{
+		b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
+		b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
+	}
+	b3MetalProfile settled = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( settled.mergedNarrowSolveAcceptCount > 0 );
+	ENSURE( settled.mergedNarrowSolveAttemptCount == settled.mergedNarrowSolveAcceptCount );
+	ENSURE( settled.mergedNarrowSolveMispredictCount == 0 );
+	ENSURE( settled.lastContactCollisionExceptionCount == 0 );
+	ENSURE( settled.lastResidentConvexConstraintCount == 1 );
+	ENSURE( settled.lastCommandBufferCount == 1 );
+	{
+		b3Pos a = b3Body_GetPosition( cpuSphere );
+		b3Pos b = b3Body_GetPosition( gpuSphere );
+		ENSURE( fabs( a.x - b.x ) + fabs( a.y - b.y ) + fabs( a.z - b.z ) <= 1.0e-4 );
+	}
+
+	// Identical teleport on both worlds: the next Metal step must mispredict
+	// (one exception) and recover without diverging.
+	uint64_t acceptsBefore = settled.mergedNarrowSolveAcceptCount;
+	b3Pos jump = { 3.0, 2.0, 1.0 };
+	b3Quat identity = { { 0.0f, 0.0f, 0.0f }, 1.0f };
+	b3Body_SetTransform( cpuSphere, jump, identity );
+	b3Body_SetTransform( gpuSphere, jump, identity );
+	b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
+	b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
+	b3MetalProfile disturbed = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( disturbed.mergedNarrowSolveMispredictCount == 1 );
+	ENSURE( disturbed.mergedNarrowSolveAcceptCount == acceptsBefore );
+	ENSURE( disturbed.lastContactCollisionExceptionCount == 1 );
+	{
+		b3Pos a = b3Body_GetPosition( cpuSphere );
+		b3Pos b = b3Body_GetPosition( gpuSphere );
+		ENSURE( fabs( a.x - b.x ) + fabs( a.y - b.y ) + fabs( a.z - b.z ) <= 1.0e-4 );
+	}
+
+	for ( int i = 0; i < 60; ++i )
+	{
+		b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
+		b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
+	}
+	b3MetalProfile resettled = b3World_GetMetalProfile( gpuWorldId );
+	ENSURE( resettled.mergedNarrowSolveAcceptCount > acceptsBefore );
+	ENSURE( resettled.lastContactCollisionExceptionCount == 0 );
+	ENSURE( resettled.lastCommandBufferCount == 1 );
+	{
+		b3Pos a = b3Body_GetPosition( cpuSphere );
+		b3Pos b = b3Body_GetPosition( gpuSphere );
+		ENSURE( fabs( a.x - b.x ) + fabs( a.y - b.y ) + fabs( a.z - b.z ) <= 1.0e-4 );
+	}
+	printf( "    merged narrow+solve attempts=%llu accepts=%llu mispredicts=%llu\n",
+		(unsigned long long)resettled.mergedNarrowSolveAttemptCount,
+		(unsigned long long)resettled.mergedNarrowSolveAcceptCount,
+		(unsigned long long)resettled.mergedNarrowSolveMispredictCount );
+
+	b3DestroyWorld( cpuWorldId );
+	b3DestroyWorld( gpuWorldId );
+	return 0;
+}
+
 int MetalTest( void )
 {
+	RUN_SUBTEST( MetalTimelineTest );
+	RUN_SUBTEST( MetalMergedNarrowSolveTest );
+	RUN_SUBTEST( MetalLibraryLoadTest );
 	RUN_SUBTEST( MetalPositionIntegrationTest );
 	RUN_SUBTEST( MetalFusedIntegrationTest );
 	RUN_SUBTEST( MetalFinalizationTest );

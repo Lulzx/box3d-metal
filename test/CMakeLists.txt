@@ -40,7 +40,6 @@ set_target_properties(box3d_test PROPERTIES
     C_STANDARD 17
     C_STANDARD_REQUIRED YES
     C_EXTENSIONS NO
-    OUTPUT_NAME test
 )
 
 # Special access to Box3D internals for testing
@@ -57,7 +56,8 @@ endif()
 target_link_libraries(box3d_test PRIVATE box3d shared)
 
 # Lets `ctest --output-on-failure` work from the build dir.
-# OUTPUT_NAME keeps the binary at bin/test for existing scripts.
+# The target keeps its default `box3d_test` output name: naming the binary
+# `test` collides with CTest's `test` convenience target under Ninja.
 add_test(NAME box3d_unit COMMAND box3d_test)
 set_tests_properties(box3d_unit PROPERTIES TIMEOUT 120)
 

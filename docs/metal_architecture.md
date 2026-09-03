@@ -539,6 +539,62 @@ synchronization, and readback. A stage is enabled by default only when an
 end-to-end world benchmark demonstrates a repeatable improvement at its selected
 threshold without weakening its differential or stress gates.
 
+The full quiet-host procedure is in
+[`benchmarks/protocol.md`](benchmarks/protocol.md): `caffeinate -dims`, 5
+repeats (min+median), same-run CPU reference within 5% of baseline.
+
+### Measurement foundation (Phase 0)
+
+`b3World_GetMetalProfile` reports per-stage GPU milliseconds indexed by
+`b3MetalStage` (`src/metal_timeline.h`: mutations, broadPhase, narrowPhase,
+topology, prepare, solve, finalize, refit, events), whole-step command-buffer,
+dispatch, and barrier counts, CPU encode and wait milliseconds, and analytic
+solver bytes (record sizes x counts x passes, the roofline input). GPU times
+come from `GPUStartTime/GPUEndTime` per command buffer; one compute pass per
+stage with `MTLCounterSampleBuffer` timestamps replaces these once the single
+command-buffer step lands. Dispatch/barrier counts are analytic (`10 + 13 *
+activeColorCount` for the colored solve, locked by `MetalTimelineTest`) until
+per-encode instrumentation lands. `os_signpost` intervals (`step`, `pairs`,
+`collide`, `solve`) are available with `-DBOX3D_SIGNPOSTS=ON` and compile to
+nothing otherwise.
+
+Scene-level CPU-vs-Metal comparison across the realistic scenes
+(`metal_scene_benchmark`: LargePyramid, ManyPyramids, Rain, Junkyard,
+ConvexPile, JointGrid, LargeWorld), the achievable-bandwidth probe
+(`metal_bandwidth`), and the roofline evaluator (`tools/metal_roofline.py`)
+are the standing harness every later phase reports against.
+
+### Precompiled shaders (Phase 5a)
+
+The 39 MSL kernels live in `src/metal/box3d_main.metal` and
+`src/metal/box3d_contact.metal` with struct layouts shared through
+`src/metal_abi.h` (`__METAL_VERSION__` selects MSL vs C views; the C side
+carries the ABI `_Static_assert`s). The build compiles them with
+`xcrun -sdk macosx metal -O2` (plus VF64 with `-DB3_DOUBLE_PRECISION` for
+double builds) into one embedded metallib loaded via `newLibraryWithData:`;
+`BOX3D_METAL_RUNTIME_COMPILE=ON` (default) keeps a `newLibraryWithSource:`
+fallback regenerated from the same files, and `MTLBinaryArchive` PSO caches
+persist under `~/Library/Caches/box3d/`. Warm world creation is ~3 ms
+(gate: < 20 ms). Function-constant indices for later phases are reserved in
+the ABI header but no kernel reads them yet.
+
+### Merged narrow+solve (Phase 1)
+
+On predicted stable-resident steps (reusable contact inputs, zero
+exceptions/transitions and complete convex coverage last step, convex-only
+topology, no stale mirrors or pending topology), `b3Collide` defers narrow
+encoding into an uncommitted buffer and skips the CPU middle; the solve phase
+encodes into the same buffer for a single commit/wait, then validates
+zero-exceptions/zero-transitions before consuming anything. Mispredicts run
+the full legacy middle/tail with the valid merged narrow outputs and
+re-solve; hard failures re-run legacy narrow for CPU fallback. Impulse
+authority is invalidated on every non-accept path and residency commits only
+on accept, so speculation is never observable. `BOX3D_METAL_NO_MERGE=1`
+disables the gate; `mergedNarrowSolveAttempt/Accept/MispredictCount` expose
+it. Measured effect: one ~0.13 ms scheduling bubble removed per step
+(`cmd` 2→1 on resident steps); physics tolerance-identical (see
+[`benchmarks/m4-pro-merged-narrow-solve-2026-09-03.md`](benchmarks/m4-pro-merged-narrow-solve-2026-09-03.md)).
+
 Run the current primitive benchmark with:
 
 ```sh

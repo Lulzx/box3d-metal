@@ -106,6 +106,8 @@ endif()
 if(PROJECT_IS_TOP_LEVEL)
 	option(BOX3D_PROFILE "Enable profiling with Tracy" OFF)
 	option(BOX3D_VALIDATE "Enable heavy validation" ON)
+	option(BOX3D_SIGNPOSTS "Enable os_signpost intervals for Metal step profiling" OFF)
+	option(BOX3D_METAL_RUNTIME_COMPILE "Keep runtime Metal source compilation as a fallback" ON)
 endif()
 
 # Emscripten maps the SSE2 path onto wasm SIMD128. simd.h is a header included by

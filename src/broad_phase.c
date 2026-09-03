@@ -14,6 +14,7 @@
 #include "shape.h"
 #if defined( BOX3D_METAL )
 #include "metal_backend.h"
+#include "metal_timeline.h"
 #endif
 
 #include <string.h>
@@ -590,6 +591,7 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			world->metalPairPrivateScratchDispatchCount += (uint64_t)stats.pairPrivateScratchDispatchCount;
 			world->metalLastPairRawSharedBytes = stats.pairRawSharedBytes;
 			world->metalLastPairGpuMilliseconds = stats.gpuMilliseconds;
+			b3AccumulateMetalStepStats( world, b3_metalStageBroadPhase, &stats );
 			usedMetalPairs = true;
 		}
 		else

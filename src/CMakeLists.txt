@@ -44,6 +44,9 @@ set(BOX3D_SOURCE_FILES
 	manifold.h
 	math_functions.c
 	math_internal.h
+	metal_signpost.h
+	metal_timeline.c
+	metal_timeline.h
 	mesh.c
 	mesh_contact.c
 	motor_joint.c
@@ -107,19 +110,84 @@ set(BOX3D_INCLUDE_FILES
 
 if(APPLE AND BOX3D_METAL)
 	list(APPEND BOX3D_SOURCE_FILES
+		metal_abi.h
 		metal_backend.h
 		metal_backend.m
+		metal/box3d_contact.metal
+		metal/box3d_main.metal
 	)
+	set(B3_METAL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/metal")
+	set(B3_METALLIB "${CMAKE_CURRENT_BINARY_DIR}/box3d_metallib.metallib")
+	set(B3_BLOB_HEADER "${CMAKE_CURRENT_BINARY_DIR}/box3d_metallib_blob.h")
+	set(B3_SOURCES_HEADER "${CMAKE_CURRENT_BINARY_DIR}/metal_sources.h")
 	if(BOX3D_DOUBLE_PRECISION)
-		# VF64's exact IEEE-754 helpers are compiled into the runtime Metal source.
-		# Keep the readable MSL authoritative and generate only the C string wrapper.
-		file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metal_vf64_ieee.metal" B3_VF64_IEEE_SOURCE)
-		string(REPLACE "\\" "\\\\" B3_VF64_IEEE_SOURCE "${B3_VF64_IEEE_SOURCE}")
-		string(REPLACE "\"" "\\\"" B3_VF64_IEEE_SOURCE "${B3_VF64_IEEE_SOURCE}")
-		string(REPLACE "\n" "\\n\"\n\"" B3_VF64_IEEE_SOURCE "${B3_VF64_IEEE_SOURCE}")
-		file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/metal_vf64_ieee_source.h"
-			"static const char b3_vf64IEEESource[] =\n\"${B3_VF64_IEEE_SOURCE}\";\n")
-		list(APPEND BOX3D_SOURCE_FILES metal_vf64_ieee.metal)
+		set(B3_DOUBLE_FLAG 1)
+	else()
+		set(B3_DOUBLE_FLAG 0)
+	endif()
+	# FetchContent consumers never see the top-level option; keep the
+	# runtime-compile fallback available for them.
+	if(NOT DEFINED BOX3D_METAL_RUNTIME_COMPILE)
+		set(BOX3D_METAL_RUNTIME_COMPILE ON)
+	endif()
+	# Precompile the merged MSL (main + contact, plus VF64 helpers for double
+	# builds) into one metallib, then embed it as a byte blob loaded with
+	# newLibraryWithData. The .metal files stay the single source of truth;
+	# metal_sources.h regenerates the old runtime-compile strings from them.
+	find_program(B3_XCRUN xcrun)
+	if(B3_XCRUN)
+		if(BOX3D_DOUBLE_PRECISION)
+			set(B3_METAL_INPUTS "${B3_METAL_DIR}/box3d_main.metal" "${B3_METAL_DIR}/box3d_contact.metal")
+			set(B3_METAL_DEPENDS "${B3_METAL_INPUTS}" "${CMAKE_CURRENT_SOURCE_DIR}/metal_vf64_ieee.metal")
+			set(B3_METAL_FLAGS -DB3_DOUBLE_PRECISION)
+		else()
+			set(B3_METAL_INPUTS "${B3_METAL_DIR}/box3d_main.metal" "${B3_METAL_DIR}/box3d_contact.metal")
+			set(B3_METAL_DEPENDS "${B3_METAL_INPUTS}")
+			set(B3_METAL_FLAGS "")
+		endif()
+		add_custom_command(
+			OUTPUT "${B3_METALLIB}"
+			COMMAND "${B3_XCRUN}" -sdk macosx metal -O2 -I "${CMAKE_CURRENT_SOURCE_DIR}"
+				${B3_METAL_FLAGS} ${B3_METAL_INPUTS} -o "${B3_METALLIB}"
+			DEPENDS ${B3_METAL_DEPENDS} "${CMAKE_CURRENT_SOURCE_DIR}/metal_abi.h"
+			COMMENT "Compiling Box3D Metal shaders"
+			VERBATIM
+		)
+		set(B3_METALLIB_DEP "${B3_METALLIB}")
+	else()
+		if(NOT BOX3D_METAL_RUNTIME_COMPILE)
+			message(FATAL_ERROR "xcrun not found and BOX3D_METAL_RUNTIME_COMPILE=OFF: no Metal shader source available")
+		else()
+			message(WARNING "xcrun not found; Metal backend will use runtime source compilation only")
+		endif()
+		set(B3_METALLIB_DEP "")
+		set(B3_METALLIB "")
+	endif()
+	add_custom_command(
+		OUTPUT "${B3_BLOB_HEADER}" "${B3_SOURCES_HEADER}"
+		COMMAND "${CMAKE_COMMAND}"
+			-DB3_METALLIB=${B3_METALLIB_DEP}
+			-DB3_MAIN=${B3_METAL_DIR}/box3d_main.metal
+			-DB3_CONTACT=${B3_METAL_DIR}/box3d_contact.metal
+			-DB3_VF64=${CMAKE_CURRENT_SOURCE_DIR}/metal_vf64_ieee.metal
+			-DB3_ABI=${CMAKE_CURRENT_SOURCE_DIR}/metal_abi.h
+			-DB3_DOUBLE=${B3_DOUBLE_FLAG}
+			-DB3_RUNTIME=${BOX3D_METAL_RUNTIME_COMPILE}
+			-DB3_BLOB_OUT=${B3_BLOB_HEADER}
+			-DB3_SRC_OUT=${B3_SOURCES_HEADER}
+			-P "${CMAKE_CURRENT_SOURCE_DIR}/../tools/embed_metal.cmake"
+		DEPENDS ${B3_METALLIB_DEP} "${B3_METAL_DIR}/box3d_main.metal" "${B3_METAL_DIR}/box3d_contact.metal"
+			"${CMAKE_CURRENT_SOURCE_DIR}/metal_abi.h" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/embed_metal.cmake"
+		COMMENT "Embedding Box3D Metal metallib and fallback sources"
+	)
+	set(B3_GEN_HEADERS "${B3_BLOB_HEADER}" "${B3_SOURCES_HEADER}")
+	add_custom_target(box3d_metal_shaders DEPENDS ${B3_GEN_HEADERS})
+	set(B3_METAL_TARGET_DEFS "")
+	if(B3_XCRUN)
+		list(APPEND B3_METAL_TARGET_DEFS BOX3D_METAL_BLOB)
+	endif()
+	if(BOX3D_METAL_RUNTIME_COMPILE)
+		list(APPEND B3_METAL_TARGET_DEFS BOX3D_METAL_RUNTIME_COMPILE)
 	endif()
 endif()
 
@@ -129,6 +197,15 @@ set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(CMAKE_VISIBILITY_INLINES_HIDDEN 1)
 
 add_library(box3d ${BOX3D_SOURCE_FILES} ${BOX3D_INCLUDE_FILES})
+
+if(APPLE AND BOX3D_METAL)
+	# Generated metallib blob + fallback sources must exist before compiling
+	# metal_backend.m, which includes them.
+	add_dependencies(box3d box3d_metal_shaders)
+	if(B3_METAL_TARGET_DEFS)
+		target_compile_definitions(box3d PRIVATE ${B3_METAL_TARGET_DEFS})
+	endif()
+endif()
 
 # target_link_libraries(box3d PRIVATE eastl)
 
@@ -177,6 +254,11 @@ if(BOX3D_VALIDATE)
 	# Only effective when NDEBUG is undefined, see base.h
 	message(STATUS "Box3D validation ON (debug builds)")
 	target_compile_definitions(box3d PRIVATE BOX3D_VALIDATE)
+endif()
+
+if(BOX3D_SIGNPOSTS)
+	message(STATUS "Box3D os_signposts ON")
+	target_compile_definitions(box3d PRIVATE BOX3D_SIGNPOSTS)
 endif()
 
 if (BOX3D_DISABLE_SIMD)

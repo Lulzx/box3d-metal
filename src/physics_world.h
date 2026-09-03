@@ -389,6 +389,11 @@ typedef struct b3World
 	bool metalDefaultRestitutionCallback;
 	uint64_t metalNarrowPhaseDispatchCount;
 	uint64_t metalNarrowPhaseFallbackCount;
+	// Phase-1 deferred narrow+solve merge: attempted, accepted (single
+	// commit/wait covered both phases), and stability-mispredicted steps.
+	uint64_t metalMergedNarrowSolveAttemptCount;
+	uint64_t metalMergedNarrowSolveAcceptCount;
+	uint64_t metalMergedNarrowSolveMispredictCount;
 	uint64_t metalNarrowPhaseGeometryUploadCount;
 	uint64_t metalNarrowPhaseGeometryReuseCount;
 	uint64_t metalNarrowPhaseTransformUploadCount;
@@ -423,6 +428,13 @@ typedef struct b3World
 	double metalLastFinalizationGpuMilliseconds;
 	double metalLastPairGpuMilliseconds;
 	double metalLastNarrowPhaseGpuMilliseconds;
+	double metalStageGpuMilliseconds[9];
+	uint64_t metalLastCommandBufferCount;
+	uint64_t metalLastDispatchCount;
+	uint64_t metalLastBarrierCount;
+	double metalLastEncodeCpuMilliseconds;
+	double metalLastWaitCpuMilliseconds;
+	uint64_t metalLastAnalyticSolverBytes;
 	int metalMinimumBodyCount;
 #endif
 
@@ -474,6 +486,20 @@ static inline bool b3MaterializeBodySims( b3World* world )
 	B3_UNUSED( world );
 	return true;
 }
+#endif
+
+#if defined( BOX3D_METAL )
+// Accumulate one Metal phase's measured stats into the current step's running
+// totals and record its stage GPU time. Step-head code in b3World_Step resets
+// the totals; every phase (pair, narrow, solve, finalize) adds its share, so
+// the profile reports whole-step command-buffer/dispatch/barrier counts and
+// per-stage GPU milliseconds.
+struct b3MetalDispatchStats;
+void b3AccumulateMetalStepStats( b3World* world, int stage, const struct b3MetalDispatchStats* stats );
+// Phase-1 second pass: re-enter collision with merged narrow outputs (or the
+// legacy path when none are pending). Used by solver recovery/accept paths.
+struct b3StepContext;
+bool b3CollideMetalSecondPass( struct b3StepContext* context );
 #endif
 
 static inline void b3BumpMetalContactInputRevision( b3World* world )

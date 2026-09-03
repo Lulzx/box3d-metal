@@ -193,7 +193,7 @@ Build and validate on Apple Silicon:
 cmake -S . -B build/metal-release -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DBOX3D_METAL=ON -DBOX3D_SAMPLES=OFF -DBOX3D_BENCHMARKS=ON
 cmake --build build/metal-release
-./build/metal-release/bin/test
+./build/metal-release/bin/box3d_test
 ./build/metal-release/bin/metal_demo
 ./build/metal-release/bin/metal_fused_benchmark
 ./build/metal-release/bin/metal_world_benchmark

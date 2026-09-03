@@ -124,6 +124,10 @@ typedef struct b3MetalDispatchStats
 	double gpuMilliseconds;
 	int bodyCount;
 	int commandBufferCount;
+	int dispatchCount;
+	int barrierCount;
+	double encodeCpuMilliseconds;
+	double waitCpuMilliseconds;
 	int treeUploadCount;
 	// Bytes copied from shared staging into the private persistent pair tree by
 	// this dispatch, and the logical byte size of that private snapshot.
@@ -158,6 +162,13 @@ typedef struct b3MetalDispatchStats
 // Returns false when there is no usable Metal device or the shader pipeline
 // could not be compiled. errorBuffer may be NULL.
 bool b3MetalCreateContext( b3MetalContext** context, char* errorBuffer, int errorCapacity );
+
+// Phase 5a library provenance for tests and telemetry. isBlob is true when
+// the precompiled metallib blob was used; archiveHit is true when a cached
+// PSO binary archive was found and loaded. pathBuffer receives the cache path
+// (empty when archives are unavailable on this OS version).
+void b3MetalGetLibraryInfo( const b3MetalContext* context, bool* isBlobOut, bool* archiveHitOut, char* pathBuffer,
+	int pathCapacity );
 
 void b3MetalDestroyContext( b3MetalContext* context );
 
@@ -275,6 +286,27 @@ bool b3MetalComputeConvexManifolds( b3MetalContext* context, const b3World* worl
 									const b3MetalConvexManifoldResult** results, int* resultCount, int* residentBypassCount,
 									const b3MetalContactTransition** transitions, int* transitionCount,
 									b3MetalDispatchStats* stats );
+
+// Phase-1 deferred narrow+solve merge: encode the narrow phase into an
+// uncommitted buffer stashed in the context (reuse path only). The solve
+// phase encodes into the same buffer via b3MetalSolveMergedSubsteps for a
+// single commit/wait. False means not deferrable (use the legacy call).
+bool b3MetalDeferConvexManifolds( b3MetalContext* context, const b3World* world, int contactCount );
+// Drop a deferred narrow without executing it (fail-closed recovery).
+void b3MetalCancelPendingNarrow( b3MetalContext* context );
+// Merged solve into the deferred buffer. Returns 1 on accept, -1 on
+// stability mispredict (narrow outputs below are valid; run the legacy CPU
+// middle and re-solve), 0 on hard failure (fall back to CPU).
+int b3MetalSolveMergedSubsteps( b3MetalContext* context, b3StepContext* stepContext, int velocityIterations,
+	int relaxIterations, int restitutionIterations, b3MetalDispatchStats* narrowStatsOut,
+	b3MetalDispatchStats* solveStatsOut, int* mergedBypassCountOut );
+// Mispredict-recovery accessors for the narrow outputs of the last merged
+// solve: results, transitions, and the narrow-phase stats. Valid only after a
+// -1 return with mergeNarrowOk, until the next backend call. Returns false
+// when no usable merged narrow exists.
+bool b3MetalFetchMergedNarrow( const b3MetalContext* context, const b3MetalConvexManifoldResult** resultsOut,
+	int* resultCountOut, int* bypassCountOut, const b3MetalContactTransition** transitionsOut,
+	int* transitionCountOut, b3MetalDispatchStats* statsOut );
 
 // Explicit diagnostic/fallback staging of the private contact-id-indexed table.
 // This submits and waits for a blit; it is not part of the steady narrow phase.

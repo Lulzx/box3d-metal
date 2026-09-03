@@ -278,6 +278,31 @@ typedef struct b3MetalProfile
 	double lastFinalizationGpuMilliseconds;
 	double lastPairGpuMilliseconds;
 	double lastNarrowPhaseGpuMilliseconds;
+	/// Per-stage GPU execution time in milliseconds, indexed by b3MetalStage
+	/// (mutations, broadPhase, narrowPhase, topology, prepare, solve,
+	/// finalize, refit, events). Stages that did not run report 0. Measured
+	/// with GPUStartTime/GPUEndTime per command buffer; MTLCounterSampleBuffer
+	/// per-stage timestamps replace these once one compute pass per stage lands.
+	double stageGpuMs[9];
+	/// Command buffers, dispatches, and buffer barriers submitted by the last
+	/// step's Metal work. Dispatch/barrier counts are analytic (10 + 13 *
+	/// activeColorCount for the colored solve) until per-encode instrumentation
+	/// lands; command-buffer counts are measured.
+	uint64_t lastCommandBufferCount;
+	uint64_t lastDispatchCount;
+	uint64_t lastBarrierCount;
+	/// CPU time spent encoding the last step's command buffers and blocked in
+	/// waitUntilCompleted, in milliseconds.
+	double lastEncodeCpuMs;
+	double lastWaitCpuMs;
+	/// Analytic solver DRAM traffic estimate for the last step (record sizes x
+	/// counts x passes). Roofline input, not a hardware counter.
+	uint64_t lastAnalyticSolverBytes;
+	/// Phase-1 deferred narrow+solve merge: attempted, accepted (single
+	/// commit/wait covered both phases), and stability-mispredicted steps.
+	uint64_t mergedNarrowSolveAttemptCount;
+	uint64_t mergedNarrowSolveAcceptCount;
+	uint64_t mergedNarrowSolveMispredictCount;
 	char deviceName[128];
 } b3MetalProfile;
 
