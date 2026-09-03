@@ -1136,6 +1136,7 @@ static int MetalPairTraversalTest( void )
 	worldDef.gravity = b3Vec3_zero;
 	b3WorldId worldId = b3CreateWorld( &worldDef );
 	ENSURE( b3World_EnableMetal( worldId, 1 ) );
+	b3World_SetContactRecycleDistance( worldId, 0.0f );
 	b3Sphere sphere = { .center = b3Vec3_zero, .radius = 0.46f };
 	b3ShapeId mutableShapeId = { 0 };
 	for ( int i = 0; i < bodyCount; ++i )
@@ -1203,6 +1204,7 @@ static int MetalPairTraversalTest( void )
 	ENSURE( stats.pairRawSharedBytes == 0 );
 	ENSURE( stats.pairContactSeedCount == gpuCandidateCount );
 	ENSURE( stats.pairContactSeedSharedBytes == (uint64_t)gpuCandidateCount * sizeof( b3MetalPairContactSeed ) );
+	ENSURE( b3MetalHasVirginContactInputBootstrap( world->metalContext, gpuCandidateCount ) );
 	double initialGpuMilliseconds = stats.gpuMilliseconds;
 	stats = (b3MetalDispatchStats){ 0 };
 	ENSURE( b3MetalGeneratePairCandidates( world->metalContext, world, broadPhase->moveArray.data, moveCount, &gpuRecords,
@@ -1222,6 +1224,7 @@ static int MetalPairTraversalTest( void )
 	ENSURE( cpuFilterMoves == NULL );
 	ENSURE( stats.pairPrivateScratchDispatchCount == 1 );
 	ENSURE( stats.pairRawSharedBytes == 0 );
+	ENSURE( b3MetalHasVirginContactInputBootstrap( world->metalContext, gpuCandidateCount ) );
 	double steadyGpuMilliseconds = stats.gpuMilliseconds;
 
 	int cpuCapacity = bodyCount * bodyCount;
@@ -1435,8 +1438,9 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( profile.pairPrivateScratchDispatchCount == 1 );
 	ENSURE( profile.lastPairRawSharedBytes == 0 );
 
-	// Consume the creation-time identity stream. Metal authors both the private
-	// 40-byte inputs and the contact-id-indexed 8-byte first-touch table.
+	// Consume retained virgin pair seeds. Narrow phase authors the private 40-byte
+	// inputs without the legacy 16-byte CPU seed stream, then emits the
+	// contact-id-indexed 8-byte first-touch table.
 	b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
 	b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
 	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
@@ -1444,7 +1448,8 @@ static int MetalFinalPairPlanOrderTest( void )
 	profile = b3World_GetMetalProfile( gpuWorldId );
 	ENSURE( profile.narrowPhaseFallbackCount == 0 );
 	ENSURE( profile.contactInputBootstrapDispatchCount == 1 );
-	ENSURE( profile.lastContactInputBootstrapBytes == (uint64_t)contactCount * sizeof( b3MetalContactInputSeed ) );
+	ENSURE( profile.lastContactInputBootstrapBytes == 0 );
+	ENSURE( profile.lastContactInputBootstrapStatusBytes == sizeof( uint32_t ) );
 	ENSURE( profile.lastContactInputPrivateBytes == (uint64_t)contactCount * 40u );
 	ENSURE( profile.contactInputPackCount == 0 );
 	ENSURE( profile.contactInputReuseCount == 0 );
@@ -1505,7 +1510,7 @@ static int MetalFinalPairPlanOrderTest( void )
 	ENSURE( b3World_GetMetalProfile( gpuWorldId ).contactManifoldSyncCount == 1 );
 	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
 	ENSURE( CompareTouchingGraphTopology( cpu, gpu ) == 0 );
-	printf( "    final pair plan contacts=%d direct=%d pairSeedBytes=%llu inputSeedBytes=%llu inputPrivateBytes=%llu "
+	printf( "    final pair plan contacts=%d direct=%d pairSeedBytes=%llu legacyInputSeedBytes=%llu inputPrivateBytes=%llu "
 			"recordTraversal=bypassed inputPack=bypassed exceptions=0 transitionBytes=%zu directTopology=yes stateBits=0 "
 			"lazySync=1 exactTopology=yes\n",
 			contactCount, profile.lastPairDirectCreateCount, (unsigned long long)profile.lastPairContactSeedBytes,
@@ -1591,6 +1596,8 @@ static int MetalColdContactInputRecycleTest( void )
 	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
 	ENSURE( CompareTouchingGraphTopology( cpu, gpu ) == 0 );
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorldId );
+	// Recycled IDs are not a virgin contact pool. Preserve the checked legacy
+	// 16-byte identity bootstrap and its exact LIFO-input/ascending-graph order.
 	ENSURE( profile.contactInputBootstrapDispatchCount == 1 );
 	ENSURE( profile.lastContactInputBootstrapBytes == 3u * sizeof( b3MetalContactInputSeed ) );
 	ENSURE( profile.lastContactInputPrivateBytes == 3u * 40u );
@@ -2462,7 +2469,8 @@ static int MetalContactPrepareFallbackTest( void )
 	b3World_Step( gpuWorld, 1.0f / 60.0f, 1 );
 	b3MetalProfile profile = b3World_GetMetalProfile( gpuWorld );
 	ENSURE( profile.contactInputBootstrapDispatchCount == 1 );
-	ENSURE( profile.lastContactInputBootstrapBytes == sizeof( b3MetalContactInputSeed ) );
+	ENSURE( profile.lastContactInputBootstrapBytes == 0 );
+	ENSURE( profile.lastContactInputBootstrapStatusBytes == sizeof( uint32_t ) );
 	ENSURE( profile.lastContactInputPrivateBytes == 40u );
 	ENSURE( profile.contactInputPackCount == 0 );
 	ENSURE( profile.lastContactInputBytes == 0 );

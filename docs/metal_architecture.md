@@ -447,15 +447,16 @@ claims matching features in upstream order, and writes normal impulses and
 persistence bits into the 240-byte finalized record. Friction, twist, and rolling
 warm-start terms are restored at contact scope. A recycled contact slot with a
 different generation cannot inherit the old result.
-For a completely cold, zero-exception pair plan, deterministic CPU topology
-creation now records only the normalized shape pair, allocated contact ID, and
-incremented contact generation (16 bytes). A Metal bootstrap kernel validates
-those identities against the resident shape/body registries and authors the
-40-byte manifold inputs directly into private storage before narrow phase in
-the same command buffer. This removes `b3GatherAwakeContactIndices`, the CPU
-eligibility scan, and the CPU input pack from the ordinary cold route without
-guessing recycled IDs or moving body-edge, pair-set, solver-set, or graph
-topology authority off the CPU. Revision mismatch, unsupported geometry,
+For a completely cold, zero-exception pair plan, the broad phase retains its
+existing 8-byte shape-pair seed stream as one-shot authority. Deterministic CPU
+topology creation proves dense virgin contact IDs and generation one without
+writing a second 16-byte identity stream. A one-thread-per-contact Metal
+bootstrap validates and normalizes the retained seeds against the resident
+shape/body registries, then authors the 40-byte manifold inputs directly into
+private storage before narrow phase in the same command buffer. This removes
+`b3GatherAwakeContactIndices`, the CPU eligibility scan, and the CPU input pack
+from the ordinary cold route without moving body-edge, pair-set, solver-set, or
+graph topology authority off the CPU. Revision mismatch, unsupported geometry,
 sleeping contacts, custom materials, pre-solve/hit events, and partial plans
 fail closed to the legacy path. The implementation and M4 Pro cold measurements
 are recorded in
@@ -489,7 +490,7 @@ paths, not yet the final performance architecture.
 | Parallel joints | GPU-resident across all substeps |
 | Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 | Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, private raw candidate scratch for ordinary worlds, exact blocked-joint body-pair rejection, residual-filter move compaction, and flat contact-seed emission. Zero-exception plans expose only the summary and seed stream; custom/compound worlds, dense materialization, and deterministic contact topology creation retain explicit CPU-visible paths |
-| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Completely cold ordinary plans expand a 16-byte CPU identity stream into private 40-byte inputs, then expose an 8-byte contact-ID-indexed topology slot while the 240-byte manifold remains private. A complete event-free batch commits in canonical contact-ID order without worker state-bitset clear, union, or a second serial scan. Ordered island/graph mutation remains CPU-owned and is now timed explicitly. Ordinary resident contacts need no CPU manifold allocation; lazy CPU mirrors materialize only at explicit observation, sleep, disable, or fallback boundaries. CPU retains non-ordinary/revision packing, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
+| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Completely cold virgin plans retain the broad phase's 8-byte pair seeds and expand them into private 40-byte inputs without a second CPU-written identity stream, then expose an 8-byte contact-ID-indexed topology slot while the 240-byte manifold remains private. A complete event-free batch commits in canonical contact-ID order without worker state-bitset clear, union, or a second serial scan. Ordered island/graph mutation remains CPU-owned and is now timed explicitly. Ordinary resident contacts need no CPU manifold allocation; lazy CPU mirrors materialize only at explicit observation, sleep, disable, or fallback boundaries. CPU retains non-ordinary/revision packing, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
 | Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts a 112-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 | Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 | CCD, sleeping/island mutation, events, recording, queries | CPU |
@@ -642,9 +643,12 @@ current cold/steady measurements are recorded in
 Device-private dynamic-tree ownership, revision upload/reuse telemetry, and
 whole-world timing samples are recorded in
 [`benchmarks/m4-pro-private-pair-tree-2026-09-03.md`](benchmarks/m4-pro-private-pair-tree-2026-09-03.md).
-GPU-authored cold contact inputs, recycled-ID/generation validation, and
-same-host cold whole-world comparisons are recorded in
+The original CPU-seeded cold input bootstrap and recycled-ID/generation
+validation are recorded in
 [`benchmarks/m4-pro-contact-input-bootstrap-2026-09-03.md`](benchmarks/m4-pro-contact-input-bootstrap-2026-09-03.md).
+Retained pair-seed authority, removal of the second shared identity stream, and
+paired same-host measurements are recorded in
+[`benchmarks/m4-pro-retained-pair-seed-bootstrap-2026-09-03.md`](benchmarks/m4-pro-retained-pair-seed-bootstrap-2026-09-03.md).
 Fully resident convex-contact state, sim, shape-bound, and body-finalization
 ownership is recorded in
 [`benchmarks/m4-pro-full-contact-residency-2026-09-03.md`](benchmarks/m4-pro-full-contact-residency-2026-09-03.md).

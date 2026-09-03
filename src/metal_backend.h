@@ -146,6 +146,7 @@ typedef struct b3MetalDispatchStats
 	int pairDirectCandidateCount;
 	int contactInputBootstrapDispatchCount;
 	uint64_t contactInputBootstrapSharedBytes;
+	uint64_t contactInputBootstrapStatusSharedBytes;
 	uint64_t contactInputPrivateBytes;
 	int contactTransitionCount;
 	uint64_t contactTransitionSharedBytes;
@@ -217,6 +218,13 @@ bool b3MetalGeneratePairCandidates( b3MetalContext* context, const b3World* worl
 									int* candidateCount, const int** cpuFilterMoves, int* cpuFilterMoveCount,
 									const b3MetalPairContactSeed** contactSeeds, int* contactSeedCount,
 									b3MetalDispatchStats* stats );
+
+// Opportunistic retained pair-seed authority for a truly virgin contact pool.
+// Seeds remain CPU-visible for topology creation and may be expanded directly
+// into private narrow-phase inputs only after CPU identity matches exactly.
+bool b3MetalHasVirginContactInputBootstrap( const b3MetalContext* context, int contactCount );
+bool b3MetalCommitVirginContactInputBootstrap( b3MetalContext* context, const b3World* world, int contactCount );
+void b3MetalCancelVirginContactInputBootstrap( b3MetalContext* context );
 
 // Number of deterministically compacted proxy moves retained on the device by
 // the most recently committed Metal tree refit. The count remains authoritative

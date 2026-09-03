@@ -67,6 +67,8 @@ typedef struct b3MetalProfile
 	uint64_t contactInputBootstrapDispatchCount;
 	/// CPU-visible compact bootstrap bytes written on the latest step.
 	uint64_t lastContactInputBootstrapBytes;
+	/// Shared validation-status bytes returned by the latest bootstrap dispatch.
+	uint64_t lastContactInputBootstrapStatusBytes;
 	/// Logical bytes in the authoritative private contact-input table.
 	uint64_t lastContactInputPrivateBytes;
 	/// Cold touching contacts represented by the contact-id-indexed topology

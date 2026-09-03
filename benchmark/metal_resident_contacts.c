@@ -89,7 +89,8 @@ int main( void )
 		useBoxes ? "box" : "sphere", coldPair ? "cold_pair" : "steady", workerCount );
 	printf( "contacts,repeats,cpu_ms,gpu_ms,speedup,prepare_dispatches,device_prepare_refreshes,collision_bypasses,cpu_collision_"
 			"contacts,last_collision_exceptions,manifold_exception_bytes,input_packs,input_reuses,last_input_bytes,input_bootstrap_"
-			"dispatches,last_input_bootstrap_bytes,last_input_private_bytes,last_contact_transition_count,"
+			"dispatches,last_input_bootstrap_bytes,last_input_bootstrap_status_bytes,last_input_private_bytes,"
+			"last_contact_transition_count,"
 			"last_contact_transition_bytes,last_contact_exception_bytes,coverage_"
 			"bypasses,state_walk_bypasses,last_state_clear_bytes,hit_clear_bypasses,last_hit_clear_bytes,awake_island_clear_"
 			"bypasses,last_awake_island_clear_bytes,manifold_syncs,resident_contacts_without_cpu_manifolds,body_walk_bypasses,"
@@ -101,7 +102,7 @@ int main( void )
 			"pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,"
 			"last_pair_cpu_filter_candidates,last_pair_direct_create_candidates,pair_contact_seed_dispatches,"
 			"pair_record_traversal_bypasses,last_pair_contact_seed_count,last_pair_contact_seed_bytes,"
-			"pair_private_scratch_dispatches,last_pair_raw_shared_bytes,contact_topology_direct_commits,"
+			"pair_private_scratch_dispatches,last_pair_raw_shared_bytes,last_pair_gpu_ms,contact_topology_direct_commits,"
 			"last_contact_topology_cpu_ms\n" );
 	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
 	{
@@ -135,8 +136,9 @@ int main( void )
 			(unsigned long long)profile.lastNarrowPhaseResultBytes, (unsigned long long)profile.contactInputPackCount,
 			(unsigned long long)profile.contactInputReuseCount, (unsigned long long)profile.lastContactInputBytes,
 			(unsigned long long)profile.contactInputBootstrapDispatchCount );
-		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
+		printf( ",%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu",
 			(unsigned long long)profile.lastContactInputBootstrapBytes,
+			(unsigned long long)profile.lastContactInputBootstrapStatusBytes,
 			(unsigned long long)profile.lastContactInputPrivateBytes,
 			(unsigned long long)profile.lastContactTransitionCount,
 			(unsigned long long)profile.lastContactTransitionBytes,
@@ -179,10 +181,11 @@ int main( void )
 			(unsigned long long)profile.pairContactSeedDispatchCount,
 			(unsigned long long)profile.pairRecordTraversalBypassCount,
 			(unsigned long long)profile.lastPairContactSeedCount );
-		printf( ",%llu,%llu,%llu,%llu,%.6f\n",
+		printf( ",%llu,%llu,%llu,%.6f,%llu,%.6f\n",
 			(unsigned long long)profile.lastPairContactSeedBytes,
 			(unsigned long long)profile.pairPrivateScratchDispatchCount,
 			(unsigned long long)profile.lastPairRawSharedBytes,
+			profile.lastPairGpuMilliseconds,
 			(unsigned long long)profile.contactTopologyDirectCommitCount,
 			profile.lastContactTopologyCpuMilliseconds );
 		b3DestroyWorld( gpuWorld );

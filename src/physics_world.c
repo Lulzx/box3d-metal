@@ -776,6 +776,7 @@ b3MetalProfile b3World_GetMetalProfile( b3WorldId worldId )
 	profile.contactInputReuseCount = world->metalContactInputReuseCount;
 	profile.contactInputBootstrapDispatchCount = world->metalContactInputBootstrapDispatchCount;
 	profile.lastContactInputBootstrapBytes = world->metalLastContactInputBootstrapBytes;
+	profile.lastContactInputBootstrapStatusBytes = world->metalLastContactInputBootstrapStatusBytes;
 	profile.lastContactInputPrivateBytes = world->metalLastContactInputPrivateBytes;
 	profile.lastContactTransitionCount = world->metalLastContactTransitionCount;
 	profile.lastContactTransitionBytes = world->metalLastContactTransitionBytes;
@@ -1611,6 +1612,7 @@ static bool b3Collide( b3StepContext* context )
 		{
 			world->metalContactInputBootstrapDispatchCount += (uint64_t)stats.contactInputBootstrapDispatchCount;
 			world->metalLastContactInputBootstrapBytes = stats.contactInputBootstrapSharedBytes;
+			world->metalLastContactInputBootstrapStatusBytes = stats.contactInputBootstrapStatusSharedBytes;
 			world->metalLastContactInputPrivateBytes = stats.contactInputPrivateBytes;
 			world->metalLastContactTransitionCount = (uint64_t)stats.contactTransitionCount;
 			world->metalLastContactTransitionBytes = stats.contactTransitionSharedBytes;
@@ -1638,6 +1640,7 @@ static bool b3Collide( b3StepContext* context )
 		{
 			world->metalNarrowPhaseFallbackCount += 1;
 			world->metalLastContactInputBootstrapBytes = 0;
+			world->metalLastContactInputBootstrapStatusBytes = 0;
 			world->metalLastContactInputPrivateBytes = 0;
 			world->metalLastContactTransitionCount = 0;
 			world->metalLastContactTransitionBytes = 0;

@@ -158,10 +158,11 @@ revisioned contact input/order registry now retains the 40-byte records across
 unchanged pair, graph, and eligibility revisions, so stable steps neither
 gather graph contact IDs nor rewrite the input buffer. Current body indices and
 fast-body flags come from the per-step body registry. Completely cold ordinary
-pair plans now capture a 16-byte CPU-assigned contact identity during the
-already-required deterministic topology commit. Metal expands that stream into
-the authoritative private 40-byte input table, bypassing the cold graph/awake
-contact gather and both CPU input scans. Hit/pre-solve events, callback, mixed, and unsupported
+pair plans now retain their already-required 8-byte shape-pair seed as one-shot
+authority. After deterministic CPU topology creation proves dense virgin IDs,
+Metal expands that seed directly into the authoritative private 40-byte input
+table. No separate 16-byte CPU identity stream is written, and the cold
+graph/awake-contact gather and both CPU input scans remain bypassed. Hit/pre-solve events, callback, mixed, and unsupported
 routes reject the bootstrap and retain the legacy pack. The same dispatch proves
 complete convex graph ownership and skips the solver's per-contact coverage
 walk. A zero-exception dispatch also bypasses capacity-linear contact-state

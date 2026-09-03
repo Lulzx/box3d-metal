@@ -293,6 +293,7 @@ typedef struct b3World
 	uint64_t metalContactInputReuseCount;
 	uint64_t metalContactInputBootstrapDispatchCount;
 	uint64_t metalLastContactInputBootstrapBytes;
+	uint64_t metalLastContactInputBootstrapStatusBytes;
 	uint64_t metalLastContactInputPrivateBytes;
 	uint64_t metalLastContactTransitionCount;
 	uint64_t metalLastContactTransitionBytes;

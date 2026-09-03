@@ -647,14 +647,16 @@ void b3UpdateBroadPhasePairs( b3World* world )
 	if ( pairsAreEmpty == false && metalContactSeeds != NULL )
 	{
 		// A completely cold ordinary plan already visits every contact exactly
-		// once in the order used by the awake non-touching set. Retain the
-		// CPU-assigned identity and canonical shape order during that mandatory
-		// topology commit so narrow phase does not have to gather and rescan the
-		// new contact registry merely to build its GPU input table.
+		// once in the order used by the awake non-touching set. A virgin direct
+		// plan retains the 8-byte pair seeds with predicted dense identity for
+		// narrow-phase expansion. Otherwise capture CPU-assigned identity and
+		// canonical shape order in the checked 16-byte bootstrap stream.
+		bool virginInputBootstrap =
+			b3MetalHasVirginContactInputBootstrap( world->metalContext, contactSeedCount );
 		b3MetalContactInputSeed* contactInputSeeds = NULL;
 		int contactInputSeedCount = 0;
-		bool contactInputBootstrapValid = b3GetIdCount( &world->contactIdPool ) == 0;
-		if ( contactInputBootstrapValid )
+		bool contactInputBootstrapValid = virginInputBootstrap || b3GetIdCount( &world->contactIdPool ) == 0;
+		if ( contactInputBootstrapValid && virginInputBootstrap == false )
 		{
 			contactInputSeeds = b3MetalBeginContactInputBootstrap( world->metalContext, contactSeedCount );
 			contactInputBootstrapValid = contactInputSeeds != NULL;
@@ -674,6 +676,10 @@ void b3UpdateBroadPhasePairs( b3World* world )
 				{
 					contactInputBootstrapValid = false;
 				}
+				else if ( virginInputBootstrap )
+				{
+					contactInputSeedCount += 1;
+				}
 				else
 				{
 					contactInputSeeds[contactInputSeedCount++] = (b3MetalContactInputSeed){
@@ -691,7 +697,42 @@ void b3UpdateBroadPhasePairs( b3World* world )
 			contactInputSeedCount == awakeSet->contactIndices.count;
 		if ( contactInputBootstrapValid )
 		{
-			contactInputBootstrapValid =
+			contactInputBootstrapValid = virginInputBootstrap ?
+				b3MetalCommitVirginContactInputBootstrap( world->metalContext, world, contactInputSeedCount ) :
+				b3MetalCommitContactInputBootstrap( world->metalContext, world, contactInputSeedCount );
+		}
+		if ( virginInputBootstrap && contactInputBootstrapValid == false )
+		{
+			// Retained virgin seed authority is strictly opportunistic. If its
+			// post-creation identity/revision proof fails, rebuild the existing
+			// 16-byte CPU seed stream from the committed awake contact order.
+			b3MetalCancelVirginContactInputBootstrap( world->metalContext );
+			contactInputSeedCount = 0;
+			contactInputSeeds = b3MetalBeginContactInputBootstrap( world->metalContext, awakeSet->contactIndices.count );
+			contactInputBootstrapValid = contactInputSeeds != NULL && awakeSet->contactIndices.count > 0 &&
+				awakeSet->contactIndices.count == b3GetIdCount( &world->contactIdPool );
+			for ( int i = 0; contactInputBootstrapValid && i < awakeSet->contactIndices.count; ++i )
+			{
+				int contactId = awakeSet->contactIndices.data[i];
+				if ( contactId < 0 || contactId >= world->contacts.count )
+				{
+					contactInputBootstrapValid = false;
+					break;
+				}
+				const b3Contact* contact = world->contacts.data + contactId;
+				if ( contact->contactId != contactId || contact->setIndex != b3_awakeSet || contact->localIndex != i )
+				{
+					contactInputBootstrapValid = false;
+					break;
+				}
+				contactInputSeeds[contactInputSeedCount++] = (b3MetalContactInputSeed){
+					.contactId = (uint32_t)contactId,
+					.generation = contact->generation,
+					.shapeIdA = (uint32_t)contact->shapeIdA,
+					.shapeIdB = (uint32_t)contact->shapeIdB,
+				};
+			}
+			contactInputBootstrapValid = contactInputBootstrapValid &&
 				b3MetalCommitContactInputBootstrap( world->metalContext, world, contactInputSeedCount );
 		}
 		if ( contactInputBootstrapValid == false )
