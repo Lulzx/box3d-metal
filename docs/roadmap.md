@@ -52,14 +52,16 @@ Resident contact results now carry warm starts by contact generation and feature
 ID. Public-manifold synchronization is lazy, and hit events use a compact
 exception list assembled during narrow-phase packing.
 
-1. Retain body and supported joint state across world steps, reading back only
+1. Move the measured cold island/graph commit behind a device-resident topology
+   epoch. Materialize the exact ascending-ID CPU topology only at public,
+   sleep, unsupported, or fallback boundaries.
+2. Fuse virgin-pool pair identity and private narrow-phase bootstrap so the
+   8-byte pair-seed and 16-byte identity streams no longer cross to the CPU.
+3. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
-2. Add remaining high-value joint types one at a time with mode matrices,
+4. Add remaining high-value joint types one at a time with mode matrices,
    overflow tests, static-body tests, and whole-world benchmarks.
-3. Move deterministic contact/topology mutation on-device now that ordinary
-   first-touch geometry and CPU-manifold allocation are removed, while keeping
-   the CPU oracle and ordered fallback boundary.
-4. Add per-Apple-GPU-family benchmark records before considering automatic
+5. Add per-Apple-GPU-family benchmark records before considering automatic
    thresholds.
 
 ## Non-goals without new evidence

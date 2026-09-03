@@ -218,10 +218,12 @@ workers consume compact exceptions directly by contact ID. An unchanged stable
 step emits zero shared manifold bytes and does not schedule a collision task.
 For a complete cold bootstrap with default callbacks and no event, recording,
 CCD, or recycling requirements, touching manifolds also remain private. Metal
-authors the prepare record and emits only a deterministic 16-byte contact-ID,
-generation, input-index, and point-count transition. The CPU validates the
-whole batch before installing logical one-manifold contacts and applying the
-existing ascending-ID graph/island transition. Their CPU manifold pointer stays
+authors the prepare record and writes an 8-byte `{generation, pointCount}` slot
+at the contact ID. The table is cleared by a same-command-buffer Metal blit.
+The CPU validates the whole batch before installing logical one-manifold
+contacts and applying the existing ascending-ID graph/island transition in one
+pass. Complete ordinary batches bypass per-worker contact-state bitset clear,
+union, and the second serial set-bit scan. Their CPU manifold pointer stays
 null until an explicit public, recording, sleep, disable, overflow, or fallback
 boundary materializes the checked device record. All unsafe classes retain full
 ordered exceptions.
@@ -256,6 +258,11 @@ later callback, CCD, first-touch, separation, unsupported contact, or Metal
 fallback clears all worker bitsets to the current contact-ID capacity before
 dispatching CPU collision work. Diagnostic manifold and SAT counters are reset
 and aggregated independently of the bitsets.
+
+Cold direct topology still calls Erin's CPU island-link and graph-color
+operations in canonical contact-ID order. The benchmark records this remaining
+linear host transaction separately; a device-resident topology epoch with lazy
+CPU replay is the next structural boundary.
 
 Solver hit-event scratch follows the same rule. Before worker launch, the
 current narrow-phase compact event-ID count is known independently of the prior

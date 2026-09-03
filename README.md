@@ -45,9 +45,11 @@ generation. A revisioned contact input/order registry retains those records
 across unchanged pair-set, constraint-graph, and eligibility revisions, so
 stable steps do not gather CPU contact IDs or rewrite the input buffer. Current
 body indices and transient fast flags come from the per-step body registry.
-A zero-exception dispatch also skips capacity-linear contact-state bitset
+A zero-exception stable dispatch skips capacity-linear contact-state bitset
 clears, worker unions, and the serial state-change traversal; any later CPU
-exception or fallback clears before collision workers write.
+exception or fallback clears before collision workers write. A complete cold
+ordinary batch now uses an 8-byte contact-ID-indexed topology table and commits
+once in canonical ID order, bypassing the same bitsets and second serial scan.
 The solver likewise defers its contact-capacity hit-event bitset clears when
 the current resident compact event list is empty, restoring them before an
 event-enabled path or Metal fallback.
@@ -152,7 +154,7 @@ CPU work:
 | Experimental GPU finalization | Correct, but 27% slower at the 524,288-body paired median |
 | GPU shape finalization | Correct, but 17.9% slower at 524,288 shapes |
 | Experimental GPU tree traversal | 1.068x at 524,288 shapes; small worlds regress |
-| Private cold first-touch | 19.1-20.1% less GPU cold-step time at 131,072-262,144 contacts; still CPU-faster |
+| Indexed cold-contact topology | 2.7-3.6% less GPU time than deferred-manifold checkpoint at 131,072-262,144 contacts |
 
 The tree-traversal speedup is historical evidence for the earlier CPU-prefix
 implementation. The current on-device scan has exact-order validation, but no
@@ -227,11 +229,12 @@ clears: 512 and 8,192-contact runs bypassed all 48 and 28 resident solver
 phases respectively, while hit-enabled and forced-fallback tests restored the
 clear before CPU work.
 The private-first-touch checkpoint keeps each ordinary cold manifold and its
-prepare record on-device. The CPU receives only a deterministic 16-byte
-topology transition, while event, callback, fast, separated, and unsupported
-contacts retain full exceptions. Against the clean pre-change source, M4 Pro
-cold GPU medians improve by 19.1% at 131,072 contacts and 20.1% at 262,144,
-though the CPU oracle remains faster in both cases.
+prepare record on-device. Its indexed-topology follow-on halves the shared
+transition representation to 8 bytes per contact and removes per-worker state
+bitset clear/union plus the second serial scan. Against the deferred-manifold
+checkpoint, M4 Pro cold GPU medians improve by another 2.7% at 131,072 contacts
+and 3.6% at 262,144. The remaining canonical island/graph commit is measured at
+about 8.0 and 15.5 ms and remains the next device-residency boundary.
 
 Small workloads remain CPU-favorable. Metal is explicitly enabled per world
 with a caller-selected body threshold.

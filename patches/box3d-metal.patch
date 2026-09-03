@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index e5d603b5e15a38d050450891b3acbb461c0d7e0b..5545d63fe1396d21255442b6d2a8aeecdf7e6178 100644
+index e5d603b..5545d63 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -91,6 +91,11 @@ endif()
@@ -22,7 +22,7 @@ index e5d603b5e15a38d050450891b3acbb461c0d7e0b..5545d63fe1396d21255442b6d2a8aeec
 \ No newline at end of file
 +# "currentDir": "${workspaceRoot}"
 diff --git a/README.md b/README.md
-index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..1a41ebd22851704e33de58521652130e1a257cf9 100644
+index cfe16e4..1a41ebd 100644
 --- a/README.md
 +++ b/README.md
 @@ -9,6 +9,212 @@ Box3D is a 3D physics engine for games.
@@ -239,7 +239,7 @@ index cfe16e4c6b9b190f146551cf549cb5ea23e2d7e6..1a41ebd22851704e33de58521652130e
  
  ### Collision
 diff --git a/benchmark/CMakeLists.txt b/benchmark/CMakeLists.txt
-index 73f721017afd57e492ee0450cf3798428a6546b1..fcfa0c3585337762da2f82d396d4de31e19d67a9 100644
+index 73f7210..fcfa0c3 100644
 --- a/benchmark/CMakeLists.txt
 +++ b/benchmark/CMakeLists.txt
 @@ -10,4 +10,48 @@ set_target_properties(benchmark PROPERTIES C_STANDARD 17)
@@ -295,7 +295,7 @@ index 73f721017afd57e492ee0450cf3798428a6546b1..fcfa0c3585337762da2f82d396d4de31
 +endif()
 diff --git a/benchmark/metal_contacts.c b/benchmark/metal_contacts.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a87502f8226d9cfd4928a774c94efd1a9e3bed7f
+index 0000000..a87502f
 --- /dev/null
 +++ b/benchmark/metal_contacts.c
 @@ -0,0 +1,93 @@
@@ -394,7 +394,7 @@ index 0000000000000000000000000000000000000000..a87502f8226d9cfd4928a774c94efd1a
 +}
 diff --git a/benchmark/metal_demo.c b/benchmark/metal_demo.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..3433eac1fc26fe186707065512585a02ff923703
+index 0000000..3433eac
 --- /dev/null
 +++ b/benchmark/metal_demo.c
 @@ -0,0 +1,60 @@
@@ -460,7 +460,7 @@ index 0000000000000000000000000000000000000000..3433eac1fc26fe186707065512585a02
 +}
 diff --git a/benchmark/metal_distance_joints.c b/benchmark/metal_distance_joints.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..3da733c74f37132507768766e9cfd3a436b06e2f
+index 0000000..3da733c
 --- /dev/null
 +++ b/benchmark/metal_distance_joints.c
 @@ -0,0 +1,102 @@
@@ -568,7 +568,7 @@ index 0000000000000000000000000000000000000000..3da733c74f37132507768766e9cfd3a4
 +}
 diff --git a/benchmark/metal_fused.c b/benchmark/metal_fused.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..729c4856e41b1537475ed9d6ab0f2f5370f8080f
+index 0000000..729c485
 --- /dev/null
 +++ b/benchmark/metal_fused.c
 @@ -0,0 +1,163 @@
@@ -737,7 +737,7 @@ index 0000000000000000000000000000000000000000..729c4856e41b1537475ed9d6ab0f2f53
 +}
 diff --git a/benchmark/metal_integration.c b/benchmark/metal_integration.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..cd16bbb03d281bdc978112865763e3e2769cc2b1
+index 0000000..cd16bbb
 --- /dev/null
 +++ b/benchmark/metal_integration.c
 @@ -0,0 +1,124 @@
@@ -867,7 +867,7 @@ index 0000000000000000000000000000000000000000..cd16bbb03d281bdc978112865763e3e2
 +}
 diff --git a/benchmark/metal_mesh_contacts.c b/benchmark/metal_mesh_contacts.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..3dc389122e418a18fc0902183f3cd5b8943f3a6e
+index 0000000..3dc3891
 --- /dev/null
 +++ b/benchmark/metal_mesh_contacts.c
 @@ -0,0 +1,122 @@
@@ -995,7 +995,7 @@ index 0000000000000000000000000000000000000000..3dc389122e418a18fc0902183f3cd5b8
 +}
 diff --git a/benchmark/metal_parallel_joints.c b/benchmark/metal_parallel_joints.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..9f2dcfab868438c01fd57f3c1dd56b07d84b51a5
+index 0000000..9f2dcfa
 --- /dev/null
 +++ b/benchmark/metal_parallel_joints.c
 @@ -0,0 +1,95 @@
@@ -1096,10 +1096,10 @@ index 0000000000000000000000000000000000000000..9f2dcfab868438c01fd57f3c1dd56b07
 +}
 diff --git a/benchmark/metal_resident_contacts.c b/benchmark/metal_resident_contacts.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..7c2f42527272ed229422aad7f4a652a567fe8df4
+index 0000000..a3453a6
 --- /dev/null
 +++ b/benchmark/metal_resident_contacts.c
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,191 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -1203,7 +1203,8 @@ index 0000000000000000000000000000000000000000..7c2f42527272ed229422aad7f4a652a5
 +			"pair_cpu_candidate_traversal_bypasses,last_pair_cpu_filter_moves,"
 +			"last_pair_cpu_filter_candidates,last_pair_direct_create_candidates,pair_contact_seed_dispatches,"
 +			"pair_record_traversal_bypasses,last_pair_contact_seed_count,last_pair_contact_seed_bytes,"
-+			"pair_private_scratch_dispatches,last_pair_raw_shared_bytes\n" );
++			"pair_private_scratch_dispatches,last_pair_raw_shared_bytes,contact_topology_direct_commits,"
++			"last_contact_topology_cpu_ms\n" );
 +	for ( int testIndex = 0; testIndex < testCount; ++testIndex )
 +	{
 +		int contactCount = requestedCount > 0 ? requestedCount : counts[testIndex];
@@ -1280,17 +1281,19 @@ index 0000000000000000000000000000000000000000..7c2f42527272ed229422aad7f4a652a5
 +			(unsigned long long)profile.pairContactSeedDispatchCount,
 +			(unsigned long long)profile.pairRecordTraversalBypassCount,
 +			(unsigned long long)profile.lastPairContactSeedCount );
-+		printf( ",%llu,%llu,%llu\n",
++		printf( ",%llu,%llu,%llu,%llu,%.6f\n",
 +			(unsigned long long)profile.lastPairContactSeedBytes,
 +			(unsigned long long)profile.pairPrivateScratchDispatchCount,
-+			(unsigned long long)profile.lastPairRawSharedBytes );
++			(unsigned long long)profile.lastPairRawSharedBytes,
++			(unsigned long long)profile.contactTopologyDirectCommitCount,
++			profile.lastContactTopologyCpuMilliseconds );
 +		b3DestroyWorld( gpuWorld );
 +	}
 +	return 0;
 +}
 diff --git a/benchmark/metal_world.c b/benchmark/metal_world.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..0d52e800d1d842bf9d6fcc967afb1a6d4aa98865
+index 0000000..0d52e80
 --- /dev/null
 +++ b/benchmark/metal_world.c
 @@ -0,0 +1,167 @@
@@ -1463,7 +1466,7 @@ index 0000000000000000000000000000000000000000..0d52e800d1d842bf9d6fcc967afb1a6d
 +}
 diff --git a/docs/benchmarks/m4-pro-awake-island-bitset-bypass-2026-09-02.md b/docs/benchmarks/m4-pro-awake-island-bitset-bypass-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..dd2ac23f0bea932b32c7f8d4d315da1f736c92c9
+index 0000000..dd2ac23
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-awake-island-bitset-bypass-2026-09-02.md
 @@ -0,0 +1,47 @@
@@ -1516,7 +1519,7 @@ index 0000000000000000000000000000000000000000..dd2ac23f0bea932b32c7f8d4d315da1f
 +result stream and the remaining CPU body traversal can be removed safely.
 diff --git a/docs/benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md b/docs/benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..5a86671bc8ffb144d2d5447cdf68227112f4f99b
+index 0000000..5a86671
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-body-finalization-traversal-bypass-2026-09-03.md
 @@ -0,0 +1,69 @@
@@ -1591,7 +1594,7 @@ index 0000000000000000000000000000000000000000..5a86671bc8ffb144d2d5447cdf682271
 +Metal step. A quiet-host matrix remains the performance gate.
 diff --git a/docs/benchmarks/m4-pro-body-property-residency-2026-09-02.md b/docs/benchmarks/m4-pro-body-property-residency-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..66166bb50f634e0b88123ab65e58fa9e7dd118d5
+index 0000000..66166bb
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-body-property-residency-2026-09-02.md
 @@ -0,0 +1,52 @@
@@ -1649,7 +1652,7 @@ index 0000000000000000000000000000000000000000..66166bb50f634e0b88123ab65e58fa9e
 +the body finalization bookkeeping walk and solved-state readback.
 diff --git a/docs/benchmarks/m4-pro-body-state-residency-2026-09-02.md b/docs/benchmarks/m4-pro-body-state-residency-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..defd7947655af3b40ed87418a2c6696c0fba68a5
+index 0000000..defd794
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-body-state-residency-2026-09-02.md
 @@ -0,0 +1,53 @@
@@ -1708,7 +1711,7 @@ index 0000000000000000000000000000000000000000..defd7947655af3b40ed87418a2c6696c
 +only then can the final body traversal and state readback disappear.
 diff --git a/docs/benchmarks/m4-pro-body-state-revision-2026-09-02.md b/docs/benchmarks/m4-pro-body-state-revision-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..96b681a7140d38edb90d9257476eaa25ad84ff07
+index 0000000..96b681a
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-body-state-revision-2026-09-02.md
 @@ -0,0 +1,49 @@
@@ -1763,7 +1766,7 @@ index 0000000000000000000000000000000000000000..96b681a7140d38edb90d9257476eaa25
 +was a structural run on a host not established as quiet.
 diff --git a/docs/benchmarks/m4-pro-canonical-box-residency-2026-09-03.md b/docs/benchmarks/m4-pro-canonical-box-residency-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..7173160aee67688587f57f233b130c05198d1fec
+index 0000000..7173160
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-canonical-box-residency-2026-09-03.md
 @@ -0,0 +1,65 @@
@@ -1834,7 +1837,7 @@ index 0000000000000000000000000000000000000000..7173160aee67688587f57f233b130c05
 +CPU-faster because dispatch and synchronization overhead dominate.
 diff --git a/docs/benchmarks/m4-pro-capsule-narrow-phase-2026-09-02.md b/docs/benchmarks/m4-pro-capsule-narrow-phase-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..bb2756a124e56de72533d4dbc8c017ebd79a41dd
+index 0000000..bb2756a
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-capsule-narrow-phase-2026-09-02.md
 @@ -0,0 +1,48 @@
@@ -1888,7 +1891,7 @@ index 0000000000000000000000000000000000000000..bb2756a124e56de72533d4dbc8c017eb
 +are still needed to remove both streams.
 diff --git a/docs/benchmarks/m4-pro-contact-exception-compaction-2026-09-02.md b/docs/benchmarks/m4-pro-contact-exception-compaction-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..66a9a88674823bc3e7ffe9c9800cbc6b10f91abf
+index 0000000..66a9a88
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-contact-exception-compaction-2026-09-02.md
 @@ -0,0 +1,73 @@
@@ -1967,7 +1970,7 @@ index 0000000000000000000000000000000000000000..66a9a88674823bc3e7ffe9c9800cbc6b
 +coverage walks before another whole-world benchmark.
 diff --git a/docs/benchmarks/m4-pro-contact-finalization-residency-2026-09-02.md b/docs/benchmarks/m4-pro-contact-finalization-residency-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..7ca55b826a10dd93941277b928ccb6d26bf71b1c
+index 0000000..7ca55b8
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-contact-finalization-residency-2026-09-02.md
 @@ -0,0 +1,54 @@
@@ -2027,7 +2030,7 @@ index 0000000000000000000000000000000000000000..7ca55b826a10dd93941277b928ccb6d2
 +smoke and is not quiet-host performance evidence.
 diff --git a/docs/benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md b/docs/benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..c3310d9d340489b265031c61cc9c6d23e970a262
+index 0000000..c3310d9
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-contact-impulse-residency-2026-09-02.md
 @@ -0,0 +1,47 @@
@@ -2080,7 +2083,7 @@ index 0000000000000000000000000000000000000000..c3310d9d340489b265031c61cc9c6d23
 +event ordering remain CPU responsibilities.
 diff --git a/docs/benchmarks/m4-pro-contact-input-bootstrap-2026-09-03.md b/docs/benchmarks/m4-pro-contact-input-bootstrap-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..02a4d58d315f968b756438ad7a763fec3b201694
+index 0000000..02a4d58
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-contact-input-bootstrap-2026-09-03.md
 @@ -0,0 +1,70 @@
@@ -2156,7 +2159,7 @@ index 0000000000000000000000000000000000000000..02a4d58d315f968b756438ad7a763fec
 +CPU topology/state-transition stream, not another solver micro-kernel.
 diff --git a/docs/benchmarks/m4-pro-contact-input-residency-2026-09-02.md b/docs/benchmarks/m4-pro-contact-input-residency-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..276d8de658285a8d4696ced564af58d319239953
+index 0000000..276d8de
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-contact-input-residency-2026-09-02.md
 @@ -0,0 +1,78 @@
@@ -2240,7 +2243,7 @@ index 0000000000000000000000000000000000000000..276d8de658285a8d4696ced564af58d3
 +event work is the next dominant boundary before widening geometry support.
 diff --git a/docs/benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md b/docs/benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..cb679be578e230e2dba5ac765bc1343cbf1f0313
+index 0000000..cb679be
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-contact-prepare-residency-2026-09-02.md
 @@ -0,0 +1,57 @@
@@ -2303,7 +2306,7 @@ index 0000000000000000000000000000000000000000..cb679be578e230e2dba5ac765bc1343c
 +`BOX3D_METAL_RESIDENT_CONTACT_REPEATS` select a focused point.
 diff --git a/docs/benchmarks/m4-pro-contact-seed-stream-2026-09-03.md b/docs/benchmarks/m4-pro-contact-seed-stream-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..979ef5ffd5675e819e069e2e42d7ea635c134d40
+index 0000000..979ef5f
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-contact-seed-stream-2026-09-03.md
 @@ -0,0 +1,62 @@
@@ -2371,7 +2374,7 @@ index 0000000000000000000000000000000000000000..979ef5ffd5675e819e069e2e42d7ea63
 +removed traversal boundary.
 diff --git a/docs/benchmarks/m4-pro-contact-state-traversal-bypass-2026-09-02.md b/docs/benchmarks/m4-pro-contact-state-traversal-bypass-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..d9fbd142dc454d1ee9ce19c03f2f6ac2901c0fe6
+index 0000000..d9fbd14
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-contact-state-traversal-bypass-2026-09-02.md
 @@ -0,0 +1,58 @@
@@ -2435,7 +2438,7 @@ index 0000000000000000000000000000000000000000..d9fbd142dc454d1ee9ce19c03f2f6ac2
 +island/sleep work, events, and unsupported paths.
 diff --git a/docs/benchmarks/m4-pro-convex-contacts-2026-09-01.md b/docs/benchmarks/m4-pro-convex-contacts-2026-09-01.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..05672d5529e3eb2f6c5a786499ae36080e05a617
+index 0000000..05672d5
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-convex-contacts-2026-09-01.md
 @@ -0,0 +1,56 @@
@@ -2497,7 +2500,7 @@ index 0000000000000000000000000000000000000000..05672d5529e3eb2f6c5a786499ae3608
 +```
 diff --git a/docs/benchmarks/m4-pro-deferred-cpu-manifolds-2026-09-03.md b/docs/benchmarks/m4-pro-deferred-cpu-manifolds-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..812a00ae8f8310796702cf566829767d748af2ce
+index 0000000..812a00a
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-deferred-cpu-manifolds-2026-09-03.md
 @@ -0,0 +1,87 @@
@@ -2590,7 +2593,7 @@ index 0000000000000000000000000000000000000000..812a00ae8f8310796702cf566829767d
 +  this macOS ASan run.
 diff --git a/docs/benchmarks/m4-pro-device-contact-prepare-refresh-2026-09-02.md b/docs/benchmarks/m4-pro-device-contact-prepare-refresh-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..4deae556b09c423c4450f9a4f2742e56aa478b7f
+index 0000000..4deae55
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-device-contact-prepare-refresh-2026-09-02.md
 @@ -0,0 +1,62 @@
@@ -2658,7 +2661,7 @@ index 0000000000000000000000000000000000000000..4deae556b09c423c4450f9a4f2742e56
 +compact shared result stream.
 diff --git a/docs/benchmarks/m4-pro-device-transform-registry-2026-09-02.md b/docs/benchmarks/m4-pro-device-transform-registry-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..4f48118412e90de959e8a413e519e51349c24e44
+index 0000000..4f48118
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-device-transform-registry-2026-09-02.md
 @@ -0,0 +1,52 @@
@@ -2716,7 +2719,7 @@ index 0000000000000000000000000000000000000000..4f48118412e90de959e8a413e519e513
 +and fails closed to a full upload after public mutation.
 diff --git a/docs/benchmarks/m4-pro-distance-joints-2026-09-01.md b/docs/benchmarks/m4-pro-distance-joints-2026-09-01.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..b4d33af5e58213c3354b3d92902a9941412bb223
+index 0000000..b4d33af
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-distance-joints-2026-09-01.md
 @@ -0,0 +1,49 @@
@@ -2771,7 +2774,7 @@ index 0000000000000000000000000000000000000000..b4d33af5e58213c3354b3d92902a9941
 +```
 diff --git a/docs/benchmarks/m4-pro-final-pair-planning-2026-09-03.md b/docs/benchmarks/m4-pro-final-pair-planning-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..d0669968c6a54e67ba22f5fdc635ae8512f1e68b
+index 0000000..d066996
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-final-pair-planning-2026-09-03.md
 @@ -0,0 +1,63 @@
@@ -2840,7 +2843,7 @@ index 0000000000000000000000000000000000000000..d0669968c6a54e67ba22f5fdc635ae85
 +No PDF artifacts were created or modified for this increment.
 diff --git a/docs/benchmarks/m4-pro-finalization-2026-09-02.md b/docs/benchmarks/m4-pro-finalization-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..df5b1b56a9214fc99b0be3e98c583c4421d7d857
+index 0000000..df5b1b5
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-finalization-2026-09-02.md
 @@ -0,0 +1,47 @@
@@ -2893,7 +2896,7 @@ index 0000000000000000000000000000000000000000..df5b1b56a9214fc99b0be3e98c583c44
 +```
 diff --git a/docs/benchmarks/m4-pro-finalization-readback-bypass-2026-09-02.md b/docs/benchmarks/m4-pro-finalization-readback-bypass-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..121c3c6c0ecf975c8b6d82fd8607b11145322906
+index 0000000..121c3c6
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-finalization-readback-bypass-2026-09-02.md
 @@ -0,0 +1,47 @@
@@ -2946,7 +2949,7 @@ index 0000000000000000000000000000000000000000..121c3c6c0ecf975c8b6d82fd8607b111
 +bookkeeping boundary explicit.
 diff --git a/docs/benchmarks/m4-pro-finalization-shape-traversal-bypass-2026-09-02.md b/docs/benchmarks/m4-pro-finalization-shape-traversal-bypass-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..30c72b4276cb07d8e1fb6f01d98a51c267774450
+index 0000000..30c72b4
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-finalization-shape-traversal-bypass-2026-09-02.md
 @@ -0,0 +1,46 @@
@@ -2998,7 +3001,7 @@ index 0000000000000000000000000000000000000000..30c72b4276cb07d8e1fb6f01d98a51c2
 +narrow-phase consumer while retaining the CPU public-transform mirror.
 diff --git a/docs/benchmarks/m4-pro-full-contact-residency-2026-09-03.md b/docs/benchmarks/m4-pro-full-contact-residency-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..58d35d785cdba242e24d4ebce9151baf98b48418
+index 0000000..58d35d7
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-full-contact-residency-2026-09-03.md
 @@ -0,0 +1,80 @@
@@ -3084,7 +3087,7 @@ index 0000000000000000000000000000000000000000..58d35d785cdba242e24d4ebce9151baf
 +warm and measured Metal step. A quiet-host matrix remains pending.
 diff --git a/docs/benchmarks/m4-pro-fused-integration-2026-09-01.md b/docs/benchmarks/m4-pro-fused-integration-2026-09-01.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..3c599bda2c401616a89372291e3c56da0b36d864
+index 0000000..3c599bd
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-fused-integration-2026-09-01.md
 @@ -0,0 +1,66 @@
@@ -3156,7 +3159,7 @@ index 0000000000000000000000000000000000000000..3c599bda2c401616a89372291e3c56da
 +```
 diff --git a/docs/benchmarks/m4-pro-hit-event-bitset-residency-2026-09-02.md b/docs/benchmarks/m4-pro-hit-event-bitset-residency-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..cb88ed2dd3b2b68236bce4f9e5b73febb28a9e41
+index 0000000..cb88ed2
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-hit-event-bitset-residency-2026-09-02.md
 @@ -0,0 +1,53 @@
@@ -3215,7 +3218,7 @@ index 0000000000000000000000000000000000000000..cb88ed2dd3b2b68236bce4f9e5b73feb
 +body/island finalization, and the remaining event/topology exceptions.
 diff --git a/docs/benchmarks/m4-pro-hull-sphere-narrow-phase-2026-09-02.md b/docs/benchmarks/m4-pro-hull-sphere-narrow-phase-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..2cb0b15d33f6e56730b7b4c2cbff94df93f203aa
+index 0000000..2cb0b15
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-hull-sphere-narrow-phase-2026-09-02.md
 @@ -0,0 +1,55 @@
@@ -3274,9 +3277,58 @@ index 0000000000000000000000000000000000000000..2cb0b15d33f6e56730b7b4c2cbff94df
 +revision-stable dispatches. Body transforms and manifold results still need
 +resident ownership before the remaining CPU packing and result streams can
 +disappear.
+diff --git a/docs/benchmarks/m4-pro-indexed-contact-topology-2026-09-03.md b/docs/benchmarks/m4-pro-indexed-contact-topology-2026-09-03.md
+new file mode 100644
+index 0000000..5eb8632
+--- /dev/null
++++ b/docs/benchmarks/m4-pro-indexed-contact-topology-2026-09-03.md
+@@ -0,0 +1,43 @@
++# M4 Pro indexed cold-contact topology — 2026-09-03
++
++This checkpoint replaces the compact 16-byte cold first-touch transition stream
++with an 8-byte contact-ID-indexed table. Metal clears the table with a blit in
++the same command buffer and scatters `{generation, pointCount}` directly into
++the canonical contact slot. A complete event-free cold batch is validated
++before mutation and committed once in ascending contact-ID order.
++
++The direct commit retains Box3D's existing `b3LinkContact`, greedy graph color,
++and awake-set mutation semantics. It removes every per-worker contact-state
++bitset clear, the worker-bitset union, and the second serial set-bit traversal.
++Mixed or unsupported batches retain the original CPU exception and fallback
++path. Recycled creation input order `2,1,0` still produces graph order `0,1,2`.
++
++## Whole-world cold result
++
++Apple M4 Pro, 12 CPU cores, 16 GPU cores, 24 GB, eight Box3D workers, Release,
++single precision, spheres, four substeps, one cold step per independently
++created world. Three sequential trials were taken at each size; medians are
++wall-clock `b3World_Step` times.
++
++| Contacts | Previous GPU median | Indexed/direct median | Change | Shared topology bytes | Direct topology CPU median |
++|---:|---:|---:|---:|---:|---:|
++| 131,072 | 86.685 ms | 84.335 ms | -2.7% | 1,048,576 | 7.995 ms |
++| 262,144 | 164.411 ms | 158.536 ms | -3.6% | 2,097,152 | 15.504 ms |
++
++Each measured row reports zero CPU collision contacts, zero manifold-exception
++bytes, zero contact-state-bitset bytes, and a direct-commit count equal to the
++contact count. The shared topology boundary is half its previous size. The
++explicit CPU timing also shows the next bottleneck: island and graph mutation
++still scale linearly and should move behind a device-resident topology epoch.
++
++## Validation
++
++- Float and double/VF64 warning-as-error Metal suites pass.
++- Exact CPU/GPU pair, graph-color, island, and recycled-ID ordering checks pass.
++- The double build uses the vendored exact IEEE-754 Metal implementation from
++  VF64-metal commit `729021777455da72db8809d9ef1269c677d88b3f`.
++- The complete CPU Release suite and full Metal AddressSanitizer suite pass.
++- Float and double/VF64 Metal UndefinedBehaviorSanitizer suites pass with
++  recovery disabled.
++
++No PDF artifact is generated or modified by this checkpoint.
 diff --git a/docs/benchmarks/m4-pro-joint-pair-registry-2026-09-03.md b/docs/benchmarks/m4-pro-joint-pair-registry-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..2847b024c07b7a13c59be9de13fcbe94270c93f1
+index 0000000..2847b02
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-joint-pair-registry-2026-09-03.md
 @@ -0,0 +1,55 @@
@@ -3337,7 +3389,7 @@ index 0000000000000000000000000000000000000000..2847b024c07b7a13c59be9de13fcbe94
 +not an attribution of the timing difference to the joint registry.
 diff --git a/docs/benchmarks/m4-pro-lazy-body-state-sync-2026-09-03.md b/docs/benchmarks/m4-pro-lazy-body-state-sync-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..0e1f8d8539d017a5c850f40567673fb47d26aa92
+index 0000000..0e1f8d8
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-lazy-body-state-sync-2026-09-03.md
 @@ -0,0 +1,58 @@
@@ -3401,7 +3453,7 @@ index 0000000000000000000000000000000000000000..0e1f8d8539d017a5c850f40567673fb4
 +double/VF64 UndefinedBehaviorSanitizer configurations.
 diff --git a/docs/benchmarks/m4-pro-lazy-contact-impulse-sync-2026-09-02.md b/docs/benchmarks/m4-pro-lazy-contact-impulse-sync-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..43a2451519c3a14fd9454c910a7cbb5ac28a0d7b
+index 0000000..43a2451
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-lazy-contact-impulse-sync-2026-09-02.md
 @@ -0,0 +1,45 @@
@@ -3452,7 +3504,7 @@ index 0000000000000000000000000000000000000000..43a2451519c3a14fd9454c910a7cbb5a
 +published as performance evidence.
 diff --git a/docs/benchmarks/m4-pro-manifold-finalization-2026-09-02.md b/docs/benchmarks/m4-pro-manifold-finalization-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..a0cfc03b6f823dc24eaa5422d76272f26d9715af
+index 0000000..a0cfc03
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-manifold-finalization-2026-09-02.md
 @@ -0,0 +1,42 @@
@@ -3500,7 +3552,7 @@ index 0000000000000000000000000000000000000000..a0cfc03b6f823dc24eaa5422d76272f2
 +establishes that private address space while retaining the compact CPU path.
 diff --git a/docs/benchmarks/m4-pro-mesh-contacts-2026-09-01.md b/docs/benchmarks/m4-pro-mesh-contacts-2026-09-01.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..4daca2b25eaa446adedd56370c904c9df3538ba4
+index 0000000..4daca2b
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-mesh-contacts-2026-09-01.md
 @@ -0,0 +1,45 @@
@@ -3551,7 +3603,7 @@ index 0000000000000000000000000000000000000000..4daca2b25eaa446adedd56370c904c9d
 +```
 diff --git a/docs/benchmarks/m4-pro-pair-generation-2026-09-02.md b/docs/benchmarks/m4-pro-pair-generation-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..697777cbcbf8d6faf00fdd1bfec14560926a82a7
+index 0000000..697777c
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-pair-generation-2026-09-02.md
 @@ -0,0 +1,54 @@
@@ -3611,7 +3663,7 @@ index 0000000000000000000000000000000000000000..697777cbcbf8d6faf00fdd1bfec14560
 +```
 diff --git a/docs/benchmarks/m4-pro-pair-prefix-2026-09-02.md b/docs/benchmarks/m4-pro-pair-prefix-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..50d0c68f802039e9a57f24c914f7ac4ea7878708
+index 0000000..50d0c68
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-pair-prefix-2026-09-02.md
 @@ -0,0 +1,68 @@
@@ -3685,7 +3737,7 @@ index 0000000000000000000000000000000000000000..50d0c68f802039e9a57f24c914f7ac4e
 +CPU, GPU, and MPS workloads and recording alternating pairs-on/pairs-off runs.
 diff --git a/docs/benchmarks/m4-pro-parallel-joints-2026-09-02.md b/docs/benchmarks/m4-pro-parallel-joints-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..6b91226b57e1eb5ecb43903518b82c27d36170c7
+index 0000000..6b91226
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-parallel-joints-2026-09-02.md
 @@ -0,0 +1,53 @@
@@ -3744,7 +3796,7 @@ index 0000000000000000000000000000000000000000..6b91226b57e1eb5ecb43903518b82c27
 +```
 diff --git a/docs/benchmarks/m4-pro-position-integration-2026-09-01.md b/docs/benchmarks/m4-pro-position-integration-2026-09-01.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..ba2190a28fc8d68a77ee0a7d0e4776536bc63874
+index 0000000..ba2190a
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-position-integration-2026-09-01.md
 @@ -0,0 +1,45 @@
@@ -3795,7 +3847,7 @@ index 0000000000000000000000000000000000000000..ba2190a28fc8d68a77ee0a7d0e477653
 +```
 diff --git a/docs/benchmarks/m4-pro-private-finalization-authority-2026-09-02.md b/docs/benchmarks/m4-pro-private-finalization-authority-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..f40a17400a20bb52f8bcb5722a0712e0f46b1c96
+index 0000000..f40a174
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-private-finalization-authority-2026-09-02.md
 @@ -0,0 +1,41 @@
@@ -3842,7 +3894,7 @@ index 0000000000000000000000000000000000000000..f40a17400a20bb52f8bcb5722a0712e0
 +while retaining the CPU body pass and the readback-required sleep path.
 diff --git a/docs/benchmarks/m4-pro-private-first-touch-2026-09-03.md b/docs/benchmarks/m4-pro-private-first-touch-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..1c25cbe354a6abe485b5fa43af6ebc999fbd8cd5
+index 0000000..1c25cbe
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-private-first-touch-2026-09-03.md
 @@ -0,0 +1,86 @@
@@ -3934,7 +3986,7 @@ index 0000000000000000000000000000000000000000..1c25cbe354a6abe485b5fa43af6ebc99
 +- Hit-event contacts retain one full 240-byte exception.
 diff --git a/docs/benchmarks/m4-pro-private-manifold-results-2026-09-02.md b/docs/benchmarks/m4-pro-private-manifold-results-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..f9a8282058c9f36de1515a02c8a4ded6f980b956
+index 0000000..f9a8282
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-private-manifold-results-2026-09-02.md
 @@ -0,0 +1,51 @@
@@ -3991,7 +4043,7 @@ index 0000000000000000000000000000000000000000..f9a8282058c9f36de1515a02c8a4ded6
 +fuses world-axis orientation into the compact scatter.
 diff --git a/docs/benchmarks/m4-pro-private-pair-scratch-2026-09-03.md b/docs/benchmarks/m4-pro-private-pair-scratch-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..063e43fd56065e6a61028f4782d559d87cb9c225
+index 0000000..063e43f
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-private-pair-scratch-2026-09-03.md
 @@ -0,0 +1,65 @@
@@ -4062,7 +4114,7 @@ index 0000000000000000000000000000000000000000..063e43fd56065e6a61028f4782d559d8
 +scales while exact topology and the 1/2 MiB seed boundary remain.
 diff --git a/docs/benchmarks/m4-pro-private-pair-tree-2026-09-03.md b/docs/benchmarks/m4-pro-private-pair-tree-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..8df0dbb0d229b9c965fc4cdca3ef0c8651481b12
+index 0000000..8df0dbb
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-private-pair-tree-2026-09-03.md
 @@ -0,0 +1,63 @@
@@ -4131,7 +4183,7 @@ index 0000000000000000000000000000000000000000..8df0dbb0d229b9c965fc4cdca3ef0c86
 +boundary but does not claim to solve that later pipeline cost.
 diff --git a/docs/benchmarks/m4-pro-private-shape-results-2026-09-02.md b/docs/benchmarks/m4-pro-private-shape-results-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..96eff9c159b0c1882113887c2f49f4e70b8ad907
+index 0000000..96eff9c
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-private-shape-results-2026-09-02.md
 @@ -0,0 +1,50 @@
@@ -4187,7 +4239,7 @@ index 0000000000000000000000000000000000000000..96eff9c159b0c1882113887c2f49f4e7
 +shape count, and complete `b3World_Step` time.
 diff --git a/docs/benchmarks/m4-pro-resident-body-transforms-2026-09-02.md b/docs/benchmarks/m4-pro-resident-body-transforms-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..796daea742f0dc3f7cd4faa84f4b82125608ab2d
+index 0000000..796daea
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-body-transforms-2026-09-02.md
 @@ -0,0 +1,56 @@
@@ -4249,7 +4301,7 @@ index 0000000000000000000000000000000000000000..796daea742f0dc3f7cd4faa84f4b8212
 +moves full results to private storage and returns only active ordered records.
 diff --git a/docs/benchmarks/m4-pro-resident-collision-bypass-2026-09-02.md b/docs/benchmarks/m4-pro-resident-collision-bypass-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..d76baecc94ba70ef6b149350d5b3b3c2e9ae5477
+index 0000000..d76baec
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-collision-bypass-2026-09-02.md
 @@ -0,0 +1,70 @@
@@ -4325,7 +4377,7 @@ index 0000000000000000000000000000000000000000..d76baecc94ba70ef6b149350d5b3b3c2
 +stream and CPU traversal.
 diff --git a/docs/benchmarks/m4-pro-resident-contact-preparation-2026-09-02.md b/docs/benchmarks/m4-pro-resident-contact-preparation-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..19b0a6e1f14a1d0c26e59e2a29a3bad0baf97cb6
+index 0000000..19b0a6e
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-contact-preparation-2026-09-02.md
 @@ -0,0 +1,56 @@
@@ -4387,7 +4439,7 @@ index 0000000000000000000000000000000000000000..19b0a6e1f14a1d0c26e59e2a29a3bad0
 +quiet enough for a defensible end-to-end comparison.
 diff --git a/docs/benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md b/docs/benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..f5b70dc105c96b912ecc1c333303e5927bafe6c0
+index 0000000..f5b70dc
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-contact-schedule-2026-09-02.md
 @@ -0,0 +1,32 @@
@@ -4425,7 +4477,7 @@ index 0000000000000000000000000000000000000000..f5b70dc105c96b912ecc1c333303e592
 +change from compact impulse extraction and the remaining CPU persistence work.
 diff --git a/docs/benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md b/docs/benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..5217950a7409148be6dfab70dd70cfe8f44c8b95
+index 0000000..5217950
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-existing-pairs-2026-09-02.md
 @@ -0,0 +1,44 @@
@@ -4475,7 +4527,7 @@ index 0000000000000000000000000000000000000000..5217950a7409148be6dfab70dd70cfe8
 +explicit CPU exception paths.
 diff --git a/docs/benchmarks/m4-pro-resident-hull-geometry-2026-09-02.md b/docs/benchmarks/m4-pro-resident-hull-geometry-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..4559b3799d3b34694b416cb9a18f8a43cfb47169
+index 0000000..4559b37
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-hull-geometry-2026-09-02.md
 @@ -0,0 +1,68 @@
@@ -4549,7 +4601,7 @@ index 0000000000000000000000000000000000000000..4559b3799d3b34694b416cb9a18f8a43
 +results remain the next ownership boundaries.
 diff --git a/docs/benchmarks/m4-pro-resident-manifold-table-2026-09-02.md b/docs/benchmarks/m4-pro-resident-manifold-table-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..5e51b6f44295fd7209ce8523867a5f1ed09c96c4
+index 0000000..5e51b6f
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-manifold-table-2026-09-02.md
 @@ -0,0 +1,49 @@
@@ -4604,7 +4656,7 @@ index 0000000000000000000000000000000000000000..5e51b6f44295fd7209ce8523867a5f1e
 +transitions, unsupported geometry, and other CPU exceptions.
 diff --git a/docs/benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md b/docs/benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..582587a7e59f3d9e6cf36a4a6ebc843857ae633a
+index 0000000..582587a
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-pair-filtering-2026-09-02.md
 @@ -0,0 +1,54 @@
@@ -4664,7 +4716,7 @@ index 0000000000000000000000000000000000000000..582587a7e59f3d9e6cf36a4a6ebc8438
 +The remaining boundary is incremental contact creation and narrow phase.
 diff --git a/docs/benchmarks/m4-pro-resident-pair-moves-2026-09-03.md b/docs/benchmarks/m4-pro-resident-pair-moves-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..6f1c183298eb047ec9979f827ad78199b68ce46e
+index 0000000..6f1c183
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-pair-moves-2026-09-03.md
 @@ -0,0 +1,81 @@
@@ -4751,7 +4803,7 @@ index 0000000000000000000000000000000000000000..6f1c183298eb047ec9979f827ad78199
 +No PDF artifacts were created or modified for this increment.
 diff --git a/docs/benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md b/docs/benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..3d8a6863fcd68cbe47270f40e54044d2eae201dd
+index 0000000..3d8a686
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-refit-vf64-2026-09-02.md
 @@ -0,0 +1,59 @@
@@ -4816,7 +4868,7 @@ index 0000000000000000000000000000000000000000..3d8a6863fcd68cbe47270f40e54044d2
 +not simply deleting the readback.
 diff --git a/docs/benchmarks/m4-pro-resident-sat-cache-2026-09-03.md b/docs/benchmarks/m4-pro-resident-sat-cache-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..37f45e78822c464a3cc72b8dbb1e6cc538da1869
+index 0000000..37f45e7
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-sat-cache-2026-09-03.md
 @@ -0,0 +1,47 @@
@@ -4869,7 +4921,7 @@ index 0000000000000000000000000000000000000000..37f45e78822c464a3cc72b8dbb1e6cc5
 +No PDF artifacts were regenerated or modified for this checkpoint.
 diff --git a/docs/benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md b/docs/benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..c2d3a87fd74b43be6a96c9e5ebf305b8f4ddbc72
+index 0000000..c2d3a87
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-shape-geometry-2026-09-02.md
 @@ -0,0 +1,57 @@
@@ -4932,7 +4984,7 @@ index 0000000000000000000000000000000000000000..c2d3a87fd74b43be6a96c9e5ebf305b8
 +moves dense outputs to private storage and returns only active ordered records.
 diff --git a/docs/benchmarks/m4-pro-resident-solver-ownership-2026-09-02.md b/docs/benchmarks/m4-pro-resident-solver-ownership-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..7b3a962cb86fef164c5ad61b0f82e2958eb1d29d
+index 0000000..7b3a962
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-solver-ownership-2026-09-02.md
 @@ -0,0 +1,31 @@
@@ -4969,7 +5021,7 @@ index 0000000000000000000000000000000000000000..7b3a962cb86fef164c5ad61b0f82e295
 +plus the repository CPU and sanitizer gates recorded with the source checkpoint.
 diff --git a/docs/benchmarks/m4-pro-resident-warm-start-2026-09-02.md b/docs/benchmarks/m4-pro-resident-warm-start-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..4d45633d6a899a782193c96212944a1cd651a91e
+index 0000000..4d45633
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-resident-warm-start-2026-09-02.md
 @@ -0,0 +1,33 @@
@@ -5008,7 +5060,7 @@ index 0000000000000000000000000000000000000000..4d45633d6a899a782193c96212944a1c
 +loaded-host whole-world speedup is claimed.
 diff --git a/docs/benchmarks/m4-pro-shape-compaction-2026-09-02.md b/docs/benchmarks/m4-pro-shape-compaction-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..f10988c8cfc4cf021b4ec54e31cf065bf854a22b
+index 0000000..f10988c
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-shape-compaction-2026-09-02.md
 @@ -0,0 +1,46 @@
@@ -5060,7 +5112,7 @@ index 0000000000000000000000000000000000000000..f10988c8cfc4cf021b4ec54e31cf065b
 +warm processes and report the compacted fraction for each workload.
 diff --git a/docs/benchmarks/m4-pro-shape-finalization-2026-09-02.md b/docs/benchmarks/m4-pro-shape-finalization-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..21b7859282554cca468219f6b0044e09da565ece
+index 0000000..21b7859
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-shape-finalization-2026-09-02.md
 @@ -0,0 +1,52 @@
@@ -5118,7 +5170,7 @@ index 0000000000000000000000000000000000000000..21b7859282554cca468219f6b0044e09
 +```
 diff --git a/docs/benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md b/docs/benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..8894732781f2c0e353c4813f0ddd0c8dc690dda7
+index 0000000..8894732
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-shape-input-order-revision-2026-09-03.md
 @@ -0,0 +1,55 @@
@@ -5179,7 +5231,7 @@ index 0000000000000000000000000000000000000000..8894732781f2c0e353c4813f0ddd0c8d
 +difference to this change. A quiet-host matrix remains required.
 diff --git a/docs/benchmarks/m4-pro-shape-input-registry-2026-09-02.md b/docs/benchmarks/m4-pro-shape-input-registry-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..9e757a77d32c34c4e9f3cebdb630b2f75f74d261
+index 0000000..9e757a7
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-shape-input-registry-2026-09-02.md
 @@ -0,0 +1,49 @@
@@ -5234,7 +5286,7 @@ index 0000000000000000000000000000000000000000..9e757a77d32c34c4e9f3cebdb630b2f7
 +contact creation/narrow-phase residency.
 diff --git a/docs/benchmarks/m4-pro-sphere-narrow-phase-2026-09-02.md b/docs/benchmarks/m4-pro-sphere-narrow-phase-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..1e74458571cada9e4d648bbce49dffb5b69260bb
+index 0000000..1e74458
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-sphere-narrow-phase-2026-09-02.md
 @@ -0,0 +1,50 @@
@@ -5290,7 +5342,7 @@ index 0000000000000000000000000000000000000000..1e74458571cada9e4d648bbce49dffb5
 +needed before the shared narrow-phase streams can disappear.
 diff --git a/docs/benchmarks/m4-pro-vf64-move-events-2026-09-02.md b/docs/benchmarks/m4-pro-vf64-move-events-2026-09-02.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..bf16de3781ffb82826eaa081c796ac3f252e2ab7
+index 0000000..bf16de3
 --- /dev/null
 +++ b/docs/benchmarks/m4-pro-vf64-move-events-2026-09-02.md
 @@ -0,0 +1,54 @@
@@ -5350,7 +5402,7 @@ index 0000000000000000000000000000000000000000..bf16de3781ffb82826eaa081c796ac3f
 +before that traversal and state readback can disappear.
 diff --git a/docs/metal_architecture.md b/docs/metal_architecture.md
 new file mode 100644
-index 0000000000000000000000000000000000000000..1d84c043e0928bb750d3a96eaa0cdf7fcd2417c9
+index 0000000..2856f54
 --- /dev/null
 +++ b/docs/metal_architecture.md
 @@ -0,0 +1,665 @@
@@ -5845,7 +5897,7 @@ index 0000000000000000000000000000000000000000..1d84c043e0928bb750d3a96eaa0cdf7f
 +| Parallel joints | GPU-resident across all substeps |
 +| Filter, motor, prismatic, revolute, spherical, weld, or wheel joints; joint reaction-threshold events | CPU constraints plus GPU position stage |
 +| Broad phase | Experimental Metal leaf update, internal refit, private resident move-list consumption, stable traversal, private raw candidate scratch for ordinary worlds, exact blocked-joint body-pair rejection, residual-filter move compaction, and flat contact-seed emission. Zero-exception plans expose only the summary and seed stream; custom/compound worlds, dense materialization, and deterministic contact topology creation retain explicit CPU-visible paths |
-+| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Completely cold ordinary plans expand a 16-byte CPU identity stream into private 40-byte inputs, then return only a 16-byte touching transition while the 240-byte manifold remains private. Ordered island/graph mutation remains CPU-owned. Ordinary resident contacts need no CPU manifold allocation; lazy CPU mirrors materialize only at explicit observation, sleep, disable, or fallback boundaries. CPU retains non-ordinary/revision packing, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
++| Narrow phase and manifolds | Sphere-sphere, capsule-sphere, capsule-capsule, bounded compact hull-sphere geometry, and canonical box pairs are finalized on Metal. Box hulls may be dynamic-dynamic and have unequal extents, but each hull is bounded to a 16:1 maximum/minimum extent ratio. The box path includes face SAT/clipping/four-point reduction and Gauss-valid edge contacts. Stable touching contacts emit no shared manifold record, run no CPU collision worker, reuse the resident input/order registry, and bypass per-contact solver coverage checks. Completely cold ordinary plans expand a 16-byte CPU identity stream into private 40-byte inputs, then expose an 8-byte contact-ID-indexed topology slot while the 240-byte manifold remains private. A complete event-free batch commits in canonical contact-ID order without worker state-bitset clear, union, or a second serial scan. Ordered island/graph mutation remains CPU-owned and is now timed explicitly. Ordinary resident contacts need no CPU manifold allocation; lazy CPU mirrors materialize only at explicit observation, sleep, disable, or fallback boundaries. CPU retains non-ordinary/revision packing, callbacks, recycling, and state transitions. High-aspect/speculative hull-sphere, high-aspect boxes, other hull pairs, meshes, height fields, and compounds remain CPU |
 +| Contact preparation and impulse storage | Complete colored resident convex sets are prepared on Metal. The contact-ID lane schedule remains resident across unchanged constraint-graph revisions. After restitution, Metal extracts a 112-byte result per active contact. The all-contact CPU store is bypassed; hit-enabled exceptions and explicit public/debug/snapshot consumers synchronize individual records. Mixed/recycled/callback/overflow sets remain CPU |
 +| Body and awake-shape finalization | Experimental Metal kernels; private resident bounds feed tree refit and enlarged shapes are stably compacted. Public queries selectively stage requested records; route changes synchronize all bounds. CPU retains CCD/topology |
 +| CCD, sleeping/island mutation, events, recording, queries | CPU |
@@ -6020,7 +6072,7 @@ index 0000000000000000000000000000000000000000..1d84c043e0928bb750d3a96eaa0cdf7f
 +generation are the next producer to use the widened ABI; those pairs continue
 +through the CPU oracle until that differential test gate passes.
 diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
-index 2e8259039a9ed575b8b0e59c1ea7064245517b42..cd49acff561bfc6d9b781415209a55603fa28fef 100644
+index 2e82590..cd49acf 100644
 --- a/include/box3d/box3d.h
 +++ b/include/box3d/box3d.h
 @@ -7,6 +7,9 @@
@@ -6035,10 +6087,10 @@ index 2e8259039a9ed575b8b0e59c1ea7064245517b42..cd49acff561bfc6d9b781415209a5560
  #include <stdbool.h>
 diff --git a/include/box3d/metal.h b/include/box3d/metal.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..6c73037949259fc6acab27e302503c310cbaeae5
+index 0000000..4b3f60b
 --- /dev/null
 +++ b/include/box3d/metal.h
-@@ -0,0 +1,289 @@
+@@ -0,0 +1,294 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -6110,10 +6162,10 @@ index 0000000000000000000000000000000000000000..6c73037949259fc6acab27e302503c31
 +	uint64_t lastContactInputBootstrapBytes;
 +	/// Logical bytes in the authoritative private contact-input table.
 +	uint64_t lastContactInputPrivateBytes;
-+	/// Cold touching contacts represented by the compact topology-transition
-+	/// stream on the latest Metal narrow phase.
++	/// Cold touching contacts represented by the contact-id-indexed topology
++	/// table on the latest Metal narrow phase.
 +	uint64_t lastContactTransitionCount;
-+	/// CPU-visible bytes in the compact first-touch transition stream.
++	/// CPU-visible bytes in the 8-byte-per-slot first-touch topology table.
 +	uint64_t lastContactTransitionBytes;
 +	/// CPU-visible bytes in full manifold exception records on the latest step.
 +	uint64_t lastContactExceptionBytes;
@@ -6129,6 +6181,11 @@ index 0000000000000000000000000000000000000000..6c73037949259fc6acab27e302503c31
 +	/// Contact-state bitset bytes cleared on the latest collision phase.
 +	/// A zero-exception resident phase reports zero.
 +	uint64_t lastContactStateBitSetBytes;
++	/// Cold touching contacts committed directly in canonical contact-id order,
++	/// bypassing the contact-state bitset clear, union, and second serial scan.
++	uint64_t contactTopologyDirectCommitCount;
++	/// CPU time spent on the latest direct cold topology commit.
++	double lastContactTopologyCpuMilliseconds;
 +	/// Successful resident solver phases that skipped all per-worker hit-event
 +	/// bitset clears because the current compact event-ID list was empty.
 +	uint64_t contactHitEventBitSetClearBypassCount;
@@ -6329,7 +6386,7 @@ index 0000000000000000000000000000000000000000..6c73037949259fc6acab27e302503c31
 +
 +/** @} */
 diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
-index 941c6fba77d4e465f7d831519241c21484f11dbe..f4a6813dd9dcbaf6b1af070ad78e4b7e8be4deb3 100644
+index 941c6fb..f4a6813 100644
 --- a/src/CMakeLists.txt
 +++ b/src/CMakeLists.txt
 @@ -101,9 +101,28 @@ set(BOX3D_INCLUDE_FILES
@@ -6374,7 +6431,7 @@ index 941c6fba77d4e465f7d831519241c21484f11dbe..f4a6813dd9dcbaf6b1af070ad78e4b7e
  	message(STATUS "Box3D on Emscripten")
  	# SSE2/wasm SIMD flags are set directory-wide in the top-level CMakeLists so the
 diff --git a/src/body.c b/src/body.c
-index f517e7b41a6656fcba1c6a3956bd9f1341d06636..38bafb00dde5192598722d6098520ba0a92cb593 100644
+index f517e7b..38bafb0 100644
 --- a/src/body.c
 +++ b/src/body.c
 @@ -14,6 +14,9 @@
@@ -6765,7 +6822,7 @@ index f517e7b41a6656fcba1c6a3956bd9f1341d06636..38bafb00dde5192598722d6098520ba0
  
  b3WorldId b3Body_GetWorld( b3BodyId bodyId )
 diff --git a/src/broad_phase.c b/src/broad_phase.c
-index a369ca62a94d3454fb21857d98ccba4790b7b731..764249772dfb568d7972b0e6d66456e07529d91f 100644
+index a369ca6..7642497 100644
 --- a/src/broad_phase.c
 +++ b/src/broad_phase.c
 @@ -12,9 +12,21 @@
@@ -7296,7 +7353,7 @@ index a369ca62a94d3454fb21857d98ccba4790b7b731..764249772dfb568d7972b0e6d66456e0
  	b3ValidateSolverSets( world );
  
 diff --git a/src/broad_phase.h b/src/broad_phase.h
-index dcd626b3a420e6e2eecd472931c79527eebd0d1b..a3d47a3424160019ee3ebf0d825394f8377e992b 100644
+index dcd626b..a3d47a3 100644
 --- a/src/broad_phase.h
 +++ b/src/broad_phase.h
 @@ -27,6 +27,9 @@ typedef struct b3World b3World;
@@ -7326,7 +7383,7 @@ index dcd626b3a420e6e2eecd472931c79527eebd0d1b..a3d47a3424160019ee3ebf0d825394f8
  
  void b3ValidateBroadPhase( const b3BroadPhase* bp );
 diff --git a/src/constraint_graph.c b/src/constraint_graph.c
-index 9f06e9e4e841773ce780e37ebcaad741e1b3bd9a..dd0c770cd413980d58fbb23b05cfeab815d09e4e 100644
+index 9f06e9e..dd0c770 100644
 --- a/src/constraint_graph.c
 +++ b/src/constraint_graph.c
 @@ -43,6 +43,7 @@ void b3CreateGraph( b3ConstraintGraph* graph, int bodyCapacity )
@@ -7368,7 +7425,7 @@ index 9f06e9e4e841773ce780e37ebcaad741e1b3bd9a..dd0c770cd413980d58fbb23b05cfeab8
 +	graph->revision += 1;
  }
 diff --git a/src/constraint_graph.h b/src/constraint_graph.h
-index ab17e9ac8179cda237d9fee946bcc29dc02e5e23..7da9347642f10ff9744af600196930583eca3d4d 100644
+index ab17e9a..7da9347 100644
 --- a/src/constraint_graph.h
 +++ b/src/constraint_graph.h
 @@ -62,6 +62,10 @@ typedef struct b3GraphColor
@@ -7383,7 +7440,7 @@ index ab17e9ac8179cda237d9fee946bcc29dc02e5e23..7da9347642f10ff9744af60019693058
  	b3GraphColor colors[B3_GRAPH_COLOR_COUNT];
  } b3ConstraintGraph;
 diff --git a/src/contact.c b/src/contact.c
-index 1506bdbe563f73734e98873cf1c8e66546f3167a..3cf094ab19c5bb7f84553f4ea4d3d76c8fff9798 100644
+index 1506bdb..3cf094a 100644
 --- a/src/contact.c
 +++ b/src/contact.c
 @@ -12,6 +12,9 @@
@@ -7846,7 +7903,7 @@ index 1506bdbe563f73734e98873cf1c8e66546f3167a..3cf094ab19c5bb7f84553f4ea4d3d76c
  			b3Manifold* manifold = contact->manifolds + i;
  			for ( int j = 0; j < manifold->pointCount; ++j )
 diff --git a/src/contact.h b/src/contact.h
-index ad9fa74d6071b700b51b33efff2f2e1f3df6180d..e64588428e23a0c91043892b9eb5e5e5bb904383 100644
+index ad9fa74..e645884 100644
 --- a/src/contact.h
 +++ b/src/contact.h
 @@ -70,6 +70,17 @@ enum b3ContactFlags
@@ -7924,7 +7981,7 @@ index ad9fa74d6071b700b51b33efff2f2e1f3df6180d..e64588428e23a0c91043892b9eb5e5e5
  bool b3ComputeMeshManifolds( b3World* world, int workerIndex, b3Contact* contact, const b3Shape* shapeA, const int* materialMap,
  							 b3WorldTransform xfA, const b3Shape* shapeB, b3WorldTransform xfB, bool isFast, b3Arena arena );
 diff --git a/src/contact_solver.c b/src/contact_solver.c
-index 48de409735c38bfe806ebee49eb9141229a3e114..3b9a9c17264b2d23308c176de2087fc6401a962e 100644
+index 48de409..3b9a9c1 100644
 --- a/src/contact_solver.c
 +++ b/src/contact_solver.c
 @@ -8,6 +8,7 @@
@@ -8215,7 +8272,7 @@ index 48de409735c38bfe806ebee49eb9141229a3e114..3b9a9c17264b2d23308c176de2087fc6
  				{
  					for ( int k = 0; k < pointCount; ++k )
 diff --git a/src/contact_solver.h b/src/contact_solver.h
-index d85f2331a52e6f3e488582e33de30dd7a13e536f..ffa6859a9bc069551962a92badf88da50697ee89 100644
+index d85f233..ffa6859 100644
 --- a/src/contact_solver.h
 +++ b/src/contact_solver.h
 @@ -4,8 +4,80 @@
@@ -8308,7 +8365,7 @@ index d85f2331a52e6f3e488582e33de30dd7a13e536f..ffa6859a9bc069551962a92badf88da5
  
  int b3GetWideContactConstraintByteCount( void );
 diff --git a/src/joint.c b/src/joint.c
-index f2d76c645e7e5ac564f769a502228213d23a1718..95b4ad841cb13c5a96f948b39c40c4afc7a14d6b 100644
+index f2d76c6..95b4ad8 100644
 --- a/src/joint.c
 +++ b/src/joint.c
 @@ -216,6 +216,9 @@ static b3JointPair b3CreateJoint( b3World* world, const b3JointDef* def, b3Joint
@@ -8343,10 +8400,10 @@ index f2d76c645e7e5ac564f769a502228213d23a1718..95b4ad841cb13c5a96f948b39c40c4af
  	b3Body* bodyB = b3Array_Get( world->bodies, joint->edges[1].bodyId );
 diff --git a/src/metal_backend.h b/src/metal_backend.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..cbbf40f2ffa0153351f53c23a9c8f930c67f6cdd
+index 0000000..ab794e0
 --- /dev/null
 +++ b/src/metal_backend.h
-@@ -0,0 +1,310 @@
+@@ -0,0 +1,308 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -8407,13 +8464,11 @@ index 0000000000000000000000000000000000000000..cbbf40f2ffa0153351f53c23a9c8f930
 +	uint32_t shapeIdB;
 +} b3MetalContactInputSeed;
 +
-+// Minimal CPU topology transition for a cold contact whose complete manifold
-+// and prepare input remain resident. Records are compacted in input order.
++// Contact-id-indexed topology transition slot for a cold contact whose complete
++// manifold and prepare input remain resident. A zero slot is inactive.
 +typedef struct b3MetalContactTransition
 +{
-+	uint32_t contactId;
 +	uint32_t contactGeneration;
-+	uint32_t inputIndex;
 +	uint32_t pointCount;
 +} b3MetalContactTransition;
 +
@@ -8659,10 +8714,10 @@ index 0000000000000000000000000000000000000000..cbbf40f2ffa0153351f53c23a9c8f930
 +void b3MetalInvalidateShapeInputCache( b3MetalContext* context );
 diff --git a/src/metal_backend.m b/src/metal_backend.m
 new file mode 100644
-index 0000000000000000000000000000000000000000..c2ef06ce63d159fbd334f8d8c9160fffb50bdf66
+index 0000000..d27b96b
 --- /dev/null
 +++ b/src/metal_backend.m
-@@ -0,0 +1,6861 @@
+@@ -0,0 +1,6887 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -9092,7 +9147,7 @@ index 0000000000000000000000000000000000000000..c2ef06ce63d159fbd334f8d8c9160fff
 +_Static_assert( sizeof( b3MetalPairCandidate ) == 16, "Metal pair-candidate ABI changed" );
 +_Static_assert( sizeof( b3MetalPairContactSeed ) == 8, "Metal pair-contact-seed ABI changed" );
 +_Static_assert( sizeof( b3MetalContactInputSeed ) == 16, "Metal contact-input-seed ABI changed" );
-+_Static_assert( sizeof( b3MetalContactTransition ) == 16, "Metal contact-transition ABI changed" );
++_Static_assert( sizeof( b3MetalContactTransition ) == 8, "Metal contact-transition ABI changed" );
 +_Static_assert( sizeof( b3MetalPairSummary ) == 32, "Metal pair-summary ABI changed" );
 +_Static_assert( sizeof( b3MetalPairBlock ) == 16, "Metal pair-block ABI changed" );
 +_Static_assert( sizeof( b3MetalManifoldBlock ) == 32, "Metal manifold-block ABI changed" );
@@ -9305,7 +9360,7 @@ index 0000000000000000000000000000000000000000..c2ef06ce63d159fbd334f8d8c9160fff
 +	"  uint eligible,shapeIdA,shapeIdB,contactId,contactGeneration,prepareEligible; int indexA,indexB; float satSeparation; uint satCache;\n"
 +	"};\n"
 +	"struct ContactInputSeed { uint contactId,generation,shapeIdA,shapeIdB; };\n"
-+	"struct ContactTransition { uint contactId,contactGeneration,inputIndex,pointCount; };\n"
++	"struct ContactTransition { uint contactGeneration,pointCount; };\n"
 +	"struct ContactInputBootstrapParams { uint count,contactCapacity,shapeCount,bodyCount; uint prepareEligible,p0,p1,p2; };\n"
 +	"struct BodyTransform { float qx,qy,qz,qw,px,py,pz; uint supported; ulong pxBits,pyBits,pzBits; int index; uint flags;\n"
 +	"  float localCenterX,localCenterY,localCenterZ,sleepVelocity; };\n"
@@ -10138,7 +10193,7 @@ index 0000000000000000000000000000000000000000..c2ef06ce63d159fbd334f8d8c9160fff
 +	"  const device ShapeGeometry* shapeGeometry [[buffer(4)]],const device BodyTransform* bodyTransforms [[buffer(5)]],\n"
 +	"  device ConvexManifoldResult* table [[buffer(6)]],const device ImpulseResult* previous [[buffer(7)]],\n"
 +	"  device PrepareInput* prepareTable [[buffer(8)]],device ContactTransition* transitions [[buffer(9)]],constant ManifoldCompactParams& p [[buffer(10)]],uint i [[thread_position_in_grid]]){\n"
-+	"  if(i>=p.contactCount)return;ConvexManifoldResult r=results[i];uint contactId=inputs[i].contactId;inputs[i].satSeparation=r.satSeparation;inputs[i].satCache=r.satCache;if(r.eligible==0u){if(p.p0!=0u||p.p1!=0u){uint output=blocks[i/256u].exceptionOffset+r.scanOffset;r.inputIndex=i;r.scanOffset=0u;r.contactId=contactId;compact[output]=r;}return;}ShapeGeometry geometryA=shapeGeometry[inputs[i].shapeIdA];\n"
++	"  if(i>=p.contactCount)return;ConvexManifoldResult r=results[i];uint contactId=inputs[i].contactId;if(p.p1!=0u){if(contactId>=p.p2)return;transitions[contactId]=ContactTransition{0u,0u};}inputs[i].satSeparation=r.satSeparation;inputs[i].satCache=r.satCache;if(r.eligible==0u){if(p.p0!=0u||p.p1!=0u){uint output=blocks[i/256u].exceptionOffset+r.scanOffset;r.inputIndex=i;r.scanOffset=0u;r.contactId=contactId;compact[output]=r;}return;}ShapeGeometry geometryA=shapeGeometry[inputs[i].shapeIdA];\n"
 +	"  ShapeGeometry geometryB=shapeGeometry[inputs[i].shapeIdB];BodyTransform transformA=bodyTransforms[geometryA.bodyId];\n"
 +	"  BodyTransform transformB=bodyTransforms[geometryB.bodyId];float4 q=float4(transformA.qx,transformA.qy,transformA.qz,transformA.qw);\n"
 +	"  float4 qb=float4(transformB.qx,transformB.qy,transformB.qz,transformB.qw);r.friction=sqrt(geometryA.friction*geometryB.friction);\n"
@@ -10181,7 +10236,7 @@ index 0000000000000000000000000000000000000000..c2ef06ce63d159fbd334f8d8c9160fff
 +	"    prep.friction=r.friction;prep.restitution=r.restitution;prep.rollingResistance=r.rollingResistance;prep.tangentVelocityX=r.tangentVelocityX;prep.tangentVelocityY=r.tangentVelocityY;prep.tangentVelocityZ=r.tangentVelocityZ;prep.contactGeneration=inputs[i].contactGeneration;\n"
 +	"    prep.points[0]=PreparePoint{r.p1x,r.p1y,r.p1z,r.separation1,r.anchorB1X,r.anchorB1Y,r.anchorB1Z,0.0f,r.feature1};prep.points[1]=PreparePoint{r.p2x,r.p2y,r.p2z,r.separation2,r.anchorB2X,r.anchorB2Y,r.anchorB2Z,0.0f,r.feature2};\n"
 +	"    prep.points[2]=PreparePoint{r.p3x,r.p3y,r.p3z,r.separation3,r.anchorB3X,r.anchorB3Y,r.anchorB3Z,0.0f,r.feature3};prep.points[3]=PreparePoint{r.p4x,r.p4y,r.p4z,r.separation4,r.anchorB4X,r.anchorB4Y,r.anchorB4Z,0.0f,r.feature4};prepareTable[contactId]=prep;inputs[i].prepareEligible|=2u;r.residentFlags|=2u;\n"
-+	"    uint output=blocks[i/256u].transitionOffset+r.contactId;transitions[output]=ContactTransition{contactId,inputs[i].contactGeneration,i,r.pointCount};}\n"
++	"    transitions[contactId]=ContactTransition{inputs[i].contactGeneration,r.pointCount};}\n"
 +	"  else if(p.p1!=0u){uint output=blocks[i/256u].exceptionOffset+r.scanOffset;r.inputIndex=i;r.scanOffset=0u;r.contactId=contactId;compact[output]=r;}\n"
 +	"  else if(p.p1==0u){uint stable=p.p0!=0u&&(inputs[i].prepareEligible&2u)!=0u&&(r.residentFlags&6u)==2u&&r.touching!=0u&&r.pointCount>0u&&r.pointCount<=4u;if(p.p0==0u||stable==0u){uint output=blocks[i/256u].exceptionOffset+r.scanOffset;r.inputIndex=i;r.scanOffset=0u;r.contactId=contactId;compact[output]=r;}}\n"
 +	"  r.inputIndex=contactId;r.contactId=contactId;table[contactId]=r;}\n";
@@ -14115,8 +14170,8 @@ index 0000000000000000000000000000000000000000..c2ef06ce63d159fbd334f8d8c9160fff
 +	}
 +	if ( (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldInput ) ||
 +		 (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalConvexManifoldResult ) ||
-+		 (NSUInteger)contactCount > NSUIntegerMax / sizeof( b3MetalContactTransition ) ||
-+		 world->contacts.count < 0 || (NSUInteger)world->contacts.count > NSUIntegerMax / sizeof( b3MetalConvexManifoldResult ) )
++		 world->contacts.count < 0 || (NSUInteger)world->contacts.count > NSUIntegerMax / sizeof( b3MetalConvexManifoldResult ) ||
++		 (NSUInteger)world->contacts.count > NSUIntegerMax / sizeof( b3MetalContactTransition ) )
 +	{
 +		return false;
 +	}
@@ -14156,10 +14211,10 @@ index 0000000000000000000000000000000000000000..c2ef06ce63d159fbd334f8d8c9160fff
 +
 +		NSUInteger inputBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldInput );
 +		NSUInteger resultBytes = (NSUInteger)contactCount * sizeof( b3MetalConvexManifoldResult );
-+		NSUInteger transitionBytes = (NSUInteger)contactCount * sizeof( b3MetalContactTransition );
 +		uint32_t blockCount = ( (uint32_t)contactCount + 255u ) / 256u;
 +		NSUInteger blockBytes = (NSUInteger)blockCount * sizeof( b3MetalManifoldBlock );
 +		NSUInteger tableCount = world->contacts.count > 0 ? (NSUInteger)world->contacts.count : 1;
++		NSUInteger transitionBytes = tableCount * sizeof( b3MetalContactTransition );
 +		NSUInteger tableBytes = tableCount * sizeof( b3MetalConvexManifoldResult );
 +		if ( tableCount > NSUIntegerMax / sizeof( b3MetalContactPrepareInput ) ||
 +			 tableCount > NSUIntegerMax / sizeof( b3MetalContactImpulseResult ) ) return false;
@@ -14299,8 +14354,17 @@ index 0000000000000000000000000000000000000000..c2ef06ce63d159fbd334f8d8c9160fff
 +			return false;
 +		}
 +		id<MTLCommandBuffer> commandBuffer = [context->queue commandBuffer];
++		if ( commandBuffer == nil ) return false;
++		if ( bootstrapInputs )
++		{
++			id<MTLBlitCommandEncoder> blitEncoder = [commandBuffer blitCommandEncoder];
++			if ( blitEncoder == nil ) return false;
++			[blitEncoder fillBuffer:context->contactTransitionBuffer
++				range:NSMakeRange( 0, transitionBytes ) value:0];
++			[blitEncoder endEncoding];
++		}
 +		id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
-+		if ( commandBuffer == nil || encoder == nil ) return false;
++		if ( encoder == nil ) return false;
 +		if ( bootstrapInputs )
 +		{
 +			*( (uint32_t*)context->contactInputBootstrapStatusBuffer.contents ) = 0;
@@ -14432,28 +14496,44 @@ index 0000000000000000000000000000000000000000..c2ef06ce63d159fbd334f8d8c9160fff
 +				( ( persistedBits >> 2 ) & 1u ) + ( ( persistedBits >> 3 ) & 1u );
 +			prepareDeviceRefreshCount += ( completedResults[i].residentFlags & 2u ) != 0;
 +		}
-+		uint32_t previousInputIndex = 0;
-+		for ( int i = 0; i < transitionCount; ++i )
++		int seenTransitions = 0;
++		if ( bootstrapInputs )
 +		{
-+			const b3MetalContactTransition* transition = completedTransitions + i;
-+			if ( transition->contactId >= (uint32_t)world->contacts.count || transition->inputIndex >= (uint32_t)contactCount ||
-+				transition->pointCount == 0 || transition->pointCount > B3_MAX_MANIFOLD_POINTS ||
-+				( i > 0 && transition->inputIndex <= previousInputIndex ) )
++			for ( int contactId = 0; contactId < world->contacts.count; ++contactId )
 +			{
-+				context->convexManifoldTableCount = 0;
-+				return false;
++				const b3MetalContactTransition* transition = completedTransitions + contactId;
++				if ( transition->pointCount == 0 )
++				{
++					if ( transition->contactGeneration != 0 )
++					{
++						context->convexManifoldTableCount = 0;
++						return false;
++					}
++					continue;
++				}
++				if ( transition->contactGeneration == 0 || transition->pointCount > B3_MAX_MANIFOLD_POINTS )
++				{
++					context->convexManifoldTableCount = 0;
++					return false;
++				}
++				const b3Contact* contact = world->contacts.data + contactId;
++				const b3MetalContactPrepareInput* prepare =
++					( (const b3MetalContactPrepareInput*)context->contactPrepareTableBuffer.contents ) + contactId;
++				if ( contact->contactId != contactId || contact->generation != transition->contactGeneration ||
++					prepare->contactId != (uint32_t)contactId ||
++					prepare->contactGeneration != transition->contactGeneration ||
++					prepare->generation != context->contactPrepareGeneration || prepare->manifold != 0 )
++				{
++					context->convexManifoldTableCount = 0;
++					return false;
++				}
++				seenTransitions += 1;
 +			}
-+			const b3Contact* contact = world->contacts.data + transition->contactId;
-+			const b3MetalContactPrepareInput* prepare =
-+				( (const b3MetalContactPrepareInput*)context->contactPrepareTableBuffer.contents ) + transition->contactId;
-+			if ( contact->contactId != (int)transition->contactId || contact->generation != transition->contactGeneration ||
-+				prepare->contactId != transition->contactId || prepare->contactGeneration != transition->contactGeneration ||
-+				prepare->generation != context->contactPrepareGeneration || prepare->manifold != 0 )
-+			{
-+				context->convexManifoldTableCount = 0;
-+				return false;
-+			}
-+			previousInputIndex = transition->inputIndex;
++		}
++		if ( seenTransitions != transitionCount )
++		{
++			context->convexManifoldTableCount = 0;
++			return false;
 +		}
 +		( (b3World*)world )->metalContactPersistenceMatchCount += persistenceMatchCount;
 +		( (b3World*)world )->metalContactPrepareDeviceRefreshCount += prepareDeviceRefreshCount;
@@ -14486,7 +14566,8 @@ index 0000000000000000000000000000000000000000..c2ef06ce63d159fbd334f8d8c9160fff
 +			stats->contactInputPrivateBytes = context->convexManifoldInputsPrivate
 +				? (uint64_t)contactCount * sizeof( b3MetalConvexManifoldInput ) : 0;
 +			stats->contactTransitionCount = transitionCount;
-+			stats->contactTransitionSharedBytes = (uint64_t)transitionCount * sizeof( b3MetalContactTransition );
++			stats->contactTransitionSharedBytes = transitionCount > 0
++				? (uint64_t)world->contacts.count * sizeof( b3MetalContactTransition ) : 0;
 +			stats->contactExceptionSharedBytes = (uint64_t)resultCount * sizeof( b3MetalConvexManifoldResult );
 +			if ( commandBuffer.GPUEndTime >= commandBuffer.GPUStartTime )
 +			{
@@ -15526,7 +15607,7 @@ index 0000000000000000000000000000000000000000..c2ef06ce63d159fbd334f8d8c9160fff
 +}
 diff --git a/src/metal_vf64_ieee.metal b/src/metal_vf64_ieee.metal
 new file mode 100644
-index 0000000000000000000000000000000000000000..a4424e54a1931d1ca2b31611744fa848071852fd
+index 0000000..a4424e5
 --- /dev/null
 +++ b/src/metal_vf64_ieee.metal
 @@ -0,0 +1,1134 @@
@@ -16665,7 +16746,7 @@ index 0000000000000000000000000000000000000000..a4424e54a1931d1ca2b31611744fa848
 +    return (ulong(sign) << 63) | (ulong(exponent64) << 52) | fraction64;
 +}
 diff --git a/src/physics_world.c b/src/physics_world.c
-index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f38333387132 100644
+index 29c13c7..4f61a6c 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
 @@ -22,6 +22,9 @@
@@ -16741,7 +16822,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  
  	b3DestroyStack( &world->stack );
  
-@@ -538,12 +565,336 @@ int b3GetWorldCount( void )
+@@ -538,12 +565,338 @@ int b3GetWorldCount( void )
  	return b3AtomicLoadInt( &b3_worldCount );
  }
  
@@ -16964,6 +17045,8 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
 +	profile.contactCoverageBypassCount = world->metalContactCoverageBypassCount;
 +	profile.contactStateTraversalBypassCount = world->metalContactStateTraversalBypassCount;
 +	profile.lastContactStateBitSetBytes = world->metalLastContactStateBitSetBytes;
++	profile.contactTopologyDirectCommitCount = world->metalContactTopologyDirectCommitCount;
++	profile.lastContactTopologyCpuMilliseconds = world->metalLastContactTopologyCpuMilliseconds;
 +	profile.contactHitEventBitSetClearBypassCount = world->metalContactHitEventBitSetClearBypassCount;
 +	profile.lastContactHitEventBitSetBytes = world->metalLastContactHitEventBitSetBytes;
 +	profile.awakeIslandBitSetClearBypassCount = world->metalAwakeIslandBitSetClearBypassCount;
@@ -17079,7 +17162,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  // Used to hide the random-access latency of contact lookups while we work on an
  // earlier index.
  static inline void b3PrefetchContact( const b3Contact* contact )
-@@ -582,18 +933,72 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -582,18 +935,72 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  	const int contactPrefetchDistance = 4;
  	int prefetchEnd = endIndex - contactPrefetchDistance;
  
@@ -17153,7 +17236,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  
  		b3Shape* shapeA = shapes + contact->shapeIdA;
  		b3Shape* shapeB = shapes + contact->shapeIdB;
-@@ -653,8 +1058,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -653,8 +1060,9 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		// Contact recycling optimization. Please cite this library if you use this optimization.
  		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
  		// However, this allows larger relative motion and has fewer tuning parameters (just one).
@@ -17165,7 +17248,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  		{
  			// The scalar part of b3InvMulQuat is just the quaternion dot product.
  			// cos(relative_angle/2) = scalar(conj(q1) * q2) = dot(q1, q2)
-@@ -728,6 +1134,14 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -728,6 +1136,14 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  						taskContext->manifoldCounts[bucketIndex - 1] += 1;
  					}
  
@@ -17180,7 +17263,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  					// Contact is recycled. This also skips updating other aspects of the contact
  					// such as material parameters.
  					continue;
-@@ -741,9 +1155,125 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -741,9 +1157,125 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		contact->cachedRelativePose = b3InvMulWorldTransforms( transformA, transformB );
  		contact->flags |= b3_relativeTransformValid;
  
@@ -17309,7 +17392,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  
  		int bucketIndex = b3MinInt( contact->manifoldCount, B3_CONTACT_MANIFOLD_COUNT_BUCKETS - 1 );
  		if ( bucketIndex > 0 )
-@@ -814,8 +1344,123 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
+@@ -814,8 +1346,170 @@ static void b3RemoveNonTouchingContact( b3World* world, int setIndex, int localI
  	}
  }
  
@@ -17357,23 +17440,29 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
 +		return false;
 +	}
 +
-+	uint32_t previousInputIndex = UINT32_MAX;
-+	for ( int i = 0; i < transitionCount; ++i )
++	int validatedCount = 0;
++	for ( int contactId = 0; contactId < world->contacts.count; ++contactId )
 +	{
-+		const b3MetalContactTransition* transition = transitions + i;
-+		if ( transition->inputIndex >= (uint32_t)contactCount ||
-+			( i > 0 && transition->inputIndex <= previousInputIndex ) || transition->contactId >= (uint32_t)world->contacts.count ||
-+			transition->pointCount < 1 || transition->pointCount > B3_MAX_MANIFOLD_POINTS ||
-+			awakeSet->contactIndices.data[transition->inputIndex] != (int)transition->contactId )
++		const b3MetalContactTransition* transition = transitions + contactId;
++		if ( transition->pointCount == 0 )
++		{
++			if ( transition->contactGeneration != 0 )
++			{
++				return false;
++			}
++			continue;
++		}
++		validatedCount += 1;
++		if ( transition->contactGeneration == 0 || transition->pointCount > B3_MAX_MANIFOLD_POINTS )
 +		{
 +			return false;
 +		}
-+		previousInputIndex = transition->inputIndex;
 +
-+		const b3Contact* contact = world->contacts.data + transition->contactId;
-+		if ( contact->contactId != (int)transition->contactId || contact->generation != transition->contactGeneration ||
++		const b3Contact* contact = world->contacts.data + contactId;
++		if ( contact->contactId != contactId || contact->generation != transition->contactGeneration ||
 +			contact->setIndex != b3_awakeSet || contact->colorIndex != B3_NULL_INDEX ||
-+			contact->localIndex != (int)transition->inputIndex || contact->manifolds != NULL || contact->manifoldCount != 0 ||
++			contact->localIndex < 0 || contact->localIndex >= awakeSet->contactIndices.count ||
++			awakeSet->contactIndices.data[contact->localIndex] != contactId || contact->manifolds != NULL || contact->manifoldCount != 0 ||
 +			( contact->flags & ( b3_contactTouchingFlag | b3_contactEnableContactEvents |
 +				b3_simTouchingFlag | b3_simDisjoint | b3_simStartedTouching | b3_simStoppedTouching |
 +				b3_simEnableHitEvent | b3_simEnablePreSolveEvents | b3_simMeshContact ) ) != 0 ||
@@ -17402,17 +17491,21 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
 +			return false;
 +		}
 +	}
-+	return true;
++	return validatedCount == transitionCount;
 +}
 +
 +static void b3ApplyMetalContactTransitions( b3World* world, const b3MetalContactTransition* transitions,
 +	int transitionCount )
 +{
 +	b3BitSet* stateBits = &world->taskContexts.data[0].contactStateBitSet;
-+	for ( int i = 0; i < transitionCount; ++i )
++	int appliedCount = 0;
++	for ( int contactId = 0; contactId < world->contacts.count; ++contactId )
 +	{
-+		const b3MetalContactTransition* transition = transitions + i;
-+		b3Contact* contact = world->contacts.data + transition->contactId;
++		const b3MetalContactTransition* transition = transitions + contactId;
++		if ( transition->pointCount == 0 )
++			continue;
++		appliedCount += 1;
++		b3Contact* contact = world->contacts.data + contactId;
 +		const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
 +		const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
 +		const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
@@ -17422,8 +17515,45 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
 +		contact->bodySimIndexB = bodyB->setIndex == b3_staticSet ? B3_NULL_INDEX : bodyB->localIndex;
 +		contact->flags |= b3_simTouchingFlag | b3_simStartedTouching | b3_simMetalManifold | b3_simMetalManifoldStale;
 +		contact->metalSyncGeneration = 0;
-+		b3SetBit( stateBits, (int)transition->contactId );
++		b3SetBit( stateBits, contactId );
 +	}
++	B3_ASSERT( appliedCount == transitionCount );
++	B3_UNUSED( appliedCount );
++	world->taskContexts.data[0].manifoldCounts[0] += transitionCount;
++}
++
++// Commit a complete, event-free cold transition table directly in canonical
++// contact-id order. This preserves CPU graph coloring and island semantics
++// while bypassing per-worker bitset clear, union, and a second serial scan.
++static void b3CommitMetalContactTransitionsDirect( b3World* world, const b3MetalContactTransition* transitions,
++	int transitionCount )
++{
++	int committedCount = 0;
++	for ( int contactId = 0; contactId < world->contacts.count; ++contactId )
++	{
++		const b3MetalContactTransition* transition = transitions + contactId;
++		if ( transition->pointCount == 0 )
++			continue;
++
++		committedCount += 1;
++		b3Contact* contact = world->contacts.data + contactId;
++		const b3Shape* shapeA = world->shapes.data + contact->shapeIdA;
++		const b3Shape* shapeB = world->shapes.data + contact->shapeIdB;
++		const b3Body* bodyA = world->bodies.data + shapeA->bodyId;
++		const b3Body* bodyB = world->bodies.data + shapeB->bodyId;
++		contact->manifoldCount = 1;
++		contact->bodySimIndexA = bodyA->setIndex == b3_staticSet ? B3_NULL_INDEX : bodyA->localIndex;
++		contact->bodySimIndexB = bodyB->setIndex == b3_staticSet ? B3_NULL_INDEX : bodyB->localIndex;
++		contact->flags |= b3_simTouchingFlag | b3_contactTouchingFlag | b3_simMetalManifold | b3_simMetalManifoldStale;
++		contact->metalSyncGeneration = 0;
++
++		b3LinkContact( world, contact );
++		int oldLocalIndex = contact->localIndex;
++		b3AddContactToGraph( world, contact );
++		b3RemoveNonTouchingContact( world, b3_awakeSet, oldLocalIndex );
++	}
++	B3_ASSERT( committedCount == transitionCount );
++	B3_UNUSED( committedCount );
 +	world->taskContexts.data[0].manifoldCounts[0] += transitionCount;
 +}
 +#endif
@@ -17434,7 +17564,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  {
  	b3World* world = context->world;
  
-@@ -825,12 +1470,17 @@ static void b3Collide( b3StepContext* context )
+@@ -825,12 +1519,17 @@ static void b3Collide( b3StepContext* context )
  
  	// Gather contacts from all the graph colors into a single array for easier parallel-for
  	int touchingCount = 0;
@@ -17452,7 +17582,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  
  	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
  	int nonTouchingCount = awakeSet->contactIndices.count;
-@@ -840,58 +1490,189 @@ static void b3Collide( b3StepContext* context )
+@@ -840,58 +1539,204 @@ static void b3Collide( b3StepContext* context )
  	if ( contactCount == 0 )
  	{
  		b3TracyCZoneEnd( collide );
@@ -17530,9 +17660,11 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
 +	int metalResidentBypassCount = 0;
 +	const b3MetalContactTransition* metalContactTransitions = NULL;
 +	int metalContactTransitionCount = 0;
++	bool metalDirectTopologyCommit = false;
 +	world->metalLastContactTransitionCount = 0;
 +	world->metalLastContactTransitionBytes = 0;
 +	world->metalLastContactExceptionBytes = 0;
++	world->metalLastContactTopologyCpuMilliseconds = 0.0f;
 +	uint64_t metalCollisionGraphRevision = world->constraintGraph.revision;
 +	if ( world->metalContext != NULL && contactCount >= world->metalMinimumBodyCount )
 +	{
@@ -17572,6 +17704,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
 +				world->metalLastNarrowPhaseGpuMilliseconds = stats.gpuMilliseconds;
 +				context->metalCollisionExceptionsOnly = true;
 +				cpuContactCount = resultCount;
++				metalDirectTopologyCommit = resultCount == 0 && metalContactTransitionCount > 0;
 +				world->metalContactCollisionBypassCount += (uint64_t)residentBypassCount;
 +				world->taskContexts.data[0].manifoldCounts[0] += residentBypassCount;
 +			}
@@ -17615,7 +17748,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
 +#endif
 +	}
 +#if defined( BOX3D_METAL )
-+	if ( cpuContactCount > 0 || metalContactTransitionCount > 0 )
++	if ( cpuContactCount > 0 || ( metalContactTransitionCount > 0 && metalDirectTopologyCommit == false ) )
 +#else
 +	if ( cpuContactCount > 0 )
 +#endif
@@ -17637,7 +17770,19 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
 +#if defined( BOX3D_METAL )
 +	if ( metalContactTransitionCount > 0 )
 +	{
-+		b3ApplyMetalContactTransitions( world, metalContactTransitions, metalContactTransitionCount );
++		if ( metalDirectTopologyCommit )
++		{
++			uint64_t topologyTicks = b3GetTicks();
++			b3CommitMetalContactTransitionsDirect( world, metalContactTransitions, metalContactTransitionCount );
++			world->metalLastContactTopologyCpuMilliseconds = b3GetMilliseconds( topologyTicks );
++			world->metalContactTopologyDirectCommitCount += (uint64_t)metalContactTransitionCount;
++			world->metalContactStateTraversalBypassCount += 1;
++			world->metalLastContactStateBitSetBytes = 0;
++		}
++		else
++		{
++			b3ApplyMetalContactTransitions( world, metalContactTransitions, metalContactTransitionCount );
++		}
 +	}
 +#endif
 +	if ( cpuContactCount > 0 )
@@ -17651,8 +17796,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
 +		world->metalLastContactStateBitSetBytes = 0;
 +	}
 +#endif
- 
--	b3StackFree( &world->stack, contactIndices );
++
 +#if defined( BOX3D_METAL )
 +	world->metalContactCollisionCpuCount += (uint64_t)cpuContactCount;
 +	world->metalLastContactCollisionExceptionCount =
@@ -17662,7 +17806,8 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
 +		world->metalContactCollisionBypassCount += (uint64_t)world->taskContexts.data[i].metalContactCollisionBypassCount;
 +	}
 +#endif
-+
+ 
+-	b3StackFree( &world->stack, contactIndices );
 +	if ( contactIndices != NULL )
 +		b3StackFree( &world->stack, contactIndices );
  	context->awakeContactIndices = NULL;
@@ -17672,7 +17817,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  	contactIndices = NULL;
  
  	// Serially update contact state
-@@ -900,8 +1681,15 @@ static void b3Collide( b3StepContext* context )
+@@ -900,8 +1745,15 @@ static void b3Collide( b3StepContext* context )
  
  	int satMultiplier = context->dt > 0.0f ? 1 : 0;
  
@@ -17682,7 +17827,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
 +	// resident phase has current diagnostic counts but deliberately leaves its
 +	// stale contact bits untouched.
 +#if defined( BOX3D_METAL )
-+	b3BitSet* bitSet = cpuContactCount > 0 || metalContactTransitionCount > 0 ?
++	b3BitSet* bitSet = cpuContactCount > 0 || ( metalContactTransitionCount > 0 && metalDirectTopologyCommit == false ) ?
 +		&world->taskContexts.data[0].contactStateBitSet : NULL;
 +#else
 +	b3BitSet* bitSet = cpuContactCount > 0 ? &world->taskContexts.data[0].contactStateBitSet : NULL;
@@ -17690,7 +17835,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  	world->satCallCount = satMultiplier * world->taskContexts.data[0].satCallCount;
  	world->satCacheHitCount = satMultiplier * world->taskContexts.data[0].satCacheHitCount;
  	memcpy( world->manifoldCounts, world->taskContexts.data[0].manifoldCounts,
-@@ -909,7 +1697,8 @@ static void b3Collide( b3StepContext* context )
+@@ -909,7 +1761,8 @@ static void b3Collide( b3StepContext* context )
  
  	for ( int i = 1; i < world->workerCount; ++i )
  	{
@@ -17700,7 +17845,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  		world->satCallCount += world->taskContexts.data[i].satCallCount;
  		world->satCacheHitCount += world->taskContexts.data[i].satCacheHitCount;
  		for ( int j = 0; j < B3_CONTACT_MANIFOLD_COUNT_BUCKETS; ++j )
-@@ -932,7 +1721,8 @@ static void b3Collide( b3StepContext* context )
+@@ -932,7 +1785,8 @@ static void b3Collide( b3StepContext* context )
  	uint16_t worldId = world->worldId;
  
  	// Process contact state changes. Iterate over set bits
@@ -17710,7 +17855,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  	{
  		uint64_t bits = bitSet->bits[k];
  		while ( bits != 0 )
-@@ -1027,8 +1817,17 @@ static void b3Collide( b3StepContext* context )
+@@ -1027,8 +1881,17 @@ static void b3Collide( b3StepContext* context )
  	b3ValidateSolverSets( world );
  	b3ValidateContacts( world );
  
@@ -17728,7 +17873,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  }
  
  void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
-@@ -1039,6 +1838,41 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1039,6 +1902,41 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  		return;
  	}
  
@@ -17770,7 +17915,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  	B3_REC( world, Step, worldId, timeStep, subStepCount );
  
  	world->locked = true;
-@@ -1055,6 +1889,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1055,6 +1953,10 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Prepare to capture events
  	// Ensure user does not access stale data if there is an early return
  	b3Array_Clear( world->bodyMoveEvents );
@@ -17781,7 +17926,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  	b3Array_Clear( world->sensorBeginEvents );
  	b3Array_Clear( world->contactBeginEvents );
  	b3Array_Clear( world->contactHitEvents );
-@@ -1131,7 +1969,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1131,7 +2033,12 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  	// Narrow phase : update contacts
  	{
  		uint64_t collideTicks = b3GetTicks();
@@ -17795,7 +17940,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  		world->profile.collide = b3GetMilliseconds( collideTicks );
  	}
  
-@@ -1176,6 +2019,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
+@@ -1176,6 +2083,20 @@ void b3World_Step( b3WorldId worldId, float timeStep, int subStepCount )
  
  	if ( world->recording != NULL )
  	{
@@ -17816,7 +17961,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  		uint64_t hash = b3HashWorldState( world );
  		b3RecArgs_StateHash stateHash = { worldId, hash };
  		b3RecWrite_StateHash( world->recording, &stateHash );
-@@ -1440,7 +2297,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1440,7 +2361,7 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  				b3WorldTransform transform = { bodySim->center, bodySim->transform.q };
  				draw->DrawTransformFcn( transform, draw->context );
  
@@ -17825,7 +17970,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  				{
  					b3Vec3 offset = { 0.05f, 0.05f, 0.05f };
  					b3Pos p = b3TransformWorldPoint( transform, offset );
-@@ -1517,6 +2374,14 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
+@@ -1517,6 +2438,14 @@ void b3World_Draw( b3WorldId worldId, b3DebugDraw* draw, uint64_t maskBits )
  					// avoid double draw
  					if ( b3GetBit( &world->debugContactSet, contactId ) == false )
  					{
@@ -17840,7 +17985,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  						b3Body* bodyA = b3Array_Get( world->bodies, contact->edges[0].bodyId );
  						b3BodySim* bodySimA = b3GetBodySim( world, bodyA );
  						b3Body* bodyB = b3Array_Get( world->bodies, contact->edges[1].bodyId );
-@@ -1753,6 +2618,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
+@@ -1753,6 +2682,14 @@ b3BodyEvents b3World_GetBodyEvents( b3WorldId worldId )
  		return (b3BodyEvents){ 0 };
  	}
  
@@ -17855,7 +18000,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  	int count = world->bodyMoveEvents.count;
  	b3BodyEvents events = { world->bodyMoveEvents.data, count };
  	return events;
-@@ -2125,6 +2998,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
+@@ -2125,6 +3062,7 @@ void b3World_SetContactRecycleDistance( b3WorldId worldId, float recycleDistance
  	B3_REC( world, WorldSetContactRecycleDistance, worldId, recycleDistance );
  
  	world->contactRecycleDistance = b3ClampFloat( recycleDistance, 0.0f, FLT_MAX );
@@ -17863,7 +18008,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  }
  
  float b3World_GetContactRecycleDistance( b3WorldId worldId )
-@@ -2259,6 +3133,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
+@@ -2259,6 +3197,10 @@ void b3World_SetFrictionCallback( b3WorldId worldId, b3FrictionCallback* callbac
  	}
  
  	world->frictionCallback = callback != NULL ? callback : b3DefaultFrictionCallback;
@@ -17874,7 +18019,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  }
  
  void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* callback )
-@@ -2270,6 +3148,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
+@@ -2270,6 +3212,10 @@ void b3World_SetRestitutionCallback( b3WorldId worldId, b3RestitutionCallback* c
  	}
  
  	world->restitutionCallback = callback != NULL ? callback : b3DefaultRestitutionCallback;
@@ -17885,7 +18030,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  }
  
  void b3World_SetWorkerCount( b3WorldId worldId, int count )
-@@ -2311,7 +3193,10 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
+@@ -2311,7 +3257,10 @@ void b3World_StartRecording( b3WorldId worldId, b3Recording* recording )
  		return;
  	}
  
@@ -17897,7 +18042,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  }
  
  void b3World_StopRecording( b3WorldId worldId )
-@@ -2323,6 +3208,7 @@ void b3World_StopRecording( b3WorldId worldId )
+@@ -2323,6 +3272,7 @@ void b3World_StopRecording( b3WorldId worldId )
  	}
  
  	b3StopRecordingInternal( world );
@@ -17905,7 +18050,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  }
  
  void b3World_DumpMemoryStats( b3WorldId worldId )
-@@ -3313,6 +4199,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
+@@ -3313,6 +4263,7 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
  	}
  	world->preSolveFcn = fcn;
  	world->preSolveContext = context;
@@ -17913,7 +18058,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  }
  
  void b3World_SetGravity( b3WorldId worldId, b3Vec3 gravity )
-@@ -3445,6 +4332,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3445,6 +4396,11 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	}
  
  	B3_REC( world, WorldExplode, worldId, *explosionDef );
@@ -17925,7 +18070,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  
  	// Locked due to waking
  	world->locked = true;
-@@ -3457,6 +4349,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
+@@ -3457,6 +4413,7 @@ void b3World_Explode( b3WorldId worldId, const b3ExplosionDef* explosionDef )
  	b3AABB aabb = b3OffsetAABB( localBox, position );
  
  	b3DynamicTree_Query( world->broadPhase.trees + b3_dynamicBody, aabb, maskBits, false, ExplosionCallback, &explosionContext );
@@ -17933,7 +18078,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  
  	world->locked = false;
  }
-@@ -3473,6 +4366,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
+@@ -3473,6 +4430,11 @@ void b3World_RebuildStaticTree( b3WorldId worldId )
  
  	b3DynamicTree* staticTree = world->broadPhase.trees + b3_staticBody;
  	b3DynamicTree_Rebuild( staticTree, true );
@@ -17945,7 +18090,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  }
  
  void b3World_EnableSpeculative( b3WorldId worldId, bool flag )
-@@ -3637,7 +4535,15 @@ void b3ValidateSolverSets( b3World* world )
+@@ -3637,7 +4599,15 @@ void b3ValidateSolverSets( b3World* world )
  					uint32_t syncedFlags = body->flags & ~b3_bodyTransientFlags;
  					B3_ASSERT( ( bodySim->flags & syncedFlags ) == syncedFlags );
  
@@ -17962,7 +18107,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  					if ( bodyState != NULL )
  					{
  						B3_ASSERT( ( bodyState->flags & syncedFlags ) == syncedFlags );
-@@ -3972,6 +4878,11 @@ void b3ValidateContacts( b3World* world )
+@@ -3972,6 +4942,11 @@ void b3ValidateContacts( b3World* world )
  		{
  			if ( touching )
  			{
@@ -17975,7 +18120,7 @@ index 29c13c7f63f88bca2684e6cf25c13b65234b4bc7..83568e3c12a5a0bdea668f1dedb4f383
  				// Validate body sim indices
  				b3Shape* shapeA = b3Array_Get( world->shapes, contact->shapeIdA );
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8656bec015b96bbfac2caacdde8013b489..7229d9c2a1191c113c25aa7330fb6f33c8e080fb 100644
+index 8bd3df8..e2f48c8 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
 @@ -10,6 +10,7 @@
@@ -17994,7 +18139,7 @@ index 8bd3df8656bec015b96bbfac2caacdde8013b489..7229d9c2a1191c113c25aa7330fb6f33
  
  	b3DebugPoint points[B3_DEBUG_POINT_CAPACITY];
  	int pointCount;
-@@ -266,6 +268,146 @@ typedef struct b3World
+@@ -266,6 +268,148 @@ typedef struct b3World
  	// cleared by b3World_StopRecording. Hooks in mutators check this before writing.
  	struct b3Recording* recording;
  
@@ -18031,6 +18176,8 @@ index 8bd3df8656bec015b96bbfac2caacdde8013b489..7229d9c2a1191c113c25aa7330fb6f33
 +	uint64_t metalContactCoverageBypassCount;
 +	uint64_t metalContactStateTraversalBypassCount;
 +	uint64_t metalLastContactStateBitSetBytes;
++	uint64_t metalContactTopologyDirectCommitCount;
++	float metalLastContactTopologyCpuMilliseconds;
 +	uint64_t metalContactHitEventBitSetClearBypassCount;
 +	uint64_t metalLastContactHitEventBitSetBytes;
 +	uint64_t metalAwakeIslandBitSetClearBypassCount;
@@ -18141,7 +18288,7 @@ index 8bd3df8656bec015b96bbfac2caacdde8013b489..7229d9c2a1191c113c25aa7330fb6f33
  	// latest inverse sub-step
  	float inv_h;
  
-@@ -288,6 +430,78 @@ typedef struct b3World
+@@ -288,6 +432,78 @@ typedef struct b3World
  	bool inUse;
  } b3World;
  
@@ -18220,7 +18367,7 @@ index 8bd3df8656bec015b96bbfac2caacdde8013b489..7229d9c2a1191c113c25aa7330fb6f33
  b3World* b3GetUnlockedWorldFromId( b3WorldId id );
  b3World* b3GetWorldFromId( b3WorldId id );
  
-@@ -334,9 +548,33 @@ static inline b3Manifold* b3AllocateManifolds( b3World* world, int count )
+@@ -334,9 +550,33 @@ static inline b3Manifold* b3AllocateManifolds( b3World* world, int count )
  	return manifolds;
  }
  
@@ -18255,13 +18402,13 @@ index 8bd3df8656bec015b96bbfac2caacdde8013b489..7229d9c2a1191c113c25aa7330fb6f33
  	{
  		return;
  	}
-@@ -347,4 +585,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
+@@ -347,4 +587,3 @@ static inline void b3FreeManifolds( b3World* world, b3Manifold* manifolds, int c
  	b3FreeElement( allocator, manifolds );
  	b3UnlockMutex( world->manifoldAllocatorMutex );
  }
 -
 diff --git a/src/recording.c b/src/recording.c
-index 0f47fc19cc9c157819e0352eb54514cc5fa67cca..11ac5218d4b5c2aef68b6a1b0665d2628ef60f94 100644
+index 0f47fc1..11ac521 100644
 --- a/src/recording.c
 +++ b/src/recording.c
 @@ -978,7 +978,7 @@ void b3RecAccumulateBounds( b3Recording* rec, b3AABB bounds )
@@ -18309,7 +18456,7 @@ index 0f47fc19cc9c157819e0352eb54514cc5fa67cca..11ac5218d4b5c2aef68b6a1b0665d262
  
  void b3StopRecordingInternal( b3World* world )
 diff --git a/src/recording.h b/src/recording.h
-index 7870192aafcf4a7f6646355dcbd5d5ce0ca004c6..cb87cba7d54edf81ca66aedd4a9b22d452fb809b 100644
+index 7870192..cb87cba 100644
 --- a/src/recording.h
 +++ b/src/recording.h
 @@ -374,7 +374,7 @@ uint32_t b3RecInternHeightField( b3Recording* rec, const b3HeightFieldData* hf )
@@ -18322,7 +18469,7 @@ index 7870192aafcf4a7f6646355dcbd5d5ce0ca004c6..cb87cba7d54edf81ca66aedd4a9b22d4
  
  // Fold one step's world bounds into the running union.
 diff --git a/src/recording_replay.c b/src/recording_replay.c
-index d1a40bcbf9ae6a440ebc3c5bb8c27122baef680e..f074668490cc1f3c0127fd809fca24d1bbae7d9a 100644
+index d1a40bc..f074668 100644
 --- a/src/recording_replay.c
 +++ b/src/recording_replay.c
 @@ -2621,7 +2621,12 @@ static void b3RecCaptureKeyframe( b3RecPlayer* player )
@@ -18349,7 +18496,7 @@ index d1a40bcbf9ae6a440ebc3c5bb8c27122baef680e..f074668490cc1f3c0127fd809fca24d1
  	kf->frame = player->frame;
  	kf->cursor = player->rdr.cursor;
 diff --git a/src/shape.c b/src/shape.c
-index 1f0c305cf96bb23013f713fff0e12a48067eef99..852fa1f0b504ed04b76436180af9d74e606aa970 100644
+index 1f0c305..852fa1f 100644
 --- a/src/shape.c
 +++ b/src/shape.c
 @@ -9,6 +9,9 @@
@@ -18520,7 +18667,7 @@ index 1f0c305cf96bb23013f713fff0e12a48067eef99..852fa1f0b504ed04b76436180af9d74e
  
  typedef struct b3MeshImpactContext
 diff --git a/src/shape.h b/src/shape.h
-index ed76dd41c99fed574cc6f2bb5c0650d62b647bcc..86b87cbadd64f157a9e7fea5ad12f541790f2b39 100644
+index ed76dd4..86b87cb 100644
 --- a/src/shape.h
 +++ b/src/shape.h
 @@ -31,6 +31,8 @@ typedef struct b3Shape
@@ -18533,7 +18680,7 @@ index ed76dd41c99fed574cc6f2bb5c0650d62b647bcc..86b87cbadd64f157a9e7fea5ad12f541
  	float density;
  	float explosionScale;
 diff --git a/src/solver.c b/src/solver.c
-index d8aace052bbdf736d53aad0effa9a20a5b322f99..5342ce7ee08927c0601c273a2b4f9b7c5943f77b 100644
+index d8aace0..5342ce7 100644
 --- a/src/solver.c
 +++ b/src/solver.c
 @@ -19,6 +19,9 @@
@@ -19900,7 +20047,7 @@ index d8aace052bbdf736d53aad0effa9a20a5b322f99..5342ce7ee08927c0601c273a2b4f9b7c
  	stepContext->bulletBodies = NULL;
  	b3AtomicStoreInt( &stepContext->bulletBodyCount, 0 );
 diff --git a/src/solver.h b/src/solver.h
-index 7c8a1c71bb148de9a736d288ead60191cbe6388c..260711a758da3b34250f007a20ad6feb3931279f 100644
+index 7c8a1c7..260711a 100644
 --- a/src/solver.h
 +++ b/src/solver.h
 @@ -137,6 +137,44 @@ typedef struct b3SolverStage
@@ -20027,7 +20174,7 @@ index 7c8a1c71bb148de9a736d288ead60191cbe6388c..260711a758da3b34250f007a20ad6feb
  		.massScale = a2 * a3,
  		.impulseScale = a3,
 diff --git a/src/solver_set.c b/src/solver_set.c
-index f050a869d2663b4ef8913c4c860635a959b86d7b..3945acda03837e6bf51849c027709ca0ad5595c0 100644
+index f050a86..3945acd 100644
 --- a/src/solver_set.c
 +++ b/src/solver_set.c
 @@ -35,10 +35,16 @@ void b3DestroySolverSet( b3World* world, int setIndex )
@@ -20127,7 +20274,7 @@ index f050a869d2663b4ef8913c4c860635a959b86d7b..3945acda03837e6bf51849c027709ca0
  	int sourceIndex = body->localIndex;
  	b3BodySim* sourceSim = b3Array_Get( sourceSet->bodySims, sourceIndex );
 diff --git a/src/world_snapshot.c b/src/world_snapshot.c
-index 9efaee9fd8d863e6f4064cc4908bc7d302a530ca..32d13f12303a5bb1dcdc93fb5a752e9c388adae3 100644
+index 9efaee9..32d13f1 100644
 --- a/src/world_snapshot.c
 +++ b/src/world_snapshot.c
 @@ -18,6 +18,9 @@
@@ -20217,7 +20364,7 @@ index 9efaee9fd8d863e6f4064cc4908bc7d302a530ca..32d13f12303a5bb1dcdc93fb5a752e9c
  	return r->ok;
  }
 diff --git a/test/CMakeLists.txt b/test/CMakeLists.txt
-index bf561bfab824cb1b46c8acdef111f0f004cf2d76..74dbc6e6a3bea979d9ba53cd20c5ed1e6af18bc6 100644
+index bf561bf..74dbc6e 100644
 --- a/test/CMakeLists.txt
 +++ b/test/CMakeLists.txt
 @@ -30,6 +30,10 @@ set(BOX3D_TEST_FILES
@@ -20232,7 +20379,7 @@ index bf561bfab824cb1b46c8acdef111f0f004cf2d76..74dbc6e6a3bea979d9ba53cd20c5ed1e
  
  set_target_properties(test PROPERTIES
 diff --git a/test/main.c b/test/main.c
-index bd00ecb5a3542c885e1212eddfa82b99852c394d..93e58e2dafcad8f8967efe2fcf4d6afff52c14c0 100644
+index bd00ecb..93e58e2 100644
 --- a/test/main.c
 +++ b/test/main.c
 @@ -42,6 +42,9 @@ extern int JointTest( void );
@@ -20257,10 +20404,10 @@ index bd00ecb5a3542c885e1212eddfa82b99852c394d..93e58e2dafcad8f8967efe2fcf4d6aff
  	MAYBE_RUN_TEST( NameCacheTest );
 diff --git a/test/test_metal.c b/test/test_metal.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..24e53795fc21e3e20b7d5e108da1086895d0cdf6
+index 0000000..719e79c
 --- /dev/null
 +++ b/test/test_metal.c
-@@ -0,0 +1,4893 @@
+@@ -0,0 +1,4902 @@
 +// SPDX-FileCopyrightText: 2026 Box3D Metal contributors
 +// SPDX-License-Identifier: MIT
 +
@@ -21699,7 +21846,7 @@ index 0000000000000000000000000000000000000000..24e53795fc21e3e20b7d5e108da10868
 +	ENSURE( profile.lastPairRawSharedBytes == 0 );
 +
 +	// Consume the creation-time identity stream. Metal authors both the private
-+	// 40-byte inputs and the compact 16-byte first-touch transitions.
++	// 40-byte inputs and the contact-id-indexed 8-byte first-touch table.
 +	b3World_Step( cpuWorldId, 1.0f / 60.0f, 4 );
 +	b3World_Step( gpuWorldId, 1.0f / 60.0f, 4 );
 +	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
@@ -21712,12 +21859,16 @@ index 0000000000000000000000000000000000000000..24e53795fc21e3e20b7d5e108da10868
 +	ENSURE( profile.contactInputPackCount == 0 );
 +	ENSURE( profile.contactInputReuseCount == 0 );
 +	ENSURE( profile.lastContactInputBytes == 0 );
-+	ENSURE( sizeof( b3MetalContactTransition ) == 16u );
++	ENSURE( sizeof( b3MetalContactTransition ) == 8u );
 +	ENSURE( profile.lastContactTransitionCount == (uint64_t)contactCount );
 +	ENSURE( profile.lastContactTransitionBytes == (uint64_t)contactCount * sizeof( b3MetalContactTransition ) );
 +	ENSURE( profile.lastContactExceptionBytes == 0 );
 +	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
 +	ENSURE( profile.contactCollisionCpuCount == 0 );
++	ENSURE( profile.contactTopologyDirectCommitCount == (uint64_t)contactCount );
++	ENSURE( profile.contactStateTraversalBypassCount == 1 );
++	ENSURE( profile.lastContactStateBitSetBytes == 0 );
++	ENSURE( profile.lastContactTopologyCpuMilliseconds > 0.0 );
 +	ENSURE( profile.residentContactNoCpuManifoldCount == (uint64_t)contactCount );
 +	for ( int i = 0; i < gpu->contacts.count; ++i )
 +	{
@@ -21765,7 +21916,8 @@ index 0000000000000000000000000000000000000000..24e53795fc21e3e20b7d5e108da10868
 +	ENSURE( ComparePairTopology( cpu, gpu ) == 0 );
 +	ENSURE( CompareTouchingGraphTopology( cpu, gpu ) == 0 );
 +	printf( "    final pair plan contacts=%d direct=%d pairSeedBytes=%llu inputSeedBytes=%llu inputPrivateBytes=%llu "
-+			"recordTraversal=bypassed inputPack=bypassed exceptions=0 transitionBytes=%zu lazySync=1 exactTopology=yes\n",
++			"recordTraversal=bypassed inputPack=bypassed exceptions=0 transitionBytes=%zu directTopology=yes stateBits=0 "
++			"lazySync=1 exactTopology=yes\n",
 +			contactCount, profile.lastPairDirectCreateCount, (unsigned long long)profile.lastPairContactSeedBytes,
 +			(unsigned long long)profile.lastContactInputBootstrapBytes,
 +			(unsigned long long)profile.lastContactInputPrivateBytes,
@@ -21858,6 +22010,9 @@ index 0000000000000000000000000000000000000000..24e53795fc21e3e20b7d5e108da10868
 +	ENSURE( profile.lastContactExceptionBytes == 0 );
 +	ENSURE( profile.lastContactCollisionExceptionCount == 0 );
 +	ENSURE( profile.contactCollisionCpuCount == 0 );
++	ENSURE( profile.contactTopologyDirectCommitCount == 3 );
++	ENSURE( profile.contactStateTraversalBypassCount == 1 );
++	ENSURE( profile.lastContactStateBitSetBytes == 0 );
 +	int graphContactCount = 0;
 +	for ( int colorIndex = 0; colorIndex < B3_GRAPH_COLOR_COUNT; ++colorIndex )
 +	{
@@ -21872,7 +22027,7 @@ index 0000000000000000000000000000000000000000..24e53795fc21e3e20b7d5e108da10868
 +	}
 +	ENSURE( graphContactCount == 3 );
 +	printf( "    cold contact bootstrap recycledInput=2,1,0 graphOrder=0,1,2 generations=incremented "
-+			"inputSeedBytes=%llu privateBytes=%llu transitionBytes=%zu exceptions=0\n",
++			"inputSeedBytes=%llu privateBytes=%llu transitionBytes=%zu exceptions=0 directTopology=yes stateBits=0\n",
 +			(unsigned long long)profile.lastContactInputBootstrapBytes,
 +			(unsigned long long)profile.lastContactInputPrivateBytes,
 +			3u * sizeof( b3MetalContactTransition ) );
@@ -22884,7 +23039,8 @@ index 0000000000000000000000000000000000000000..24e53795fc21e3e20b7d5e108da10868
 +	ENSURE( profile.contactInputReuseCount == 2 );
 +	ENSURE( profile.lastContactInputBytes == 0 );
 +	ENSURE( profile.contactCoverageBypassCount == 3 * count );
-+	ENSURE( profile.contactStateTraversalBypassCount == 3 );
++	ENSURE( profile.contactStateTraversalBypassCount == 4 );
++	ENSURE( profile.contactTopologyDirectCommitCount == (uint64_t)count );
 +	ENSURE( profile.lastContactStateBitSetBytes == 0 );
 +	ENSURE( profile.contactHitEventBitSetClearBypassCount == 4 );
 +	ENSURE( profile.lastContactHitEventBitSetBytes == 0 );

@@ -33,7 +33,7 @@ readback unless explicitly labeled a primitive.
 | Experimental GPU finalization | No crossover | 27% slower at 524,288 bodies |
 | GPU shape finalization | No crossover | 17.9% slower at 524,288 shapes |
 | Experimental GPU tree traversal | Around 32,768 shapes | 1.068x at 524,288 shapes |
-| Private cold first-touch | No crossover | 20.1% less GPU time at 262,144 contacts vs pre-change baseline |
+| Indexed cold-contact topology | Near crossover at 262,144 | 3.6% less GPU time than deferred-manifold checkpoint |
 
 ## Interpretation
 
@@ -164,6 +164,15 @@ GPU median falls from 93.112 to 86.685 ms at 131,072 contacts (-6.9%) and from
 173.885 to 164.411 ms at 262,144 (-5.4%). The new CPU-oracle medians are 77.789
 and 159.283 ms, leaving Metal 11.4% and 3.2% slower respectively. One large
 sample crossed over; the three-run set supports only a smaller regression claim.
+
+The indexed-topology follow-on replaces the 16-byte compact transition with an
+8-byte contact-ID table and commits complete event-free batches directly in
+canonical order. This removes per-worker state-bitset clearing, union, and the
+second set-bit traversal. At 131,072 contacts the GPU median falls from 86.685
+to 84.335 ms (-2.7%); at 262,144 it falls from 164.411 to 158.536 ms (-3.6%).
+The remaining CPU island/graph commit takes median 7.995 and 15.504 ms,
+respectively. One 262,144-contact trial crossed over, but the median is only
+approximately parity, so this is not a universal crossover claim.
 
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
