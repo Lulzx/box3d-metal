@@ -36,7 +36,7 @@ before modifying the checkout, and creates `build/metal-release`.
 ## Validate
 
 ```sh
-../box3d-metal-worktree/build/metal-release/bin/test
+../box3d-metal-worktree/build/metal-release/bin/box3d_test
 ../box3d-metal-worktree/build/metal-release/bin/metal_demo
 ```
 

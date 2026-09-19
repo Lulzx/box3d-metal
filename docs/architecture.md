@@ -23,6 +23,22 @@ For a supported constrained world, one command buffer performs:
 10. Optional resident tree-leaf updates plus deterministic internal refit.
 11. One synchronization followed by compact hit-event exceptions, lazy public-manifold sync, and topology work.
 
+On a predicted stable-resident step, narrow phase and contact solve share
+that single command buffer. `b3Collide` gates on CPU-known state only --
+reusable contact inputs, zero exceptions and zero topology transitions with
+complete convex coverage last step, convex-only topology, no stale mirrors and
+no pending topology -- then encodes narrow phase into an uncommitted buffer and
+skips the CPU middle entirely. The solve phase encodes into the same buffer,
+commits once, waits once, and validates the narrow summary's zero-exception and
+zero-transition claims before consuming any solve result. A mispredict replays
+the full legacy middle and tail against the still-valid merged narrow outputs
+and re-solves; a hard failure reruns legacy narrow phase for the CPU fallback.
+Impulse authority is invalidated on every non-accept path and residency commits
+only on accept, so speculation is never observable. `BOX3D_METAL_NO_MERGE=1`
+disables the gate. The measured effect is structural: one command buffer
+instead of two on resident steps, removing one ~0.13 ms scheduling bubble per
+step.
+
 Pair generation is currently a separate experimental command sequence. Metal
 retains the existing three dynamic-tree node arrays, counts candidates per moved
 proxy, computes a stable hierarchical exclusive scan, and writes candidates in
@@ -105,6 +121,39 @@ with one kernel launch per solver phase instead of one launch per constraint.
 counters for position, unconstrained, contact, joint, finalization, shape, and
 pair paths, plus the latest GPU execution time for each category. These
 counters are route evidence, not a whole-engine GPU percentage.
+
+The same structure carries a whole-step timeline: per-stage GPU milliseconds
+indexed by stage (mutations, broad phase, narrow phase, topology, prepare,
+solve, finalize, refit, events), command-buffer, dispatch, and barrier counts
+for the step, CPU encode and wait milliseconds, and analytic solver bytes
+(record sizes times counts times passes) as the roofline numerator. Stage GPU
+times come from per-command-buffer `GPUStartTime`/`GPUEndTime`; where one
+buffer carries several stages, its time is split by dispatch share, which is a
+documented approximation until per-pass counter timestamps replace it.
+Dispatch and barrier counts are analytic -- the colored solve is
+`10 + 13 * activeColorCount`, locked by a test -- until per-encode
+instrumentation lands. `os_signpost` intervals for step, pairs, collide, and
+solve are available under `-DBOX3D_SIGNPOSTS=ON` and compile to nothing
+otherwise.
+
+## Shader library and pipeline creation
+
+The kernels are authored as Metal Shading Language source files with struct
+layouts shared through a single ABI header: a `__METAL_VERSION__` branch
+selects the MSL struct views, and the C branch carries the static assertions
+that pin every layout against the engine's own structures. The build compiles
+that source ahead of time into one embedded `.metallib` blob, loaded with
+`newLibraryWithData:`. A runtime-compilation fallback
+(`BOX3D_METAL_RUNTIME_COMPILE=ON`, the default) keeps a `newLibraryWithSource:`
+path generated from the same files so a toolchain without the offline Metal
+compiler still builds; `BOX3D_METAL_FORCE_SOURCE=1` exercises it deliberately.
+Pipeline state objects are additionally recorded into an `MTLBinaryArchive`
+under `~/Library/Caches/box3d/`, keyed by device and a hash of the exact
+library bytes so a shader edit invalidates stale caches. Archive population and
+serialization are best-effort and never fail context creation; today the
+archive is write-only telemetry, since the precompiled blob already removes the
+compile cost and Metal keeps its own per-app pipeline cache. Warm world
+creation is about 3 ms, against a 20 ms budget.
 
 ## Experimental finalization boundary
 

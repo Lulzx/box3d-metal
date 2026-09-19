@@ -17,7 +17,9 @@ cmake --build "$build_dir" --target \
     metal_contact_benchmark \
     metal_mesh_benchmark \
     metal_joint_benchmark \
-    metal_parallel_joint_benchmark
+    metal_parallel_joint_benchmark \
+    metal_scene_benchmark \
+    metal_bandwidth
 
 for executable in \
     metal_fused_benchmark \
@@ -25,7 +27,9 @@ for executable in \
     metal_contact_benchmark \
     metal_mesh_benchmark \
     metal_joint_benchmark \
-    metal_parallel_joint_benchmark
+    metal_parallel_joint_benchmark \
+    metal_scene_benchmark \
+    metal_bandwidth
 do
     echo "===== $executable ====="
     "$build_dir/bin/$executable"

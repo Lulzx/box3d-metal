@@ -11,7 +11,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 "$script_dir/bootstrap.sh" "$checkout"
-"$checkout/build/metal-release/bin/test" MetalTest
+"$checkout/build/metal-release/bin/box3d_test" MetalTest
 "$checkout/build/metal-release/bin/metal_demo"
 git -C "$checkout" diff --check
 

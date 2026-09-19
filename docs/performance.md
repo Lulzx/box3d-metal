@@ -6,7 +6,12 @@ Performance claims name the chip, OS, compiler, baseline, build, worker count,
 body/constraint count, substeps, and timing boundary. Cold initialization is
 not mixed into warm steady-state step timing. Whole-world comparisons include
 CPU preparation/finalization, command submission, synchronization, and
-readback unless explicitly labeled a primitive.
+readback unless explicitly labeled a primitive. The full quiet-host procedure
+-- `caffeinate -dims`, no competing work, no thermal throttling, min and median
+of five timed steps after three warmups, and a same-run CPU reference within 5%
+of the stored baseline -- is written down in
+[benchmarks/protocol.md](benchmarks/protocol.md). Numbers collected outside it
+are labeled as such and are not used as baselines.
 
 ## Test platform
 
@@ -190,6 +195,43 @@ ms), with zero transition bytes and zero direct commits. Deferred
 materialization matches the eager CPU commit: 7.846 versus 7.944 ms and 15.196
 versus 15.344 ms.
 
+### Standing harness, and what it says today
+
+The measurement foundation adds a scene-level harness that steps seven
+realistic scenes on CPU and on Metal, an achievable-bandwidth probe, and a
+roofline evaluator. Its first readings were taken without the quiet-host
+protocol and are smoke validation of the harness, not stored baselines, but two
+of them are structural enough to publish. Measured copy bandwidth is about
+102 GB/s, roughly half the 200 GB/s this work had been assuming, so the
+roofline denominator drops accordingly. And on the two pyramid scenes the Metal
+wall is about twice the CPU wall -- 6.16 versus 2.52 ms and 6.58 versus 3.02 ms
+median -- because GPU solve execution alone exceeds the entire CPU step.
+
+The async-stepping spike explains where that time goes. A per-command-buffer
+wait trace shows blocking wait is roughly 95% genuine GPU execution: the
+scheduling bubble is a consistent ~0.13 ms per buffer regardless of buffer
+size, and encode is negligible everywhere (0.006-0.054 ms). The consequence is
+a ceiling: perfect CPU/GPU overlap cannot close a gap where solve execution
+alone (4.1-5.1 ms) is larger than the whole CPU wall (1.4-2.9 ms). These scenes
+are latency-bound, not bandwidth-bound, and the honest reading is that Metal
+should not be selected for them.
+
+The merged narrow+solve build takes the one structural saving that measurement
+does support. Collapsing two command buffers into one on stable-resident steps
+removes exactly one bubble per step, matching the spike's prediction:
+`cmd` 2 to 1, wait 0.479 ms for 0.310 ms of GPU time where the split path paid
+two waits and two bubbles. Over 200 steps of a settle probe, 131 attempts
+produced 130 accepts and a single mispredict -- the deliberate teleport --
+with maximum CPU divergence of 1.1e-6 and exact recovery across the mispredict.
+Wall-clock delta on a world that small is inside run variance; the claim is the
+structure, not a speedup.
+
+Precompiled shaders move cost out of world creation rather than out of the
+step. Warm `EnableMetal` falls from roughly 300 ms of runtime shader
+compilation to about 3 ms, a hundredfold under the 20 ms gate. A cold run that
+misses the pipeline archive still pays 94-132 ms, dominated by populating and
+serializing the archive.
+
 The data supports an explicit caller-selected threshold, not a universal
 default. GPU frequency, CPU worker scheduling, constraint topology, contact
 density, and unsupported stages can move the crossover substantially.
@@ -209,6 +251,11 @@ BOX3D_METAL_WORLD_COUNT=524288 BOX3D_METAL_WORLD_REPEATS=12 \
   ../box3d-metal-worktree/build/metal-release/bin/metal_world_benchmark
 BOX3D_METAL_RESIDENT_CONTACT_COUNT=8192 BOX3D_METAL_RESIDENT_CONTACT_REPEATS=20 \
   ../box3d-metal-worktree/build/metal-release/bin/metal_resident_contact_benchmark
+../box3d-metal-worktree/build/metal-release/bin/metal_bandwidth
+BOX3D_METAL_SCENE=large_pyramid \
+  ../box3d-metal-worktree/build/metal-release/bin/metal_scene_benchmark
+BOX3D_METAL_WAIT_TRACE=1 \
+  ../box3d-metal-worktree/build/metal-release/bin/metal_scene_benchmark
 ```
 
 The benchmark script prints raw CSV-like rows. Run complete executables in at

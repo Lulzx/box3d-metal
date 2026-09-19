@@ -44,6 +44,15 @@
 - Constraint joint records are packed/unpacked each step.
 - Body state crosses the CPU/GPU ownership boundary once per world step.
 - Small workloads are dominated by fixed submission and synchronization cost.
+- Narrow phase and solve share one command buffer only on predicted
+  stable-resident steps; pair generation and readback blits still submit
+  separately, and every non-resident step keeps the split legacy route.
+- Stage GPU times for a shared command buffer are split by dispatch share, and
+  dispatch/barrier counts are analytic rather than measured per encode.
+- The pipeline archive is populated but not yet consumed; it is telemetry, not
+  a load path.
+- On the measured pyramid scenes the Metal wall is about twice the CPU wall.
+  Metal is not the right route for latency-bound scenes of that size.
 - Metal mode is tolerance-equivalent rather than cross-platform bit deterministic.
 
 ## Evidence-led next stages
@@ -62,13 +71,35 @@ batch solves from a private one-color schedule with zero transition bytes and
 zero direct commits, and the exact ascending-ID CPU topology materializes once
 at observation, mutation, or fallback boundaries.
 
-1. Extend the private epoch beyond strict dynamic-static independence and keep
+The per-stage measurement foundation is in place: stage GPU times,
+command-buffer/dispatch/barrier counts, encode and wait CPU times, analytic
+solver bytes, a bandwidth probe, a roofline evaluator, signpost intervals, and
+a seven-scene CPU-versus-Metal harness, all governed by a written quiet-host
+protocol. Shaders are precompiled into an embedded library, so warm world
+creation is about 3 ms instead of ~300 ms of runtime compilation.
+
+What that measurement changed: achievable copy bandwidth is ~102 GB/s, not the
+~200 GB/s previously assumed, and on the pyramid scenes blocking wait is ~95%
+genuine GPU execution with a fixed ~0.13 ms bubble per command buffer.
+Asynchronous overlap therefore has a hard ceiling on those scenes -- solve
+execution alone exceeds the entire CPU wall -- so buffer merging was taken
+first: narrow phase and solve now share one command buffer on stable-resident
+steps, removing one bubble per step.
+
+1. Merge the remaining per-step command buffers -- pairs when proxies move, and
+   readback blits -- toward one command buffer per step.
+2. Reduce GPU solve execution itself on latency-bound scenes; until it drops,
+   report Phase 1 against larger scenes where solve is bandwidth-bound.
+3. Replace the dispatch-share split of shared-buffer stage times, and the
+   analytic dispatch/barrier counts, with per-pass counter timestamps and
+   per-encode instrumentation.
+4. Extend the private epoch beyond strict dynamic-static independence and keep
    topology resident across steps instead of materializing per cold epoch.
-2. Retain body and supported joint state across world steps, reading back only
+5. Retain body and supported joint state across world steps, reading back only
    public/event slices needed by the CPU.
-3. Add remaining high-value joint types one at a time with mode matrices,
+6. Add remaining high-value joint types one at a time with mode matrices,
    overflow tests, static-body tests, and whole-world benchmarks.
-4. Add per-Apple-GPU-family benchmark records before considering automatic
+7. Add per-Apple-GPU-family benchmark records before considering automatic
    thresholds.
 
 ## Non-goals without new evidence

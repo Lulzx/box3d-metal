@@ -115,6 +115,21 @@ collision pass, the scatter kernel claims matching features in upstream order
 and emits GPU-authored point persistence plus normal warm-start impulses;
 friction, twist, and rolling terms remain resident through staging.
 Reused contact-ID slots cannot consume stale solver state.
+On a predicted stable-resident step, narrow phase and contact solve now encode
+into one command buffer with a single commit and wait, instead of one buffer
+and one blocking wait per phase. The gate reads CPU-known state only; the solve
+phase validates the narrow summary before consuming any result, mispredicts
+replay the legacy path against the still-valid narrow outputs, and residency
+commits only on accept. `BOX3D_METAL_NO_MERGE=1` disables it.
+
+Shaders ship as ahead-of-time compiled Metal source embedded as one library
+blob, with struct layouts shared through an ABI header that static-asserts
+every layout on the C side. Warm world creation costs about 3 ms instead of
+~300 ms of runtime shader compilation; a source-compilation fallback remains
+available for toolchains without the offline Metal compiler. The profile
+structure also reports per-stage GPU time, command-buffer, dispatch, and
+barrier counts, CPU encode and wait time, and analytic solver bytes, with
+optional `os_signpost` intervals for Instruments.
 
 ## Quick start
 
@@ -125,7 +140,7 @@ Git.
 git clone https://github.com/Lulzx/box3d-metal.git
 cd box3d-metal
 ./scripts/bootstrap.sh ../box3d-metal-worktree
-../box3d-metal-worktree/build/metal-release/bin/test MetalTest
+../box3d-metal-worktree/build/metal-release/bin/box3d_test MetalTest
 ../box3d-metal-worktree/build/metal-release/bin/metal_demo
 ```
 
@@ -163,6 +178,9 @@ CPU work:
 | GPU shape finalization | Correct, but 17.9% slower at 524,288 shapes |
 | Experimental GPU tree traversal | 1.068x at 524,288 shapes; small worlds regress |
 | Indexed cold-contact topology | 2.7-3.6% less GPU time than deferred-manifold checkpoint at 131,072-262,144 contacts |
+| Warm world creation with precompiled shaders | ~3 ms, from ~300 ms of runtime compilation |
+| Merged narrow+solve on resident steps | One command buffer instead of two; one ~0.13 ms bubble removed per step |
+| Seven-scene CPU-vs-Metal harness | Metal is ~2x slower than CPU on the pyramid scenes |
 
 The tree-traversal speedup is historical evidence for the earlier CPU-prefix
 implementation. The current on-device scan has exact-order validation, but no
@@ -172,6 +190,13 @@ The private-result/selective-sync checkpoint also publishes correctness evidence
 only because the development host was loaded.
 The persistent-input checkpoint likewise publishes route/correctness evidence
 only because the host remained loaded.
+The measurement-foundation, precompiled-library, and merged narrow+solve
+checkpoints were taken without the quiet-host protocol now written down in
+`docs/benchmarks/protocol.md`. Their absolute step times are smoke validation
+rather than stored baselines; the structural claims -- command-buffer counts,
+the ~0.13 ms per-buffer scheduling bubble, ~102 GB/s measured copy bandwidth,
+and warm-creation time -- are the defensible part. On the measured pyramid
+scenes Metal is the slower route, and the harness exists to keep saying so.
 The resident pair-filter checkpoint publishes exact-order correctness and
 metadata-residency evidence only; the host was still loaded.
 The existing-pair checkpoint likewise publishes lifecycle and residency

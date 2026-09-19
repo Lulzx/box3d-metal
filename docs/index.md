@@ -34,6 +34,9 @@ for review.
 
 ## Benchmark records
 
+All Metal numbers are collected under the
+[benchmark protocol](benchmarks/protocol.md).
+
 - [Position integration](benchmarks/m4-pro-position-integration-2026-09-01.md)
 - [Fused integration](benchmarks/m4-pro-fused-integration-2026-09-01.md)
 - [Convex contacts](benchmarks/m4-pro-convex-contacts-2026-09-01.md)
@@ -74,6 +77,10 @@ for review.
 - [Indexed cold-contact topology](benchmarks/m4-pro-indexed-contact-topology-2026-09-03.md)
 - [Retained pair-seed bootstrap](benchmarks/m4-pro-retained-pair-seed-bootstrap-2026-09-03.md)
 - [Private cold topology epoch](benchmarks/m4-pro-private-cold-topology-epoch-2026-09-03.md)
+- [Measurement foundation](benchmarks/m4-pro-measurement-foundation-2026-09-03.md)
+- [Async-stepping spike](benchmarks/m4-pro-async-spike-2026-09-03.md)
+- [Precompiled Metal library](benchmarks/m4-pro-precompiled-library-2026-09-03.md)
+- [Merged narrow+solve](benchmarks/m4-pro-merged-narrow-solve-2026-09-03.md)
 
 ## Repository map
 
